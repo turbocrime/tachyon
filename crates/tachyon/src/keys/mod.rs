@@ -12,16 +12,21 @@
 //!     ak[SpendValidatingKey ak]
 //!     nk[NullifierKey nk]
 //!     pk[PaymentKey pk]
-//!     rk_sig["(rk, sig)"]
 //!     rk[ActionVerificationKey rk]
+//!     sig["sig (action::Signature)"]
 //!     pak[ProofAuthorizingKey]
+//!     sighash["sighash &amp;[u8; 32]"]
 //!     sk --> ask & nk & pk
 //!     ask --> ak
 //!     theta["ActionEntropy theta"] -- spend_randomizer --> spend_alpha["SpendRandomizer"]
 //!     theta -- output_randomizer --> output_alpha["OutputRandomizer"]
-//!     spend_alpha -- "authorize(ask, cv)" --> rk_sig
-//!     output_alpha -- "authorize(cv)" --> rk_sig
+//!     ask -- "derive_action_private(alpha)" --> spend_rsk["ActionSigningKey&lt;Spend&gt;"]
+//!     output_alpha -- "From" --> output_rsk["ActionSigningKey&lt;Output&gt;"]
 //!     ak -- "+alpha" --> rk
+//!     spend_rsk -- "derive_action_public()" --> rk
+//!     output_rsk -- "derive_action_public()" --> rk
+//!     spend_rsk -- "sign(sighash)" --> sig
+//!     output_rsk -- "sign(sighash)" --> sig
 //!     ak & nk --> pak
 //! ```
 //!
@@ -87,7 +92,7 @@ mod tests {
 
     use crate::{
         constants::PrfExpand,
-        entropy,
+        entropy::ActionEntropy,
         keys::custody,
         note::{self, CommitmentTrapdoor, Note, NullifierTrapdoor},
     };
@@ -156,13 +161,12 @@ mod tests {
             psi: NullifierTrapdoor::from(Fp::ZERO),
             rcm: CommitmentTrapdoor::from(Fq::ZERO),
         };
-        let theta = entropy::ActionEntropy::random(&mut rng);
+        let theta = ActionEntropy::random(&mut rng);
         let alpha = theta.spend_randomizer(&note.commitment());
         let rsk = ask.derive_action_private(&alpha);
-        let witness_alpha: entropy::ActionRandomizer = alpha.into();
 
         let rk_from_signer: [u8; 32] = rsk.derive_action_public().into();
-        let rk_from_prover: [u8; 32] = ak.derive_action_public(&witness_alpha).into();
+        let rk_from_prover: [u8; 32] = ak.derive_action_public(&alpha).into();
 
         assert_eq!(rk_from_signer, rk_from_prover);
     }

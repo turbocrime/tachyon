@@ -10,7 +10,7 @@ use reddsa::orchard::SpendAuth;
 
 use super::{delegated, public};
 use crate::{
-    entropy,
+    entropy::SpendRandomizer,
     note::{Nullifier, NullifierTrapdoor},
     primitives::Epoch,
 };
@@ -49,7 +49,7 @@ impl SpendValidatingKey {
     #[must_use]
     pub fn derive_action_public(
         &self,
-        alpha: &entropy::ActionRandomizer,
+        alpha: &SpendRandomizer,
     ) -> public::ActionVerificationKey {
         public::ActionVerificationKey(self.0.randomize(&alpha.0))
     }
