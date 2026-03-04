@@ -21,7 +21,7 @@ use crate::{action, action::Action, bundle, value};
 ///
 /// This unification lets consensus treat all actions identically while
 /// the type system enforces the authority boundary at construction time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[expect(clippy::field_scoped_visibility_modifiers, reason = "for internal use")]
 pub struct ActionVerificationKey(pub(super) reddsa::VerificationKey<SpendAuth>);
 
