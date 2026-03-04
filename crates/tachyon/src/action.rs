@@ -7,9 +7,9 @@ use reddsa::orchard::SpendAuth;
 
 use crate::{
     constants::SPEND_AUTH_PERSONALIZATION,
+    custody::Custody,
     keys::{private, public},
-    note::{self, Note},
-    primitives::Epoch,
+    note::Note,
     value,
     witness::ActionPrivate,
 };
@@ -32,8 +32,12 @@ use crate::{
 ///
 /// This separation allows the stamp to be stripped during aggregation
 /// while the action (with its authorization) remains in the transaction.
+<<<<<<< tachyon-w-upstream
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+=======
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+>>>>>>> main
 pub struct Action {
     /// Value commitment $\mathsf{cv} = [v]\,\mathcal{V}
     /// + [\mathsf{rcv}]\,\mathcal{R}$ (EpAffine).
@@ -87,76 +91,92 @@ impl Action {
         sighash(self.cv, self.rk)
     }
 
-    fn new<R: RngCore + CryptoRng>(
-        rsk: &private::ActionSigningKey,
-        cv: value::Commitment,
-        rng: &mut R,
-    ) -> Self {
-        let rk = rsk.derive_action_public();
-        Self {
-            cv,
-            rk,
-            sig: rsk.sign(rng, sighash(cv, rk)),
-        }
-    }
-
     /// Consume a note.
-    // TODO: Epoch-boundary transactions may require TWO nullifiers per note.
-    // The stamp's tachygram list already supports count > actions, but this API
-    // needs a variant or additional flavor parameter to produce the second
-    // nullifier.
-    pub fn spend<R: RngCore + CryptoRng>(
-        ask: &private::SpendAuthorizingKey,
+    ///
+    /// Convenience wrapper composing individual steps for the
+    /// single-device case. Each step is independently callable for
+    /// delegation (see [composable steps](crate::bundle)):
+    ///
+    /// 1. Note commitment: [`Note::commitment`]
+    /// 2. Value commitment: [`value::Commitment::new`]
+    /// 3. Alpha derivation:
+    ///    [`ActionEntropy::spend_randomizer`](private::ActionEntropy::spend_randomizer)
+    /// 4. Spend authorization:
+    ///    [`Custody::authorize_spend`](crate::custody::Custody::authorize_spend)
+    /// 5. Assembly: `Action { cv, rk, sig }` +
+    ///    [`ActionPrivate`](crate::witness::ActionPrivate)
+    pub fn spend<R: RngCore + CryptoRng, C: Custody>(
+        custody: &C,
         note: Note,
-        nf: note::Nullifier,
-        flavor: Epoch,
         theta: &private::ActionEntropy,
         rng: &mut R,
-    ) -> (Self, ActionPrivate) {
-        let cmx = note.commitment();
-        let (alpha, rsk) = theta.authorize_spend(ask, &cmx);
-        let value: i64 = note.value.into();
-        let (rcv, cv) = value::Commitment::commit(value, rng);
+    ) -> Result<(Self, ActionPrivate), C::Error> {
+        // 1. Note commitment
+        let cm = note.commitment();
 
-        (
-            Self::new(&rsk, cv, rng),
+        // 2. Value commitment (signer picks rcv)
+        let value: i64 = note.value.into();
+        let rcv = value::CommitmentTrapdoor::random(&mut *rng);
+        let cv = rcv.commit(value);
+
+        // 3. Alpha (user device derives for proof witness)
+        let alpha = theta.spend_randomizer(&cm);
+
+        // 4. Spend authorization (custody derives alpha independently)
+        let (rk, sig) = custody.authorize_spend(cv, theta, &cm, rng)?;
+
+        Ok((
+            Self { cv, rk, sig },
             ActionPrivate {
-                tachygram: nf.into(),
-                alpha,
-                flavor,
+                alpha: alpha.into(),
                 note,
                 rcv,
             },
-        )
+        ))
     }
 
     /// Create a note.
+    ///
+    /// Convenience wrapper composing individual steps for the
+    /// single-device case. Each step is independently callable for
+    /// delegation — see [`spend`](Self::spend) for the composable
+    /// steps.
     pub fn output<R: RngCore + CryptoRng>(
         note: Note,
-        flavor: Epoch,
         theta: &private::ActionEntropy,
         rng: &mut R,
     ) -> (Self, ActionPrivate) {
-        let cmx = note.commitment();
-        let (alpha, rsk) = theta.authorize_output(&cmx);
+        // 1. Note commitment
+        let cm = note.commitment();
+
+        // 2. Value commitment (signer picks rcv; negative for outputs)
         let value: i64 = note.value.into();
-        let (rcv, cv) = value::Commitment::commit(value.neg(), rng);
+        let rcv = value::CommitmentTrapdoor::random(&mut *rng);
+        let cv = rcv.commit(value.neg());
+
+        // 3. Alpha (for proof witness and output signing key)
+        let alpha = theta.output_randomizer(&cm);
+
+        // 4. Output authorization (rsk = alpha, no custody)
+        let (rk, sig) = alpha.authorize(cv, rng);
 
         (
-            Self::new(&rsk, cv, rng),
+            Self { cv, rk, sig },
             ActionPrivate {
-                tachygram: cmx.into(),
-                alpha,
-                flavor,
-                rcv,
+                alpha: alpha.into(),
                 note,
+                rcv,
             },
         )
     }
 }
 
 /// A spend authorization signature (RedPallas over SpendAuth).
+<<<<<<< tachyon-w-upstream
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+=======
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+>>>>>>> main
 #[expect(clippy::field_scoped_visibility_modifiers, reason = "for internal use")]
 pub struct Signature(pub(crate) reddsa::Signature<SpendAuth>);
 
@@ -226,8 +246,9 @@ mod tests {
 
     use super::*;
     use crate::{
+        custody,
         keys::private,
-        note::{CommitmentTrapdoor, NullifierTrapdoor},
+        note::{self, CommitmentTrapdoor, NullifierTrapdoor},
     };
 
     /// A spend action's signature must verify against its own rk.
@@ -235,19 +256,16 @@ mod tests {
     fn spend_sig_round_trip() {
         let mut rng = StdRng::seed_from_u64(0);
         let sk = private::SpendingKey::from([0x42u8; 32]);
-        let ask = sk.derive_auth_private();
-        let nk = sk.derive_nullifier_key();
+        let local = custody::Local::new(sk.derive_auth_private());
         let note = Note {
             pk: sk.derive_payment_key(),
             value: note::Value::from(1000u64),
             psi: NullifierTrapdoor::from(Fp::ZERO),
             rcm: CommitmentTrapdoor::from(Fq::ZERO),
         };
-        let flavor = Epoch::from(Fp::ONE);
-        let nf = note.nullifier(&nk, flavor);
         let theta = private::ActionEntropy::random(&mut rng);
 
-        let (action, _witness) = Action::spend(&ask, note, nf, flavor, &theta, &mut rng);
+        let (action, _witness) = Action::spend(&local, note, &theta, &mut rng).unwrap();
 
         action
             .rk
@@ -266,10 +284,9 @@ mod tests {
             psi: NullifierTrapdoor::from(Fp::ZERO),
             rcm: CommitmentTrapdoor::from(Fq::ZERO),
         };
-        let flavor = Epoch::from(Fp::ONE);
         let theta = private::ActionEntropy::random(&mut rng);
 
-        let (action, _witness) = Action::output(note, flavor, &theta, &mut rng);
+        let (action, _witness) = Action::output(note, &theta, &mut rng);
 
         action
             .rk

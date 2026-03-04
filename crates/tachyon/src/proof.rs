@@ -24,9 +24,9 @@
 
 use crate::{
     action::Action,
-    keys::ProvingKey,
+    keys::ProofAuthorizingKey,
     primitives::{Anchor, Tachygram},
-    witness::{ActionPrivate, MergePrivate},
+    witness::ActionPrivate,
 };
 
 /// Ragu proof for Tachyon transactions.
@@ -37,8 +37,12 @@ use crate::{
 ///
 /// The proof's public output is a PCD header containing
 /// `actions_acc`, `tachygram_acc`, and `anchor`.
+<<<<<<< tachyon-w-upstream
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+=======
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+>>>>>>> main
 pub struct Proof;
 
 /// An error returned when proof verification fails.
@@ -58,9 +62,9 @@ impl Proof {
     /// - **`tachygram_acc`**: $\text{VectorCommit}(\text{tachygrams})$.
     ///
     /// The circuit constrains that every $(D_i, \text{tachygram}_i)$ pair
-    /// is consistent with the witness (note fields, alpha, rcv, flavor).
+    /// is consistent with the witness (note fields, alpha, rcv).
     ///
-    /// The [`ProvingKey`] provides per-wallet key material
+    /// The [`ProofAuthorizingKey`] provides per-wallet key material
     /// shared across all actions:
     /// - $\mathsf{ak}$: constrains $\mathsf{rk} = \mathsf{ak} +
     ///   [\alpha]\,\mathcal{G}$
@@ -69,12 +73,15 @@ impl Proof {
     #[must_use]
     pub fn create(
         _actions: &[Action],
-        witnesses: &[ActionPrivate],
+        _witnesses: &[ActionPrivate],
         _anchor: &Anchor,
-        _pak: &ProvingKey,
+        _pak: &ProofAuthorizingKey,
     ) -> (Self, Vec<Tachygram>) {
         todo!("Ragu PCD");
-        (Self, witnesses.iter().map(|w| w.tachygram).collect())
+        // The circuit computes tachygrams internally from witness fields (nf =
+        // F_nk(psi, flavor) for spends, cm = NoteCommit(...) for outputs) and
+        // returns them as public outputs.
+        (Self, Vec::new())
     }
 
     /// Merges two proofs (Ragu PCD fuse).
@@ -92,7 +99,7 @@ impl Proof {
     /// - **Accumulator combination**: the merged proof's `actions_acc` and
     ///   `tachygram_acc` are the unions of the left and right accumulators.
     #[must_use]
-    pub fn merge(left: Self, _right: Self, _witness: MergePrivate) -> Self {
+    pub fn merge(left: Self, _right: Self) -> Self {
         todo!("Ragu PCD fuse \u{2014} merge two proofs with non-overlap and anchor subset checks");
         left
     }

@@ -21,7 +21,11 @@ use crate::{action, action::Action, bundle, value};
 ///
 /// This unification lets consensus treat all actions identically while
 /// the type system enforces the authority boundary at construction time.
+<<<<<<< tachyon-w-upstream
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+=======
+#[derive(Clone, Copy, Debug, PartialEq)]
+>>>>>>> main
 #[expect(clippy::field_scoped_visibility_modifiers, reason = "for internal use")]
 pub struct ActionVerificationKey(pub(super) reddsa::VerificationKey<SpendAuth>);
 
@@ -36,6 +40,12 @@ impl ActionVerificationKey {
         self.0.verify(&msg, &sig.0)
     }
 }
+
+#[expect(
+    clippy::missing_trait_methods,
+    reason = "default assert_receiver_is_total_eq is correct"
+)]
+impl Eq for ActionVerificationKey {}
 
 #[expect(clippy::from_over_into, reason = "restrict conversion")]
 impl Into<[u8; 32]> for ActionVerificationKey {
