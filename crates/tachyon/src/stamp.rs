@@ -16,13 +16,19 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+use ff::PrimeField as _;
+use mock_ragu::accumulator;
+use pasta_curves::Fp;
 use rand::CryptoRng;
 
 use crate::{
     action::{Action, Effect},
     keys::ProofAuthorizingKey,
     primitives::{Anchor, Tachygram},
-    proof::{ActionStep, ActionWitness, MergeStep, Proof, StampDigest, StampHeader, mock_app},
+    proof::{
+        self, ActionStep, ActionWitness, MergeStep, StampDigest, StampHeader, ValidationError,
+        mock_app,
+    },
     witness::ActionPrivate,
 };
 
@@ -56,7 +62,7 @@ pub struct Stamp {
     pub anchor: Anchor,
 
     /// The Ragu proof bytes.
-    pub proof: Proof,
+    pub proof: proof::Proof,
 
     /// PCD header digest — used internally for fuse operations.
     ///
@@ -97,7 +103,7 @@ impl Stamp {
         Self {
             tachygrams,
             anchor,
-            proof: Proof(proof),
+            proof,
             digest,
         }
     }
@@ -115,8 +121,8 @@ impl Stamp {
     pub fn prove_merge<RNG: CryptoRng>(self, other: Self, rng: &mut RNG) -> Self {
         let app = mock_app();
 
-        let left_pcd = self.proof.0.carry::<StampHeader>(self.digest);
-        let right_pcd = other.proof.0.carry::<StampHeader>(other.digest);
+        let left_pcd = self.proof.carry::<StampHeader>(self.digest);
+        let right_pcd = other.proof.carry::<StampHeader>(other.digest);
 
         let (proof, merged_digest) = app
             .fuse(rng, &MergeStep, (), left_pcd, right_pcd)
@@ -128,8 +134,54 @@ impl Stamp {
         Self {
             tachygrams: merged_tachygrams,
             anchor: merged_anchor,
-            proof: Proof(proof),
+            proof,
             digest: merged_digest,
         }
+    }
+
+    /// Verifies this stamp's proof by reconstructing the PCD header from public
+    /// data.
+    ///
+    /// The verifier recomputes `action_acc` and `tachygram_acc` from the
+    /// public actions and tachygrams, constructs the PCD header,
+    /// and calls Ragu `verify(Pcd { proof, data: header })`. The proof
+    /// only verifies against the header that matches the circuit's honest
+    /// execution — a mismatched header causes verification failure.
+    pub fn verify(&self, actions: &[Action]) -> Result<bool, ValidationError> {
+        let app = mock_app();
+
+        // Recompute action accumulator from public actions
+        let action_pairs: Vec<_> = actions
+            .iter()
+            .map(|act| {
+                let cv_bytes: [u8; 32] = act.cv.into();
+                let rk_bytes: [u8; 32] = act.rk.into();
+                (cv_bytes, rk_bytes)
+            })
+            .collect();
+        let action_acc = accumulator::accumulate_pairs(proof::ACTION_ACC_DOMAIN, &action_pairs);
+
+        // Recompute tachygram accumulator from public tachygrams
+        let tg_elements: Vec<[u8; 32]> = self
+            .tachygrams
+            .iter()
+            .map(|tg| {
+                let fp: Fp = (*tg).into();
+                fp.to_repr()
+            })
+            .collect();
+        let tachygram_acc = accumulator::accumulate(proof::TACHYGRAM_ACC_DOMAIN, &tg_elements);
+
+        // Anchor
+        let anchor_fp: Fp = self.anchor.into();
+        let anchor_bytes: [u8; 32] = anchor_fp.to_repr();
+
+        let pcd = self.proof.carry::<StampHeader>(StampDigest {
+            action_acc,
+            tachygram_acc,
+            anchor: anchor_bytes,
+        });
+
+        app.verify(&pcd, rand::thread_rng())
     }
 }

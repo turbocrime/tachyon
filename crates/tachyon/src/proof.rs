@@ -40,9 +40,9 @@ use crate::{
 };
 
 /// BLAKE2b personalization for action accumulator.
-const ACTION_ACC_DOMAIN: &[u8; 16] = b"Tachyon_ActnAccm";
+pub(crate) const ACTION_ACC_DOMAIN: &[u8; 16] = b"Tachyon_ActnAccm";
 /// BLAKE2b personalization for tachygram accumulator.
-const TACHYGRAM_ACC_DOMAIN: &[u8; 16] = b"Tachyon_TgrmAccm";
+pub(crate) const TACHYGRAM_ACC_DOMAIN: &[u8; 16] = b"Tachyon_TgrmAccm";
 
 // ---------------------------------------------------------------------------
 // PCD header
@@ -212,88 +212,9 @@ pub(crate) fn mock_app() -> Application {
         .expect("finalize")
 }
 
-// ---------------------------------------------------------------------------
-// Proof
-// ---------------------------------------------------------------------------
-
 /// Ragu proof for Tachyon transactions (128 bytes).
 ///
-/// Wraps `mock_ragu::Proof`. Covers all actions in an aggregate.
-///
-/// The proof's public output is a PCD header containing
-/// `action_acc`, `tachygram_acc`, and `anchor`. These are not stored
-/// — the verifier reconstructs them from public data.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[expect(
-    clippy::field_scoped_visibility_modifiers,
-    reason = "crate-internal access to inner proof"
-)]
-pub struct Proof(pub(crate) mock_ragu::Proof);
-
-impl Proof {
-    /// Verifies this proof by reconstructing the PCD header from public data.
-    ///
-    /// The verifier recomputes `action_acc` and `tachygram_acc` from the
-    /// public actions and tachygrams, constructs the PCD header,
-    /// and calls Ragu `verify(Pcd { proof, data: header })`. The proof
-    /// only verifies against the header that matches the circuit's honest
-    /// execution — a mismatched header causes verification failure.
-    pub fn verify(
-        &self,
-        actions: &[Action],
-        tachygrams: &[Tachygram],
-        anchor: Anchor,
-    ) -> Result<bool, ValidationError> {
-        let app = mock_app();
-
-        // Recompute action accumulator from public actions
-        let action_pairs: Vec<_> = actions
-            .iter()
-            .map(|act| {
-                let cv_bytes: [u8; 32] = act.cv.into();
-                let rk_bytes: [u8; 32] = act.rk.into();
-                (cv_bytes, rk_bytes)
-            })
-            .collect();
-        let action_acc = accumulator::accumulate_pairs(ACTION_ACC_DOMAIN, &action_pairs);
-
-        // Recompute tachygram accumulator from public tachygrams
-        let tg_elements: Vec<[u8; 32]> = tachygrams
-            .iter()
-            .map(|tg| {
-                let fp: Fp = (*tg).into();
-                fp.to_repr()
-            })
-            .collect();
-        let tachygram_acc = accumulator::accumulate(TACHYGRAM_ACC_DOMAIN, &tg_elements);
-
-        // Anchor
-        let anchor_fp: Fp = anchor.into();
-        let anchor_bytes: [u8; 32] = anchor_fp.to_repr();
-
-        let digest = StampDigest {
-            action_acc,
-            tachygram_acc,
-            anchor: anchor_bytes,
-        };
-
-        let pcd = self.0.carry::<StampHeader>(digest);
-
-        app.verify(&pcd, rand::thread_rng())
-    }
-}
-
-#[expect(clippy::from_over_into, reason = "restrict conversion")]
-impl Into<[u8; 128]> for Proof {
-    fn into(self) -> [u8; 128] {
-        self.0.into()
-    }
-}
-
-impl TryFrom<&[u8; 128]> for Proof {
-    type Error = ValidationError;
-
-    fn try_from(bytes: &[u8; 128]) -> Result<Self, Self::Error> {
-        mock_ragu::Proof::try_from(bytes).map(Self)
-    }
-}
+/// Covers all actions in an aggregate. The proof's public output is a PCD
+/// header containing `action_acc`, `tachygram_acc`, and `anchor`. These are
+/// not stored — the verifier reconstructs them from public data.
+pub type Proof = mock_ragu::Proof;
