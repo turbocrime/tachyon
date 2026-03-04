@@ -166,7 +166,7 @@ mod tests {
 
     use alloc::vec::Vec;
 
-    use rand::rng;
+    use rand::thread_rng;
 
     use super::*;
     use crate::{header::Suffix, step::Index};
@@ -254,11 +254,11 @@ mod tests {
             .expect("finalize should succeed");
 
         let (proof, ()) = app
-            .seed(&mut rng(), &SeedStep, 42u64)
+            .seed(&mut thread_rng(), &SeedStep, 42u64)
             .expect("seed should succeed");
         let pcd = proof.carry::<TestHeader>(TestHeaderData { value: 42 });
 
-        let valid = app.verify(&pcd, rng()).expect("verify should succeed");
+        let valid = app.verify(&pcd, thread_rng()).expect("verify should succeed");
         assert!(valid, "proof should verify against matching header data");
     }
 
@@ -271,12 +271,12 @@ mod tests {
             .expect("finalize should succeed");
 
         let (proof, ()) = app
-            .seed(&mut rng(), &SeedStep, 42u64)
+            .seed(&mut thread_rng(), &SeedStep, 42u64)
             .expect("seed should succeed");
         // Carry wrong data
         let pcd = proof.carry::<TestHeader>(TestHeaderData { value: 999 });
 
-        let valid = app.verify(&pcd, rng()).expect("verify should succeed");
+        let valid = app.verify(&pcd, thread_rng()).expect("verify should succeed");
         assert!(!valid, "proof should reject mismatched header data");
     }
 
@@ -290,19 +290,19 @@ mod tests {
             .finalize()
             .expect("finalize should succeed");
 
-        let (proof_a, ()) = app.seed(&mut rng(), &SeedStep, 10u64).expect("seed a");
+        let (proof_a, ()) = app.seed(&mut thread_rng(), &SeedStep, 10u64).expect("seed a");
         let pcd_a = proof_a.carry::<TestHeader>(TestHeaderData { value: 10 });
 
-        let (proof_b, ()) = app.seed(&mut rng(), &SeedStep, 20u64).expect("seed b");
+        let (proof_b, ()) = app.seed(&mut thread_rng(), &SeedStep, 20u64).expect("seed b");
         let pcd_b = proof_b.carry::<TestHeader>(TestHeaderData { value: 20 });
 
         let (merged_proof, ()) = app
-            .fuse(&mut rng(), &MergeStep, (), pcd_a, pcd_b)
+            .fuse(&mut thread_rng(), &MergeStep, (), pcd_a, pcd_b)
             .expect("fuse should succeed");
         let merged_pcd = merged_proof.carry::<TestHeader>(TestHeaderData { value: 30 });
 
         let valid = app
-            .verify(&merged_pcd, rng())
+            .verify(&merged_pcd, thread_rng())
             .expect("verify should succeed");
         assert!(valid, "merged proof should verify");
     }
@@ -316,15 +316,15 @@ mod tests {
             .expect("finalize should succeed");
 
         let (proof, ()) = app
-            .seed(&mut rng(), &SeedStep, 42u64)
+            .seed(&mut thread_rng(), &SeedStep, 42u64)
             .expect("seed should succeed");
         let pcd = proof.carry::<TestHeader>(TestHeaderData { value: 42 });
 
         let rerand_pcd = app
-            .rerandomize(pcd, &mut rng())
+            .rerandomize(pcd, &mut thread_rng())
             .expect("rerandomize should succeed");
         let valid = app
-            .verify(&rerand_pcd, rng())
+            .verify(&rerand_pcd, thread_rng())
             .expect("verify should succeed");
         assert!(valid, "rerandomized proof should still verify");
     }

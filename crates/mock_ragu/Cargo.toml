@@ -24,7 +24,7 @@ workspace = true
 blake2b_simd = "1.0"
 ff = "0.13"
 pasta_curves = "0.5.1"
-rand = "0.9"
+rand = "0.8"
 
 [lib]
 bench = false
