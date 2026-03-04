@@ -1,0 +1,36 @@
+name: Book
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: Build book
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdbook and plugins
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook@0.4.52,mdbook-katex@0.9.4,mdbook-mermaid@0.16.2
+
+      - name: Build book
+        run: mdbook build book/
+
+  notify-website:
+    name: Notify website to deploy
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger repository_dispatch in website
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.REPO_DISPATCH_TOKEN }}
+          repository: tachyon-zcash/website
+          event-type: book_updated
+          client-payload: |
+            { "book_sha": "${{ github.sha }}" }
