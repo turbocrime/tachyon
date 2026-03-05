@@ -1,12 +1,13 @@
 //! Note-related keys: NullifierKey, MasterRootKey, PrefixKey, PaymentKey.
 
 use ff::PrimeField as _;
+use halo2_poseidon::{ConstantLength, Hash, P128Pow5T3};
 use pasta_curves::Fp;
 
 use super::ggm;
 use crate::{
+    constants::NULLIFIER_DOMAIN,
     note::{Nullifier, NullifierTrapdoor},
-    poseidon,
     primitives::Epoch,
 };
 
@@ -48,7 +49,15 @@ impl NullifierKey {
     /// - Derive epoch-restricted prefix keys $\Psi_t$ for OSS delegation
     #[must_use]
     pub fn derive_note_private(&self, psi: &NullifierTrapdoor) -> NoteMasterKey {
-        NoteMasterKey(poseidon::hash([(*psi).into(), self.0]))
+        #[expect(clippy::little_endian_bytes, reason = "specified behavior")]
+        let personalization = Fp::from_u128(u128::from_le_bytes(*NULLIFIER_DOMAIN));
+        NoteMasterKey(
+            Hash::<_, P128Pow5T3, ConstantLength<3>, 3, 2>::init().hash([
+                personalization,
+                psi.0,
+                self.0,
+            ]),
+        )
     }
 }
 

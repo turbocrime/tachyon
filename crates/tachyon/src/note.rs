@@ -33,14 +33,14 @@
 //! enters the polynomial accumulator. The concrete commitment scheme
 //! (e.g. Sinsemilla, Poseidon) depends on what is efficient inside
 //! Ragu circuits and is TBD.
-use ff::Field as _;
+use ff::{Field as _, PrimeField as _};
+use halo2_poseidon::{ConstantLength, Hash, P128Pow5T3};
 use pasta_curves::Fp;
 use rand::{CryptoRng, RngCore};
 
 use crate::{
-    constants::NOTE_VALUE_MAX,
+    constants::{NOTE_COMMITMENT_DOMAIN, NOTE_VALUE_MAX},
     keys::{NullifierKey, PaymentKey},
-    poseidon,
     primitives::{Epoch, Tachygram},
 };
 
@@ -90,7 +90,17 @@ impl CommitmentTrapdoor {
     /// Domain separation is implicit via `ConstantLength<4>`.
     #[must_use]
     pub fn commit(self, value: Value, pk: &PaymentKey, psi: &NullifierTrapdoor) -> Commitment {
-        Commitment::from(poseidon::hash([self.0, pk.0, Fp::from(value.0), psi.0]))
+        #[expect(clippy::little_endian_bytes, reason = "specified behavior")]
+        let domain = Fp::from_u128(u128::from_le_bytes(*NOTE_COMMITMENT_DOMAIN));
+        Commitment::from(
+            Hash::<_, P128Pow5T3, ConstantLength<5>, 3, 2>::init().hash([
+                domain,
+                self.0,
+                pk.0,
+                Fp::from(value.0),
+                psi.0,
+            ]),
+        )
     }
 
     /// Generate a fresh random trapdoor.

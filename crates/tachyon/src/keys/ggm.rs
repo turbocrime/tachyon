@@ -5,13 +5,21 @@
 //! Traversal is MSB-first so that left subtrees cover lower-numbered
 //! leaves, enabling contiguous-range prefix delegation.
 
-use ff::Field as _;
+use ff::{Field as _, PrimeField as _};
+use halo2_poseidon::{ConstantLength, Hash, P128Pow5T3};
 use pasta_curves::Fp;
 
-use crate::poseidon;
+use crate::constants::NULLIFIER_DOMAIN;
 
 /// GGM tree depth — 32-bit epochs cover ~4 billion values.
 pub(super) const TREE_DEPTH: usize = 32;
+
+/// One GGM tree step: `Poseidon(tag, node, bit)`.
+fn step(node: Fp, bit: Fp) -> Fp {
+    #[expect(clippy::little_endian_bytes, reason = "specified behavior")]
+    let personalization = Fp::from_u128(u128::from_le_bytes(*NULLIFIER_DOMAIN));
+    Hash::<_, P128Pow5T3, ConstantLength<3>, 3, 2>::init().hash([personalization, node, bit])
+}
 
 /// GGM tree PRF: walk all 32 bits of `leaf` from root `key`.
 ///
@@ -28,7 +36,7 @@ pub(super) fn prefix_node(root: Fp, depth: usize) -> Fp {
     assert!(depth <= TREE_DEPTH, "depth exceeds GGM tree depth");
     let mut node = root;
     for _ in 0..depth {
-        node = poseidon::hash([node, Fp::ZERO]);
+        node = step(node, Fp::ZERO);
     }
     node
 }
@@ -50,7 +58,7 @@ fn walk(mut node: Fp, leaf: u32, total_depth: usize, start_depth: usize) -> Fp {
     for idx in start_depth..total_depth {
         let bit_pos = total_depth - 1 - idx;
         let bit = u64::from((leaf >> bit_pos) & 1);
-        node = poseidon::hash([node, Fp::from(bit)]);
+        node = step(node, Fp::from(bit));
     }
     node
 }

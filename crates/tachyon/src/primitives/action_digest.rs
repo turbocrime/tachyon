@@ -1,9 +1,13 @@
 use core::{iter, ops};
 
 use ff::{Field as _, PrimeField as _};
+use halo2_poseidon::{ConstantLength, Hash, P128Pow5T3};
 use pasta_curves::{EpAffine, Fp, arithmetic::CurveAffine as _};
 
-use crate::{Action, action::Plan as ActionPlan, keys::public, poseidon, value};
+use crate::{
+    Action, action::Plan as ActionPlan, constants::ACTION_DIGEST_PERSONALIZATION, keys::public,
+    value,
+};
 
 /// Digest a single action's `(cv, rk)` pair via Poseidon.
 ///
@@ -15,22 +19,36 @@ use crate::{Action, action::Plan as ActionPlan, keys::public, poseidon, value};
 /// Panics if either point is the identity (which should never happen
 /// for action commitments or verification keys).
 #[must_use]
-#[expect(clippy::expect_used, reason = "specified behavior")]
 fn digest_action(cv: value::Commitment, rk: public::ActionVerificationKey) -> Fp {
-    let cv_coords =
-        cv.0.coordinates()
+    #[expect(clippy::little_endian_bytes, reason = "specified behavior")]
+    let personalization = Fp::from_u128(u128::from_le_bytes(*ACTION_DIGEST_PERSONALIZATION));
+
+    let (cv_x, cv_y) = {
+        let point: EpAffine = cv.into();
+        #[expect(clippy::expect_used, reason = "specified behavior")]
+        let coords = point
+            .coordinates()
             .into_option()
             .expect("action value commitment must not be the identity point");
-    let rk_point: EpAffine = rk.into();
-    let rk_coords = rk_point
-        .coordinates()
-        .into_option()
-        .expect("verification key must not be the identity point");
-    poseidon::hash([
-        *cv_coords.x(),
-        *cv_coords.y(),
-        *rk_coords.x(),
-        *rk_coords.y(),
+        (*coords.x(), *coords.y())
+    };
+
+    let (rk_x, rk_y) = {
+        let point: EpAffine = rk.into();
+        #[expect(clippy::expect_used, reason = "specified behavior")]
+        let coords = point
+            .coordinates()
+            .into_option()
+            .expect("verification key must not be the identity point");
+        (*coords.x(), *coords.y())
+    };
+
+    Hash::<_, P128Pow5T3, ConstantLength<5>, 3, 2>::init().hash([
+        personalization,
+        cv_x,
+        cv_y,
+        rk_x,
+        rk_y,
     ])
 }
 

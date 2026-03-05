@@ -132,8 +132,7 @@ impl Into<Fq> for CommitmentTrapdoor {
 ///
 /// An EpAffine (Pallas affine curve point, 32 compressed bytes).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[expect(clippy::field_scoped_visibility_modifiers, reason = "for internal use")]
-pub struct Commitment(pub(crate) EpAffine);
+pub struct Commitment(EpAffine);
 
 impl Commitment {
     /// Create the value balance commitment

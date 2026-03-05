@@ -52,7 +52,6 @@ pub mod stamp;
 pub mod value;
 pub mod witness;
 
-mod poseidon;
 mod primitives;
 
 pub use action::{Action, Plan as ActionPlan};
