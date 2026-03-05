@@ -14,21 +14,21 @@
 
 extern crate alloc;
 
+pub mod proof;
+
 use alloc::vec::Vec;
 
 use ff::PrimeField as _;
 use mock_ragu::accumulator;
 use pasta_curves::Fp;
+pub use proof::{Proof, ValidationError};
 use rand::CryptoRng;
 
+use self::proof::{ActionStep, ActionWitness, MergeStep, StampDigest, StampHeader, mock_app};
 use crate::{
     action::{Action, Effect},
     keys::ProofAuthorizingKey,
     primitives::{Anchor, Tachygram},
-    proof::{
-        self, ActionStep, ActionWitness, MergeStep, StampDigest, StampHeader, ValidationError,
-        mock_app,
-    },
     witness::ActionPrivate,
 };
 
@@ -62,7 +62,7 @@ pub struct Stamp {
     pub anchor: Anchor,
 
     /// The Ragu proof bytes.
-    pub proof: proof::Proof,
+    pub proof: Proof,
 
     /// PCD header digest — used internally for fuse operations.
     ///

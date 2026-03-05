@@ -28,8 +28,8 @@ use alloc::vec::Vec;
 use core::cmp;
 
 use ff::PrimeField as _;
-pub use mock_ragu::ValidationError;
 use mock_ragu::{self, Application, ApplicationBuilder, Header, Index, Step, Suffix, accumulator};
+pub use mock_ragu::{Proof, ValidationError};
 use pasta_curves::Fp;
 
 use crate::{
@@ -211,10 +211,3 @@ pub(crate) fn mock_app() -> Application {
         .finalize()
         .expect("finalize")
 }
-
-/// Ragu proof for Tachyon transactions (128 bytes).
-///
-/// Covers all actions in an aggregate. The proof's public output is a PCD
-/// header containing `action_acc`, `tachygram_acc`, and `anchor`. These are
-/// not stored — the verifier reconstructs them from public data.
-pub type Proof = mock_ragu::Proof;
