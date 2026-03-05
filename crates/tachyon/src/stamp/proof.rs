@@ -127,8 +127,8 @@ impl Step for ActionStep {
         // Derive tachygram based on effect
         let tachygram: Tachygram = match witness.effect {
             | Effect::Spend => {
-                let anchor_fp: Fp = witness.anchor.into();
-                let epoch = Epoch::from(anchor_fp);
+                todo!("derive epoch from anchor");
+                let epoch = Epoch::from(0u32);
                 let nf = witness.witness.note.nullifier(witness.pak.nk(), epoch);
                 nf.into()
             },
