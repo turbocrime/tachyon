@@ -70,6 +70,7 @@
 pub mod private;
 pub mod public;
 
+mod ggm;
 mod note;
 mod proof;
 

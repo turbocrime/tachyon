@@ -3,8 +3,8 @@
 use ff::PrimeField as _;
 use pasta_curves::Fp;
 
+use super::ggm;
 use crate::{
-    ggm,
     note::{Nullifier, NullifierTrapdoor},
     poseidon,
     primitives::Epoch,
@@ -48,8 +48,7 @@ impl NullifierKey {
     /// - Derive epoch-restricted prefix keys $\Psi_t$ for OSS delegation
     #[must_use]
     pub fn derive_note_private(&self, psi: &NullifierTrapdoor) -> NoteMasterKey {
-        let psi_fp: Fp = (*psi).into();
-        NoteMasterKey(poseidon::hash([psi_fp, self.0]))
+        NoteMasterKey(poseidon::hash([(*psi).into(), self.0]))
     }
 }
 

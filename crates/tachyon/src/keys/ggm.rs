@@ -5,28 +5,26 @@
 //! Traversal is MSB-first so that left subtrees cover lower-numbered
 //! leaves, enabling contiguous-range prefix delegation.
 
-#![allow(clippy::redundant_pub_crate, reason = "pub(crate) in private module")]
-
 use ff::Field as _;
 use pasta_curves::Fp;
 
 use crate::poseidon;
 
 /// GGM tree depth — 32-bit epochs cover ~4 billion values.
-pub(crate) const TREE_DEPTH: usize = 32;
+pub(super) const TREE_DEPTH: usize = 32;
 
 /// GGM tree PRF: walk all 32 bits of `leaf` from root `key`.
 ///
 /// Traverses MSB-first (bit 31 to bit 0) so that left subtrees cover
 /// lower-numbered leaves, enabling contiguous-range prefix delegation.
-pub(crate) fn evaluate(key: Fp, leaf: u32) -> Fp {
+pub(super) fn evaluate(key: Fp, leaf: u32) -> Fp {
     walk(key, leaf, TREE_DEPTH, 0)
 }
 
 /// Descend `depth` left-child (zero-bit) levels from `root`.
 ///
 /// Returns the intermediate node covering epochs `0..2^(32 - depth)`.
-pub(crate) fn prefix_node(root: Fp, depth: usize) -> Fp {
+pub(super) fn prefix_node(root: Fp, depth: usize) -> Fp {
     assert!(depth <= TREE_DEPTH, "depth exceeds GGM tree depth");
     let mut node = root;
     for _ in 0..depth {
@@ -38,7 +36,7 @@ pub(crate) fn prefix_node(root: Fp, depth: usize) -> Fp {
 /// Continue a GGM walk from an intermediate node at `start_depth`.
 ///
 /// Walks bits `(31 - start_depth)` down to `0` of `leaf`.
-pub(crate) fn evaluate_from(node: Fp, leaf: u32, start_depth: usize) -> Fp {
+pub(super) fn evaluate_from(node: Fp, leaf: u32, start_depth: usize) -> Fp {
     walk(node, leaf, TREE_DEPTH, start_depth)
 }
 
