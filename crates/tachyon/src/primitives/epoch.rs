@@ -18,8 +18,32 @@ impl From<Fp> for Epoch {
     }
 }
 
+impl From<u32> for Epoch {
+    fn from(val: u32) -> Self {
+        Self(Fp::from(u64::from(val)))
+    }
+}
+
 impl From<Epoch> for Fp {
     fn from(ec: Epoch) -> Self {
         ec.0
+    }
+}
+
+impl Epoch {
+    /// Extract as `u32` for GGM tree indexing.
+    ///
+    /// Returns `None` if the epoch exceeds `u32::MAX`.
+    #[must_use]
+    pub fn as_u32(self) -> Option<u32> {
+        use ff::PrimeField as _;
+        let repr = self.0.to_repr();
+        if repr[4..].iter().all(|&b| b == 0) {
+            Some(u32::from_le_bytes(
+                repr[..4].try_into().expect("4-byte slice"),
+            ))
+        } else {
+            None
+        }
     }
 }

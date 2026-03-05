@@ -40,7 +40,7 @@ use rand::{CryptoRng, RngCore};
 use crate::{
     constants::NOTE_VALUE_MAX,
     keys::{NullifierKey, PaymentKey},
-    primitives::{Epoch, Tachygram},
+    primitives::{self, Epoch, Tachygram},
 };
 
 /// Nullifier trapdoor ($\psi$) — per-note randomness for nullifier derivation.
@@ -81,15 +81,18 @@ pub struct CommitmentTrapdoor(Fq);
 impl CommitmentTrapdoor {
     /// Computes the note commitment `cm`.
     ///
-    /// Commits to $(pk, v, \psi)$ with randomness $rcm$
+    /// Commits to $(pk, v, \psi)$ with randomness $rcm$:
+    ///
+    /// $cm = \text{Poseidon}(rcm, pk, v, \psi)$
+    ///
+    /// Domain separation is implicit via `ConstantLength<4>`.
     #[must_use]
-    pub fn commit(self, _v: Value, _pk: &PaymentKey, _psi: &NullifierTrapdoor) -> Commitment {
-        // TODO: Implement note commitment
-        // $cm = \text{NoteCommit}_{rcm}(\text{"z.cash:Tachyon-NoteCommit"}, pk \| v \|
-        // \psi)$ This stub returns Fp::ZERO for every note, making all output
-        // tachygrams identical.
-        todo!("note commitment");
-        Commitment::from(Fp::ZERO)
+    pub fn commit(self, v: Value, pk: &PaymentKey, psi: &NullifierTrapdoor) -> Commitment {
+        let rcm_fp = primitives::fq_to_fp(self.0);
+        let pk_fp: Fp = pk.0;
+        let v_fp = Fp::from(Into::<u64>::into(v));
+        let psi_fp: Fp = (*psi).into();
+        Commitment::from(primitives::hash_4(rcm_fp, pk_fp, v_fp, psi_fp))
     }
 
     /// Generate a fresh random trapdoor.
@@ -176,21 +179,9 @@ impl Note {
     ///
     /// The same note at different flavors produces different nullifiers.
     #[must_use]
-    pub fn nullifier(&self, _nk: &NullifierKey, _flavor: Epoch) -> Nullifier {
-        // TODO: GGM tree PRF nullifier derivation
-        //   mk = Poseidon(self.psi, nk.inner())
-        //   for i in 0..GGM_TREE_DEPTH:
-        //       bit = (flavor_int >> i) & 1
-        //       node = Poseidon(node, bit)
-        //   nf = final node
-        //
-        // Requires native Poseidon with parameters matching the circuit Sponge.
-        //
-        // CORRECTNESS: the crate-local `todo!` macro prints and continues
-        // (does not panic). This stub returns Fp::ZERO for every note,
-        // making all spend nullifiers identical (double-spend detection broken).
-        todo!("GGM tree PRF nullifier derivation");
-        Nullifier::from(Fp::ZERO)
+    pub fn nullifier(&self, nk: &NullifierKey, flavor: Epoch) -> Nullifier {
+        let mk = nk.derive_note_private(&self.psi);
+        mk.derive_nullifier(flavor)
     }
 }
 
@@ -270,5 +261,36 @@ mod tests {
     #[should_panic(expected = "note value must not exceed maximum")]
     fn value_rejects_overflow() {
         let _val: Value = Value::from(NOTE_VALUE_MAX + 1);
+    }
+
+    /// Different trapdoors produce different commitments.
+    #[test]
+    fn distinct_rcm_distinct_commitments() {
+        let pk = PaymentKey(Fp::from(1u64));
+        let psi = NullifierTrapdoor::from(Fp::from(2u64));
+        let cm1 = CommitmentTrapdoor::from(Fq::from(3u64)).commit(Value::from(100u64), &pk, &psi);
+        let cm2 = CommitmentTrapdoor::from(Fq::from(4u64)).commit(Value::from(100u64), &pk, &psi);
+        assert_ne!(cm1, cm2);
+    }
+
+    /// `Note::nullifier` delegates correctly to key derivation.
+    #[test]
+    fn note_nullifier_matches_key_derivation() {
+        use crate::keys::private::SpendingKey;
+        use crate::primitives::Epoch;
+
+        let sk = SpendingKey::from([0x42u8; 32]);
+        let nk = sk.derive_nullifier_private();
+        let psi = NullifierTrapdoor::from(Fp::from(99u64));
+        let note = Note {
+            pk: sk.derive_payment_key(),
+            value: Value::from(100u64),
+            psi,
+            rcm: CommitmentTrapdoor::from(Fq::ZERO),
+        };
+        let flavor = Epoch::from(5u32);
+
+        let mk = nk.derive_note_private(&psi);
+        assert_eq!(note.nullifier(&nk, flavor), mk.derive_nullifier(flavor));
     }
 }

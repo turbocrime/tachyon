@@ -1,47 +1,37 @@
 use core::{iter, ops};
 
-use pasta_curves::{
-    EpAffine,
-    arithmetic::CurveExt as _,
-    group::{GroupEncoding as _, prime::PrimeCurveAffine as _},
-    pallas,
-};
+use ff::{Field as _, PrimeField as _};
+use pasta_curves::Fp;
 
 use crate::{Action, action::Plan as ActionPlan, keys::public, value};
 
-/// Digest a single action's `(cv, rk)` pair.
+/// Convert a 32-byte representation to `Fp` via `from_raw` (auto-reduces).
+fn bytes_to_fp(bytes: &[u8; 32]) -> Fp {
+    let mut limbs = [0u64; 4];
+    for (i, chunk) in bytes.chunks_exact(8).enumerate() {
+        limbs[i] = u64::from_le_bytes(chunk.try_into().expect("8-byte chunk"));
+    }
+    Fp::from_raw(limbs)
+}
+
+/// Digest a single action's `(cv, rk)` pair via Poseidon.
 ///
-/// The digest may be accumulated via point addition (commutative,
+/// The digest may be accumulated via field addition (commutative,
 /// order-independent).
-///
-/// ## This Is A Placeholder
-///
-/// Currently uses `pallas::Point::hash_to_curve`. The final implementation
-/// should use a Poseidon-based multiset hash.  Poseidon is desired because the
-/// Ragu leaf circuit will compute this digest inside the SNARK proof, where
-/// hash-to-curve (SWU map) would be prohibitively expensive.
-///
-/// Only the body of this function will change; the [`ActionDigest`] type, its
-/// `Add`/`Sum` impls, serialization, and all call sites remain the same.
 #[must_use]
-fn digest_action(cv: value::Commitment, rk: public::ActionVerificationKey) -> EpAffine {
-    let hasher = pallas::Point::hash_to_curve("just pretend this is poseidon");
+fn digest_action(cv: value::Commitment, rk: public::ActionVerificationKey) -> Fp {
     let cv_bytes: [u8; 32] = cv.into();
     let rk_bytes: [u8; 32] = rk.into();
-    let msg = [cv_bytes, rk_bytes].concat();
-    let hash = hasher(&msg);
-    hash.into()
+    super::hash_2(bytes_to_fp(&cv_bytes), bytes_to_fp(&rk_bytes))
 }
 
 /// Order-independent digest of one or more actions.
 ///
-/// Each action's $(\mathsf{cv}, \mathsf{rk})$ pair is hashed. Multiple digests
-/// combine via point addition (commutative):
+/// Each action's $(\mathsf{cv}, \mathsf{rk})$ pair is hashed to a field
+/// element via Poseidon. Multiple digests combine via field addition
+/// (commutative):
 ///
-/// $$\mathsf{action\_acc} = \sum_i P_i$$
-///
-/// A single action's hash output is a one-element digest; an accumulated sum is
-/// a multi-element digest. Both have the same type.
+/// $$\mathsf{action\_acc} = \sum_i H_i$$
 ///
 /// ## Dual role
 ///
@@ -53,19 +43,11 @@ fn digest_action(cv: value::Commitment, rk: public::ActionVerificationKey) -> Ep
 ///
 /// The verifier computes $\mathsf{action\_acc}$ once and uses it for both
 /// checks, so a modified action breaks both the sighash and the stamp.
-///
-/// ## Hash function
-///
-/// Currently uses hash-to-curve as a placeholder. The final
-/// implementation will use Poseidon (see [`digest_action`] for
-/// details). The type, traits, and call sites are stable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ActionDigest(EpAffine);
+pub struct ActionDigest(Fp);
 
 impl ActionDigest {
     /// Digest a single action's $(\mathsf{cv}, \mathsf{rk})$ pair.
-    ///
-    /// See [`digest_action`] for the hash function.
     #[must_use]
     pub fn new(cv: value::Commitment, rk: public::ActionVerificationKey) -> Self {
         Self(digest_action(cv, rk))
@@ -94,22 +76,22 @@ impl ops::Add for ActionDigest {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self::Output {
-        Self((self.0 + rhs.0).into())
+        Self(self.0 + rhs.0)
     }
 }
 
 impl iter::Sum for ActionDigest {
-    /// $\sum_i P_i$ — point addition over all action digests.
-    /// Identity element is the point at infinity.
+    /// $\sum_i H_i$ — field addition over all action digests.
+    /// Identity element is zero.
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Self(EpAffine::identity()), |acc, digest| acc + digest)
+        iter.fold(Self(Fp::ZERO), |acc, digest| acc + digest)
     }
 }
 
 #[expect(clippy::from_over_into, reason = "restrict conversion")]
 impl Into<[u8; 32]> for ActionDigest {
     fn into(self) -> [u8; 32] {
-        self.0.to_bytes()
+        self.0.to_repr()
     }
 }
 
@@ -117,9 +99,8 @@ impl TryFrom<&[u8; 32]> for ActionDigest {
     type Error = &'static str;
 
     fn try_from(bytes: &[u8; 32]) -> Result<Self, Self::Error> {
-        EpAffine::from_bytes(bytes)
-            .into_option()
-            .ok_or("invalid curve point")
+        Option::from(Fp::from_repr(*bytes))
+            .ok_or("invalid field element")
             .map(Self)
     }
 }
@@ -184,6 +165,6 @@ mod tests {
         let (cv_a, rk_a) = make_action_parts(&mut rng, &sk, 1000, Fp::ZERO, Fq::ZERO);
         let (cv_b, rk_b) = make_action_parts(&mut rng, &sk, 700, Fp::ONE, Fq::ONE);
 
-        assert_ne!(ActionDigest::new(cv_a, rk_a), ActionDigest::new(cv_b, rk_b),);
+        assert_ne!(ActionDigest::new(cv_a, rk_a), ActionDigest::new(cv_b, rk_b));
     }
 }
