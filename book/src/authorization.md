@@ -146,7 +146,85 @@ If the values don't balance, the $\mathcal{V}$ term survives and the signer cann
 
 ## End-to-end Flow
 
-The following diagram traces the complete authorization pipeline across trust boundaries.
+A bundle plan feeds three independent paths that converge in the final bundle.
+Each path consumes the same action plans but produces a different component of the bundle:
+
+- **Proving** — each action plan yields a leaf stamp; leaves merge into a single Ragu PCD stamp.
+- **Signing** — custody derives $\mathsf{rsk}$ per spend action and signs the transaction sighash; output actions are signed by the user device.
+- **Binding** — the bundle commitment (from $\mathsf{action\_acc}$ and $\mathsf{v\_balance}$) feeds into the transaction sighash, which the binding key signs.
+
+Consensus recomputes $\mathsf{action\_acc}$ from the visible actions and checks it against both the sighash (via the bundle commitment) and the stamp (via the PCD header).
+A modified action breaks both checks.
+
+```mermaid
+flowchart LR
+    style proving fill:#ff000010,stroke:none
+    style authorization fill:#ff000010,stroke:none
+    style binding fill:#ff000010,stroke:none
+
+    style custody fill:#00ff0010
+    style prover fill:#00ff0010
+
+    style pczt fill:#0000ff10
+    style tx fill:#0000ff10
+
+
+    subgraph pczt[partial tx]
+        subgraph bundle_plan["bundle plan"]
+            action_plan@{ shape: st-rect, label: "action plan" }
+            value_balance
+        end
+        other1@{ shape: st-doc, label: "other tx data" } 
+    end
+    pczt ~~~ sighash{sighash}
+    bundle_plan & other1 === sighash 
+
+
+    value_balance --> value_balance_2[value_balance]
+
+    subgraph tx[complete tx]
+        subgraph bundle["stamped bundle"]
+            value_balance_2[value_balance]
+            action@{ shape: st-rect }
+            binding_sig
+            stamp
+        end
+        other2@{ shape: st-doc, label: "other tx data" }
+    end
+
+
+
+    subgraph proving["proving flow"]
+        leaf@{ shape: st-rect, label: "leaf" }
+        subgraph prover["proving device"]
+            merge((merge))
+        end
+    end
+    action_plan --- leaf --- merge --> stamp
+
+
+    sighash ~~~ binding
+    subgraph binding["binding flow"]
+        bsk 
+        sign_binding_sig(("sign"))
+    end
+    action_plan & value_balance --- bsk --- sign_binding_sig ==> binding_sig
+    sighash === sign_binding_sig
+
+    sighash ~~~ authorization
+    subgraph authorization["authorization flow"]
+        subgraph custody["custody device"]
+            rsk@{ shape: st-rect }
+            sign_action((("sign")))
+        end
+    end
+    sighash === sign_action
+    action_plan --- rsk --- sign_action ==> action
+
+    other1 --> other2
+    pczt ~~~ sighash
+```
+
 Transaction construction is split into three phases: **assembly** (create action plans with $\mathsf{rk}$ and $\mathsf{rcv}$; $\mathsf{cv}$ is derived on demand), **commitment** (derive $\mathsf{cv}$ from each plan and compute the bundle commitment), and **authorization** (custody independently derives $\mathsf{cv}$, computes the sighash, and signs spend actions).
 Signing and stamping run in parallel — stamping depends only on the action plans and anchor, not on signatures or the sighash.
 
@@ -281,3 +359,4 @@ break
     note over Consensus: verify stamp(tachygram_acc, action_acc, anchor)
 end
 ```
+

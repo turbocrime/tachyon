@@ -422,6 +422,73 @@ mod tests {
         stripped.verify_signatures(&sighash).unwrap();
     }
 
+    /// The plan commitment and the built bundle commitment must agree.
+    #[test]
+    fn plan_commitment_matches_bundle_commitment() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let sk = private::SpendingKey::from([0x42u8; 32]);
+        let pak = sk.derive_proof_private();
+
+        let spend_note = Note {
+            pk: sk.derive_payment_key(),
+            value: note::Value::from(500u64),
+            psi: note::NullifierTrapdoor::from(Fp::ZERO),
+            rcm: note::CommitmentTrapdoor::from(Fq::ZERO),
+        };
+        let output_note = Note {
+            pk: sk.derive_payment_key(),
+            value: note::Value::from(200u64),
+            psi: note::NullifierTrapdoor::from(Fp::ONE),
+            rcm: note::CommitmentTrapdoor::from(Fq::ONE),
+        };
+
+        let spend_rcv = value::CommitmentTrapdoor::random(&mut rng);
+        let output_rcv = value::CommitmentTrapdoor::random(&mut rng);
+        let theta_spend = ActionEntropy::random(&mut rng);
+        let theta_output = ActionEntropy::random(&mut rng);
+
+        let spend_plan = action::Plan::spend(spend_note, theta_spend, spend_rcv, pak.ak());
+        let output_plan = action::Plan::output(output_note, theta_output, output_rcv);
+        let value_balance: i64 = 300;
+
+        let bundle_plan = Plan::new(vec![spend_plan, output_plan], value_balance);
+        let plan_commitment = bundle_plan.commitment();
+
+        // Materialize actions from the same plans
+        let bundle: Stamped = Bundle {
+            actions: vec![
+                Action {
+                    cv: spend_plan.cv(),
+                    rk: spend_plan.rk,
+                    sig: action::Signature::from([0u8; 64]),
+                },
+                Action {
+                    cv: output_plan.cv(),
+                    rk: output_plan.rk,
+                    sig: action::Signature::from([0u8; 64]),
+                },
+            ],
+            value_balance,
+            binding_sig: Signature::from([0u8; 64]),
+            stamp: Stamp::prove_action(
+                &ActionPrivate {
+                    alpha: ActionRandomizer::from(theta_spend.spend_randomizer(&spend_note.commitment())),
+                    note: spend_note,
+                    rcv: spend_rcv,
+                },
+                &Action {
+                    cv: spend_plan.cv(),
+                    rk: spend_plan.rk,
+                    sig: action::Signature::from([0u8; 64]),
+                },
+                Anchor::from(Fp::ZERO),
+                &pak,
+            ),
+        };
+
+        assert_eq!(plan_commitment, bundle.commitment());
+    }
+
     /// A tampered action signature must cause verification to fail.
     #[test]
     fn invalid_action_sig_fails_verification() {
