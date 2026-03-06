@@ -3,82 +3,97 @@
 A Tachyon bundle requires three layers of authorization: per-action signatures that bind each tachyaction to its tachygram, value commitments that hide individual values while preserving their algebraic sum, and a binding signature that proves the declared balance is correct.
 This chapter covers each layer, then shows the complete flow from action creation through consensus.
 
-## Per-action Signing
+## Actions
 
 Each tachyaction requires a fresh randomized key pair.
-The authorization flow starts with per-action entropy $\theta$ and diverges based on whether the action is a spend or output.
+
+The planner begins authorization by selecting arbitrary `theta` and a relevant note for each action. The custody device is provided each note and `theta` so it may independently confirm planning work.
 
 ```mermaid
 flowchart TB
-    theta["theta (ActionEntropy)"]
+    theta["theta (per-action entropy)"]
     cm["cm (note commitment)"]
     hash(("hash(theta, cm)"))
 
-    theta & cm --- hash 
-    
-    hash -->|"Tachyon-Spend"| spend_alpha 
+    theta & cm --- hash
+
+    hash -->|"Tachyon-Spend"| spend_alpha
     hash -->|"Tachyon-Output"| output_alpha
 
-    spend_alpha["alpha (SpendRandomizer)"]
-    output_alpha["alpha (OutputRandomizer)"]
+    spend_alpha -->|"rk = ak + [alpha]G"| plan
+    output_alpha -->|"rk = [alpha]G"| plan
 
-    spend_alpha -->|"rsk = ask.derive(alpha)"| rsk
+    plan["action plan { rk, note, theta, rcv, effect }"]
+    plan ===|"bundle digest"| sighash((sighash))
 
-    output_alpha -->|"rsk = alpha"| rsk -->|"rsk.sign(cv, rk)"| action(cv, rk, sig)
+    spend_alpha -->|"rsk = ask + alpha"| sign
+    sighash ==> sign
+    output_alpha -->|"rsk = alpha"| sign
+
+    sign(("sign(rsk, sighash)"))
+    sign --- action["action { cv, rk, sig }"]
 ```
 
-### ActionEntropy ($\theta$)
 
-32 bytes of randomness chosen by the signer.
-Combined with a note commitment to deterministically derive the randomizer $\alpha$:
+The arbitrary entropy `theta` which combines with note commitment `cm` to deterministically produce the randomizer `alpha`:
 
-$$\alpha_{\text{spend}} = \text{ToScalar}(\text{BLAKE2b-512}(\text{"Tachyon-Spend"},\; \theta \| \mathsf{cm}))$$
+$$ \alpha_{\text{spend}} = \text{BLAKE2b-512}_\text{Tachyon-Spend}(\theta \| \mathsf{cm}) $$
+$$ \alpha_{\text{output}} = \text{BLAKE2b-512}_\text{Tachyon-Output}(\theta \| \mathsf{cm}) $$
 
-$$\alpha_{\text{output}} = \text{ToScalar}(\text{BLAKE2b-512}(\text{"Tachyon-Output"},\; \theta \| \mathsf{cm}))$$
 
-Distinct personalizations prevent the same $(\theta, \mathsf{cm})$ pair from producing identical $\alpha$ values for spend and output actions.
+Actions are signed with a unique per-action `rsk` signing key.
+Spends and outputs have different relationships between `alpha` and `rsk`, but in both cases,
+the action's published `rk` validating key is the public counterpart of `rsk`.
 
-This design enables **hardware wallet signing without proof construction**: the hardware wallet holds $\mathsf{ask}$ and $\theta$, signs with $\mathsf{rsk} = \mathsf{ask} + \alpha$, and a separate device constructs the proof later using $\theta$ and $\mathsf{cm}$ to recover $\alpha$.
+$$ \mathsf{rk} = [\mathsf{rsk}]\,\mathcal{G} $$
 
-### Spend vs Output
 
-Both paths produce $(\mathsf{rk}, \text{sig})$ — the per-action verification key and its signature.
-The randomizer $\alpha$ is retained separately as a proof witness.
-Internally, $\mathsf{rsk}$ is derived and used for signing, but never exposed.
+### Spend
 
-**Spend** — requires spending authority:
+Derivation of spend `rsk` is rerandomization of spending authority `ask`:
 
-$$\mathsf{rsk} = \mathsf{ask} + \alpha$$
+$$ \mathsf{rsk} = \mathsf{ask} + \alpha $$
+$$ \mathsf{rk} = [\mathsf{ask} + \alpha]\,\mathcal{G}$$
 
-The resulting $\mathsf{rk} = \mathsf{ak} + [\alpha]\,\mathcal{G}$ is a re-randomization of the spend validating key.
-The custody device derives $\alpha$ from $(\theta, \mathsf{cm})$, computes $\mathsf{rsk}$, signs, and returns $(\mathsf{rk}, \text{sig})$.
-The user device independently derives the same $\alpha$ for the proof witness.
+Conveniently, `rk` is also possible to derive from validating `ak`.
+The rerandomization of a validating key is equivalent to derivation of a validating key from the rerandomized authority:
 
-**Output** — no spending authority needed:
+$$ \mathsf{rk} = \mathsf{ak} + [\alpha]\,\mathcal{G} $$
 
-$$\mathsf{rsk} = \alpha$$
+So during planning, the planning device obtains `rk` from the validating `ak`.
+Then during authorization, the custody device is able to confirm correctness of `rk`, and sign the spend action with its private `rsk`.
 
-The resulting $\mathsf{rk} = [\alpha]\,\mathcal{G}$ is a re-randomization of the generator itself.
-No custody device is involved.
+### Output
 
-Both produce an $\mathsf{rk}$ that can verify a signature, but only the spend's $\mathsf{rk}$ requires knowledge of $\mathsf{ask}$.
-This unification lets consensus treat all tachyactions identically.
+An output `rsk` is simply equal to `alpha`. No authority needed:
 
-### Action sighash
+$$ \mathsf{rsk} = \alpha $$
+$$ \mathsf{rk} = [\alpha]\,\mathcal{G} $$
 
-Each tachyaction carries a RedPallas signature over a domain-separated hash of the action's public data:
+Then during authorization, the custody device is able to confirm correctness of `rk`, before signing any spends.
 
-$$\text{sighash} = \text{BLAKE2b-512}(\text{"Tachyon-SpendSig"},\; \mathsf{cv} \| \mathsf{rk})$$
+## Bundle commitment
 
-The signature binds ($\mathsf{cv}$, $\mathsf{rk}$) together.
-Since $\mathsf{rk}$ is itself a commitment to $\mathsf{cm}$ (via $\alpha$'s derivation from $\theta$ and $\mathsf{cm}$), the signature transitively binds the action to its tachygram without the tachygram appearing in the action.
+The bundle commitment is a digest of the bundle's effect.
 
-| Key            | Lifetime   | Can sign? | Can verify? |
-| -------------- | ---------- | --------- | ----------- |
-| $\mathsf{ask}$ | Long-lived | No        | —           |
-| $\mathsf{ak}$  | Long-lived | —         | No          |
-| $\mathsf{rsk}$ | Per-action | **Yes**   | —           |
-| $\mathsf{rk}$  | Per-action | —         | **Yes**     |
+
+$$ \mathsf{action\_acc} = \sum_i H(\mathsf{cv}_i \| \mathsf{rk}_i) $$
+$$ \text{BLAKE2b-512}_\text{Tachyon-BndlHash}( \mathsf{action\_acc} \| \mathsf{value\_balance}) $$
+
+The accumulator is order-independent (addition is commutative), so the bundle commitment does not depend on action ordering.
+
+
+The stamp is excluded because it is stripped during [aggregation](./aggregation.md).
+The same `action_acc` appears in the Ragu PCD stamp header, binding the stamp to the same set of actions as the signatures.
+
+### Transaction sighash
+
+All signatures (action and binding) sign the same transaction-wide sighash.
+The sighash is computed at the transaction layer, incorporating the bundle commitment from each pool (transparent, sapling, orchard, tachyon).
+The tachyon crate contributes its bundle commitment; a transaction-level crate computes the sighash and passes it in as opaque bytes.
+
+This binds every signature to the complete set of effecting data across all pools.
+Since `rk` is itself a commitment to `cm` (via `alpha`'s derivation from `theta` and `cm`), the signature transitively binds each action to its tachygram without the tachygram appearing in the action.
 
 ## Value Balance
 
@@ -86,14 +101,16 @@ Tachyon uses Pedersen commitments on the Pallas curve for value hiding:
 
 $$\mathsf{cv} = [v]\,\mathcal{V} + [\mathsf{rcv}]\,\mathcal{R}$$
 
-where $v$ is the signed integer value (positive for spends, negative for outputs) and $\mathsf{rcv}$ is a random trapdoor in $\mathbb{F}_q$.
+where $v$ is the signed integer value (positive for spends, negative for outputs) and `rcv` is a random[^rcv-note] trapdoor in $\mathbb{F}_q$.
 
-$\mathsf{rcv}$ is currently sampled as a uniformly random scalar (`Fq::random`). This derivation may be revised in the future to incorporate a hash of the note commitment or other action-specific data.
+[^rcv-note]: `rcv` is currently sampled as a uniformly random scalar (`Fq::random`). This derivation may be revised in the future to incorporate a hash of the note commitment or other action-specific data.
 
-The generators $\mathcal{V}$ and $\mathcal{R}$ are shared with Orchard, derived from the domain `z.cash:Orchard-cv`.
-This reuse is intentional — the binding signature scheme uses `reddsa::orchard::Binding` which hardcodes $\mathcal{R}$ as its basepoint.
+The generators $\mathcal{V}$ and $\mathcal{R}$ are shared with Orchard, derived from the domain `z.cash:Orchard-cv`.[^generator-todo]
 
-### Homomorphic property
+[^generator-todo]: The binding signature scheme uses `reddsa::orchard::Binding` which hardcodes $\mathcal{R}$ as its basepoint. We should consider defining a unique personalization.
+
+
+### Binding signature
 
 The sum of value commitments preserves the algebraic structure:
 
@@ -101,139 +118,242 @@ $$\sum_i \mathsf{cv}_i = \bigl[\sum_i v_i\bigr]\,\mathcal{V} + \bigl[\sum_i \mat
 
 This enables the binding signature scheme to prove value balance without revealing individual values.
 
-### Binding signature
+The binding signature proves that the bundle's value commitments are consistent with the declared `value_balance`.
 
-The binding signature proves that the transaction's value commitments sum to the declared balance.
+**Planner** knows every `rcv` and computes `bsk`:
 
-The signer knows all value commitment trapdoors and computes their sum:
+$$\mathsf{bsk} = \sum_i \mathsf{rcv}_i$$
 
-$$\mathsf{bsk} = \boxplus_i \mathsf{rcv}_i$$
+The planner signs the transaction sighash to produce `binding_sig` directly, without custody assistance.
 
-This is the discrete log of $\mathsf{bvk}$ with respect to $\mathcal{R}$:
+**Validators** know the claimed `value_balance` and each published action `cv`. Validators reconstruct the corresponding public key:
 
-$$\mathsf{bvk} = \bigl(\bigoplus_i \mathsf{cv}_i\bigr) \ominus \text{ValueCommit}_0(\mathsf{v\_balance})$$
+$$\mathsf{bvk} = \sum_i \mathsf{cv}_i - [\mathsf{value\_balance}]\,\mathcal{V}$$
 
-$$= \bigl[\sum_i v_i - \mathsf{v\_balance}\bigr]\,\mathcal{V} + \bigl[\sum_i \mathsf{rcv}_i\bigr]\,\mathcal{R}$$
+Expanding the commitments $\mathsf{cv}_i = [v_i]\,\mathcal{V} + [\mathsf{rcv}_i]\,\mathcal{R}$:
 
-$$= [0]\,\mathcal{V} + [\mathsf{bsk}]\,\mathcal{R} \qquad (\text{when } \sum_i v_i = \mathsf{v\_balance})$$
+$$\mathsf{bvk} = \bigl[\sum_i v_i - \mathsf{value\_balance}\bigr]\,\mathcal{V} + \bigl[\sum_i \mathsf{rcv}_i\bigr]\,\mathcal{R}$$
 
-The binding signature proves knowledge of $\mathsf{bsk}$, which is an opening of the Pedersen commitment $\mathsf{bvk}$ to value 0.
-By the binding property of the commitment scheme, it is infeasible to find another opening to a different value — so value balance is enforced.
+When $\sum_i v_i = \mathsf{value\_balance}$, the $\mathcal{V}$ component vanishes:
 
-The validator recomputes $\mathsf{bvk}$ from public data (action value commitments and declared value balance) and verifies:
+$$\mathsf{bvk} = [\mathsf{bsk}]\,\mathcal{R}$$
 
-$$\text{BindingSig.Validate}_{\mathsf{bvk}}(\text{sighash}, \text{bindingSig}) = 1$$
+If the values don't balance, the $\mathcal{V}$ term survives. So,
 
-### Binding sighash
+- If the sum of committed values doesn't truly equal the public balance, the signer cannot produce a valid signature.
+- If a valid signature was produced and then the committed values or the public balance were modified, the validator can't confirm the valid signature.
 
-Tachyon signs:
+## Simplified Flow
 
-$$\text{sighash} = \text{BLAKE2b-512}(\text{"Tachyon-BindHash"},\; \mathsf{v\_balance} \| \mathsf{sig}_1 \| \cdots \| \mathsf{sig}_n)$$
+A bundle plan feeds three independent paths that converge in the final bundle.
+Each path consumes the same action plans but produces a different component of the bundle:
 
-This differs from Orchard's `SIGHASH_ALL` transaction hash because:
+- **Authorizing**: custody derives `rsk` per spend action and signs the transaction sighash; output actions are signed by the user device.
+- **Binding**: the bundle commitment (from `action_acc` and `value_balance`) feeds into the transaction sighash, which the binding key signs.
+- **Proving**: each action plan yields a leaf stamp; leaves merge into a single Ragu PCD stamp.
 
-- Action signatures already bind $\mathsf{cv}$ and $\mathsf{rk}$ via $H(\text{"Tachyon-SpendSig"},\; \mathsf{cv} \| \mathsf{rk})$
-- The binding signature must be computable without the full transaction
-- The stamp is excluded because it is stripped during [aggregation](./aggregation.md)
+```mermaid
+flowchart LR
+    style proving fill:#ff000010,stroke:none
+    style authorization fill:#ff000010,stroke:none
+    style binding fill:#ff000010,stroke:none
 
-## End-to-end Flow
+    style custody fill:#00ff0010
+    style prover fill:#00ff0010
 
-The following diagram traces the complete authorization pipeline across trust boundaries: action construction and signing on the user device (with custody device involvement for spends), proof construction and stamping, and finally binding and submission to consensus.
+    style pczt fill:#0000ff10
+    style tx fill:#0000ff10
 
-A single user device may act as custody and stamper, but the trust boundary is only required to cover custody and the user device.
+
+    subgraph pczt[partial tx]
+        subgraph bundle_plan["bundle plan"]
+            action_plan@{ shape: st-rect, label: "action plan" }
+            value_balance
+        end
+        other1@{ shape: st-doc, label: "other tx data" } 
+    end
+    pczt ~~~ sighash{sighash}
+    bundle_plan & other1 === sighash 
+
+
+    value_balance --> value_balance_2[value_balance]
+
+    subgraph tx[complete tx]
+        subgraph bundle["stamped bundle"]
+            value_balance_2[value_balance]
+            action@{ shape: st-rect }
+            binding_sig
+            stamp
+        end
+        other2@{ shape: st-doc, label: "other tx data" }
+    end
+
+
+
+    subgraph proving["proving flow"]
+        leaf@{ shape: st-rect, label: "leaf" }
+        subgraph prover["proving device"]
+            merge((merge))
+        end
+    end
+    action_plan -.- leaf -.- merge -.- stamp
+
+
+    sighash ~~~ binding
+    subgraph binding["binding flow"]
+        bsk 
+        sign_binding_sig(("sign"))
+    end
+    action_plan & value_balance --- bsk --- sign_binding_sig ==> binding_sig
+    sighash === sign_binding_sig
+
+    sighash ~~~ authorization
+    subgraph authorization["authorizing flow"]
+        subgraph custody["custody device"]
+            rsk@{ shape: st-rect }
+            sign_action((("sign")))
+        end
+    end
+    sighash === sign_action
+    action_plan --- rsk --- sign_action ==> action
+
+    other1 --> other2
+    pczt ~~~ sighash
+```
+
+Consensus recomputes `action_acc` from the visible actions and checks it against both the sighash (via the bundle commitment) and the stamp (via the PCD header).
+
+A modified action breaks both checks.
+
+## Detailed Sequence
 
 ```mermaid
 sequenceDiagram
 
-box Trust Boundary
-    participant Custody
-    participant User
-end
+actor User
 
-rect rgb(255, 0, 255, 0.1)
 activate User
 
-loop per action
+    note over User: select/create notes { pk, psi, rcm, v }
 
-    note over User: random rcv
+rect rgb(100, 149, 237, 0.1)
+    loop per action
 
-    alt spend
-      note over User: use note { pk, psi, rcm, v }
-      note over User: cv = rcv.commit(v)
-    else output
-      note over User: select rcm
-      note over User: create note { pk, psi, rcm, v }
-      note over User: cv = rcv.commit(-v)
-    end
-    note over User: cm = rcm.commit(pk, psi, v)
-
-    note over User: random theta
-    alt spend
-        User ->> Custody: cv, theta, cm
-        note over Custody: alpha = theta.derive(cm)
-        note over Custody: rsk = ask.randomize(alpha)
-        note over Custody: rk = public(rsk)
-        note over Custody: sig = rsk.sign(digest(cv, rk))
-        destroy Custody
-        Custody ->> User: rk, sig
-    else output
-        note over User: alpha = theta.derive(cm)
-        note over User: rk = public(alpha)
-        note over User: sig = alpha.sign(digest(cv, rk))
-    end
-    note over User: rcv, alpha, action { cv, rk, sig }
-end
-
-note over User: select anchor
-
-loop per action
-  critical anchor, rcv, alpha, action { cv, rk, sig }, pak { ak, nk }, note { pk, psi, rcm, v }
-        note over User: is_spend = cv == rcv.commit(v)
-        note over User: is_output = cv == rcv.commit(-v)
-        User --> User: is_spend XOR is_output
-        alt rk == ak.randomize(alpha)
-            User --> User: rk == ak.randomize(alpha)
-            note over User: flavor = epoch(anchor)
-            note over User: nf = nk.derive(psi, flavor)
-            note over User: tachygram_acc = nf
+        note over User: random theta
+        note over User: random rcv
+        note over User: cm = NoteCommit(pk, psi, rcm, v)
+        alt spend
+            note over User: alpha = Blake2b("Tachyon-Spend", theta || cm)
+            note over User: rk = ak + [alpha]G
+            note over User: cv = ValueCommit(v, rcv)
         else output
-            User --> User: rk == public(alpha)
-            note over User: cm = rcm.commit(pk, psi, v)
-            note over User: tachygram_acc = cm
+            note over User: alpha = Blake2b("Tachyon-Output", theta || cm)
+            note over User: rk = [alpha]G
+            note over User: cv = ValueCommit(-v, rcv)
         end
-        note over User: action_acc = digest(cv, rk)
-        note over User: pcd: leaf stamp(action_acc, tachygram_acc, anchor)
+        note over User: action_plan { rk, note, theta, rcv, effect }
+    end
+
+    note over User: bundle_plan { action_plan[], value_balance }
+
+
+end
+
+loop per output action
+    note over User: sig = Sign(alpha, sighash)
+end
+note over User: bsk = Sum rcv_i
+note over User: binding_sig = Sign(bsk, sighash)
+
+
+par Authorizing
+    rect rgb(255, 165, 0, 0.1)
+
+        create participant Custody@{ type: "boundary" }
+
+        User ->> Custody: bundle_plan, binding_sig, output_sigs, tx etc
+
+        loop per action
+            alt spend
+                note over Custody: cv = ValueCommit(v, rcv)
+            else output
+                note over Custody: cv = ValueCommit(-v, rcv)
+            end
+            note over Custody: action_digest = H(cv || rk)
+        end
+        note over Custody: action_acc = Sum action_digest_i
+        note over Custody: bundle_commitment = Blake2b("Tachyon-BndlHash", action_acc || value_balance)
+        note over Custody: compute sighash
+
+        break
+            note over Custody: validate output_sigs
+            note over Custody: validate binding_sig
+        end
+
+        loop per spend action
+            note over Custody: alpha = Blake2b("Tachyon-Spend", theta || cm)
+            note over Custody: rsk = ask + alpha
+            note over Custody: sig = Sign(rsk, sighash)
+        end
+        destroy Custody
+        Custody -->> User: action_sigs, tx sigs
+        note over User: apply signatures
+    end
+
+and Proving 
+    rect rgb(138, 43, 226, 0.1)
+        note over User: select anchor
+
+        loop per action
+        critical anchor, action plan { rk, note, theta, rcv, effect }, pak { ak, nk }
+                alt effect == spend
+                    User --> User: rk == ak + [alpha]G
+                    note over User: flavor = epoch(anchor)
+                    note over User: tachygram_acc = PRF(nk, psi, flavor)
+                else effect == output
+                    User --> User: rk == [alpha]G
+                    note over User: tachygram_acc = NoteCommit(pk, psi, rcm, v)
+                end
+                note over User: action_acc = H(cv || rk)
+                note over User: pcd: leaf stamp(action_acc, tachygram_acc, anchor)
+            end
+        end
+
+        create participant Stamper
+        User ->> Stamper: leaf stamps, tachygrams
+
+
+        loop while stamps > 1
+            critical left(action_acc, tachygram_acc, anchor), right(action_acc, tachygram_acc, anchor)
+                note over Stamper: action_acc = union(left.action_acc, right.action_acc)
+                note over Stamper: tachygram_acc = union(left.tachygram_acc, right.tachygram_acc)
+                note over Stamper: anchor = intersect(left.anchor, right.anchor)
+                note over Stamper: pcd: stamp(action_acc, tachygram_acc, anchor)
+            end
+        end
+        destroy Stamper
+        Stamper ->> User: stamp(tachygram_acc, action_acc, anchor)
+
+        break
+            note over User: verify stamp(tachygram_acc, action_acc, anchor)
+        end
     end
 end
 
-participant Stamper
 
-User ->> Stamper: leaf stamps, actions { cv, rk, sig }, tachygrams
-loop while stamps > 1
-  critical left(action_acc, tachygram_acc, anchor), right(action_acc, tachygram_acc, anchor)
-      note over Stamper: action_acc = union(left.action_acc, right.action_acc)
-      note over Stamper: tachygram_acc = union(left.tachygram_acc, right.tachygram_acc)
-      note over Stamper: anchor = intersect(left.anchor, right.anchor)
-      note over Stamper: pcd: stamp(action_acc, tachygram_acc, anchor)
-  end
-end
-destroy Stamper
-Stamper ->> User: stamp(tachygram_acc, action_acc, anchor)
 
-break
-    note over User: verify stamp(tachygram_acc, action_acc, anchor)
-end
-note over User: bsk = sum(rcv_i)
-note over User: binding_sig = bsk.sign(actions, value_balance)
+create participant Consensus
+note over User: transaction { actions[], value_balance, binding_sig, stamp } 
 deactivate User
-end
-
-participant Consensus
 destroy User
-User ->> Consensus: actions[], value_balance, binding_sig, tachygrams, anchor, stamp
+User ->> Consensus: transaction
 break
-    note over Consensus: check action_sigs
-    note over Consensus: check binding_sig
+    note over Consensus: action_acc = Sum H(cv_i || rk_i)
+    note over Consensus: bundle_commitment = Blake2b("Tachyon-BndlHash", action_acc || value_balance)
+    note over Consensus: compute sighash
+    note over Consensus: check action sigs against sighash
+    note over Consensus: check binding sig against sighash
     note over Consensus: verify stamp(tachygram_acc, action_acc, anchor)
 end
 ```
+

@@ -65,10 +65,12 @@ impl Proof {
     ///   [\alpha]\,\mathcal{G}$
     /// - $\mathsf{nk}$: constrains nullifier correctness ($\mathsf{nf} =
     ///   F_{\text{KDF}(\psi, nk)}(\text{flavor})$)
+    // TODO: take `&[Action]` and `&[ActionPrivate]` instead of `Vec` —
+    // ownership is not needed. Deferred to the proof refactor.
     #[must_use]
     pub fn create(
-        _actions: &[Action],
-        _witnesses: &[ActionPrivate],
+        _actions: Vec<Action>,
+        _witnesses: Vec<ActionPrivate>,
         _anchor: &Anchor,
         _pak: &ProofAuthorizingKey,
     ) -> (Self, Vec<Tachygram>) {
@@ -106,10 +108,12 @@ impl Proof {
     /// and calls Ragu `verify(Pcd { proof, data: header })`. The proof
     /// only verifies against the header that matches the circuit's honest
     /// execution — a mismatched header causes verification failure.
+    // TODO: take `&[Action]` and `&[Tachygram]` instead of `Vec` —
+    // ownership is not needed. Deferred to the proof refactor.
     pub fn verify(
         &self,
-        _actions: &[Action],
-        _tachygrams: &[Tachygram],
+        _actions: Vec<Action>,
+        _tachygrams: Vec<Tachygram>,
         _anchor: Anchor,
     ) -> Result<(), ValidationError> {
         todo!("Ragu verification \u{2014} reconstruct the PCD header from public data");
