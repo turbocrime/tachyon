@@ -1,3 +1,5 @@
+use core::{error::Error, fmt};
+
 use ff::{Field as _, PrimeField as _};
 use halo2_poseidon::{ConstantLength, Hash, P128Pow5T3};
 use pasta_curves::{
@@ -46,13 +48,24 @@ fn digest_action(cv: Coordinates<EpAffine>, rk: Coordinates<EpAffine>) -> Action
 pub struct ActionDigest(Fp);
 
 /// Errors from action digest computation.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum ActionDigestError {
     /// The cv is the identity point, so the digest cannot be computed.
     IdentityCv,
     /// The rk is the identity point, so the digest cannot be computed.
     IdentityRk,
 }
+
+impl fmt::Display for ActionDigestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            | Self::IdentityCv => write!(f, "cv is the identity point"),
+            | Self::IdentityRk => write!(f, "rk is the identity point"),
+        }
+    }
+}
+
+impl Error for ActionDigestError {}
 
 impl ActionDigest {
     /// Digest a single action's $(\mathsf{cv}, \mathsf{rk})$ pair.
