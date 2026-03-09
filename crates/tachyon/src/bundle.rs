@@ -170,6 +170,7 @@ pub fn commit_bundle_digest(
 
 /// A complete bundle plan, awaiting authorization.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Plan {
     /// Action plans (spends and outputs, in order).
     pub actions: Vec<action::Plan>,
@@ -267,7 +268,8 @@ impl<S: StampState> Bundle<S> {
 /// $\text{BindingSig.Validate}_{\mathsf{bvk}}(\mathsf{sighash},
 ///   \text{bindingSig}) = 1$
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(clippy::field_scoped_visibility_modifiers, reason = "for internal use")]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Signature(pub(crate) reddsa::Signature<Binding>);
 
 impl From<[u8; 64]> for Signature {
@@ -279,57 +281,6 @@ impl From<[u8; 64]> for Signature {
 impl From<Signature> for [u8; 64] {
     fn from(sig: Signature) -> Self {
         sig.0.into()
-    }
-}
-
-// Custom serde implementation for binding Signature
-#[cfg(feature = "serde")]
-impl serde::Serialize for Signature {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let bytes: [u8; 64] = (*self).into();
-        serializer.serialize_bytes(&bytes)
-    }
-}
-
-#[cfg(feature = "serde")]
-#[expect(clippy::missing_trait_methods, reason = "serde defaults are correct")]
-impl<'de> serde::Deserialize<'de> for Signature {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use core::fmt;
-        use serde::de;
-
-        struct ByteArrayVisitor;
-
-        #[expect(clippy::missing_trait_methods, reason = "serde defaults are correct")]
-        impl de::Visitor<'_> for ByteArrayVisitor {
-            type Value = [u8; 64];
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("64 bytes")
-            }
-
-            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                if v.len() == 64 {
-                    let mut bytes = [0u8; 64];
-                    bytes.copy_from_slice(v);
-                    Ok(bytes)
-                } else {
-                    Err(E::invalid_length(v.len(), &self))
-                }
-            }
-        }
-
-        let bytes = deserializer.deserialize_bytes(ByteArrayVisitor)?;
-        Ok(Self::from(bytes))
     }
 }
 

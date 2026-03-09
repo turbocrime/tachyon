@@ -8,10 +8,7 @@ use std::sync::LazyLock;
 
 use ff::Field as _;
 use pasta_curves::{
-    Ep, EpAffine, Fq,
-    arithmetic::CurveExt as _,
-    group::{GroupEncoding as _, prime::PrimeCurveAffine as _},
-    pallas,
+    Ep, EpAffine, Fq, arithmetic::CurveExt as _, group::prime::PrimeCurveAffine as _, pallas,
 };
 use rand::{CryptoRng, RngCore};
 
@@ -107,6 +104,30 @@ impl Default for CommitmentTrapdoor {
     }
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for CommitmentTrapdoor {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use ff::PrimeField as _;
+
+        serializer.serialize_bytes(&self.0.to_repr())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for CommitmentTrapdoor {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use crate::serde_helpers::FqVisitor;
+
+        deserializer.deserialize_bytes(FqVisitor).map(Self)
+    }
+}
+
 #[expect(clippy::from_over_into, reason = "restrict conversion")]
 impl Into<Fq> for CommitmentTrapdoor {
     fn into(self) -> Fq {
@@ -131,7 +152,6 @@ impl Into<Fq> for CommitmentTrapdoor {
 ///
 /// An EpAffine (Pallas affine curve point, 32 compressed bytes).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[expect(clippy::field_scoped_visibility_modifiers, reason = "for internal use")]
 pub struct Commitment(pub(super) EpAffine);
 
 impl Commitment {
@@ -164,24 +184,6 @@ impl From<EpAffine> for Commitment {
     }
 }
 
-impl TryFrom<&[u8; 32]> for Commitment {
-    type Error = &'static str;
-
-    fn try_from(bytes: &[u8; 32]) -> Result<Self, Self::Error> {
-        EpAffine::from_bytes(bytes)
-            .into_option()
-            .ok_or("invalid curve point")
-            .map(Self)
-    }
-}
-
-#[expect(clippy::from_over_into, reason = "restrict conversion")]
-impl Into<[u8; 32]> for Commitment {
-    fn into(self) -> [u8; 32] {
-        self.0.to_bytes()
-    }
-}
-
 impl ops::Add for Commitment {
     type Output = Self;
 
@@ -206,7 +208,6 @@ impl iter::Sum for Commitment {
     }
 }
 
-// Custom serde implementation for Commitment
 #[cfg(feature = "serde")]
 impl serde::Serialize for Commitment {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -214,53 +215,20 @@ impl serde::Serialize for Commitment {
         S: serde::Serializer,
     {
         use group::GroupEncoding as _;
-        let bytes = self.0.to_bytes();
-        serializer.serialize_bytes(&bytes)
+
+        serializer.serialize_bytes(&self.0.to_bytes())
     }
 }
 
 #[cfg(feature = "serde")]
-#[expect(clippy::missing_trait_methods, reason = "serde defaults are correct")]
 impl<'de> serde::Deserialize<'de> for Commitment {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        use core::fmt;
-        use group::GroupEncoding as _;
-        use serde::de;
+        use crate::serde_helpers::EpAffineVisitor;
 
-        struct ByteArrayVisitor;
-
-        #[expect(clippy::missing_trait_methods, reason = "serde defaults are correct")]
-        impl de::Visitor<'_> for ByteArrayVisitor {
-            type Value = [u8; 32];
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("32 bytes")
-            }
-
-            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                if v.len() == 32 {
-                    let mut bytes = [0u8; 32];
-                    bytes.copy_from_slice(v);
-                    Ok(bytes)
-                } else {
-                    Err(E::invalid_length(v.len(), &self))
-                }
-            }
-        }
-
-        let bytes = deserializer.deserialize_bytes(ByteArrayVisitor)?;
-        let point_option = EpAffine::from_bytes(&bytes);
-        if point_option.is_some().into() {
-            Ok(Self(point_option.unwrap()))
-        } else {
-            Err(de::Error::custom("invalid commitment point"))
-        }
+        deserializer.deserialize_bytes(EpAffineVisitor).map(Self)
     }
 }
 
