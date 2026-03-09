@@ -53,6 +53,58 @@ impl TryFrom<[u8; 32]> for ActionVerificationKey {
     }
 }
 
+// Custom serde implementation for ActionVerificationKey
+#[cfg(feature = "serde")]
+impl serde::Serialize for ActionVerificationKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let bytes: [u8; 32] = (*self).into();
+        serializer.serialize_bytes(&bytes)
+    }
+}
+
+#[cfg(feature = "serde")]
+#[expect(clippy::missing_trait_methods, reason = "serde defaults are correct")]
+impl<'de> serde::Deserialize<'de> for ActionVerificationKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use core::fmt;
+        use serde::de;
+
+        struct ByteArrayVisitor;
+
+        #[expect(clippy::missing_trait_methods, reason = "serde defaults are correct")]
+        impl de::Visitor<'_> for ByteArrayVisitor {
+            type Value = [u8; 32];
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("32 bytes")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if v.len() == 32 {
+                    let mut bytes = [0u8; 32];
+                    bytes.copy_from_slice(v);
+                    Ok(bytes)
+                } else {
+                    Err(E::invalid_length(v.len(), &self))
+                }
+            }
+        }
+
+        let bytes = deserializer.deserialize_bytes(ByteArrayVisitor)?;
+        Self::try_from(bytes)
+            .map_err(|_err| de::Error::custom("invalid action verification key"))
+    }
+}
+
 /// Derive the binding verification key from public bundle data.
 ///
 /// $$\mathsf{bvk} = \left(\bigoplus_i \mathsf{cv}_i\right) \ominus

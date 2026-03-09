@@ -24,3 +24,61 @@ impl From<Tachygram> for Fp {
         tg.0
     }
 }
+
+// Custom serde implementation for Tachygram
+#[cfg(feature = "serde")]
+impl serde::Serialize for Tachygram {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use ff::PrimeField as _;
+        let bytes = self.0.to_repr();
+        serializer.serialize_bytes(&bytes)
+    }
+}
+
+#[cfg(feature = "serde")]
+#[expect(clippy::missing_trait_methods, reason = "serde defaults are correct")]
+impl<'de> serde::Deserialize<'de> for Tachygram {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use core::fmt;
+        use ff::PrimeField as _;
+        use serde::de;
+
+        struct ByteArrayVisitor;
+
+        #[expect(clippy::missing_trait_methods, reason = "serde defaults are correct")]
+        impl de::Visitor<'_> for ByteArrayVisitor {
+            type Value = [u8; 32];
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("32 bytes")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if v.len() == 32 {
+                    let mut bytes = [0u8; 32];
+                    bytes.copy_from_slice(v);
+                    Ok(bytes)
+                } else {
+                    Err(E::invalid_length(v.len(), &self))
+                }
+            }
+        }
+
+        let bytes = deserializer.deserialize_bytes(ByteArrayVisitor)?;
+        let fp_option = Fp::from_repr(bytes);
+        if fp_option.is_some().into() {
+            Ok(Self(fp_option.unwrap()))
+        } else {
+            Err(de::Error::custom("invalid field element"))
+        }
+    }
+}
