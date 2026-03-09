@@ -41,7 +41,7 @@ An observer sees a bag of actions and a bag of tachygrams with no individual cor
 
 ## Public Data
 
-The proof's public output `StampDigest` carries three field elements:
+The PCD header carries three field elements:
 
 | Field | Type | Elements | Description |
 | ----- | ---- | -------- | ----------- |
@@ -65,10 +65,10 @@ Multiplicative accumulation prevents the post-proof substitution attack: finding
 The stamp carries only tachygrams, anchor, and proof bytes.
 **The header is recoverable if you have the correct set of tachygrams and the correct set of actions.**
 
-The verifier reconstructs the full `StampDigest` following appropriate rules.
+The verifier reconstructs the full header following appropriate rules.
 This way, the verifier knows a consensus-valid set of tachygrams was used in proof generation.
 
-Each `ActionLeaf` seed computes one tachygram contribution; `StampMerge` multiplies
+Each `ActionStep` seed computes one tachygram contribution; `MergeStep` multiplies
 them together.
 PCD soundness means the only way to produce a valid
 proof is through `seed` + `fuse`, so an attacker cannot skip leaf circuits or
@@ -88,7 +88,7 @@ tachygrams $tg_i$, the anchor, and the proof bytes.
 2. **No duplicate tachygrams**: check the tachygram list for repeats
 3. **Action sigs**: verify each $sig_i$ against $rk_i$ (RedPallas)
 4. **Binding sig**: verify against $\sum cv_i$
-5. **Reconstruct header**: build `StampDigest { anchor, action_acc, tachygram_acc }`
+5. **Reconstruct**: build `(action_acc, tachygram_acc, anchor)`
    - **Recompute action_acc**: $\prod(\text{Poseidon}(\mathsf{cv}_i \| \mathsf{rk}_i) + 1)$ from visible actions
    - **Recompute tachygram_acc**: $\prod(\text{Poseidon}(\mathsf{tg}_i) + 1)$ from listed tachygrams
 6. **Verify proof**: call Ragu `verify(Pcd { proof, data: header })`
@@ -109,7 +109,7 @@ produce $\{a,b,c\}$?
 
 The multiplicative accumulator encodes multiplicity, committing to *how many times* each element appears.
 In the formulas below, $H(x) = \text{Poseidon}(x) + 1$ denotes the nonzero hash used for accumulator elements (as described in [Verification](#verification) above).
-When `StampMerge` multiplies two intersecting accumulators, the intersection is evident:
+When `MergeStep` multiplies two intersecting accumulators, the intersection is evident:
 
 $$\text{merged} = H(a) \cdot H(b) \cdot H(b) \cdot H(c) \quad (b \text{ counted twice})$$
 
