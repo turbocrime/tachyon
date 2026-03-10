@@ -40,8 +40,8 @@ impl ActionVerificationKey {
 impl Eq for ActionVerificationKey {}
 
 impl From<ActionVerificationKey> for [u8; 32] {
-    fn from(key: ActionVerificationKey) -> [u8; 32] {
-        key.0.into()
+    fn from(avk: ActionVerificationKey) -> Self {
+        avk.0.into()
     }
 }
 
@@ -52,6 +52,7 @@ impl TryFrom<[u8; 32]> for ActionVerificationKey {
         reddsa::VerificationKey::<SpendAuth>::try_from(bytes).map(Self)
     }
 }
+
 /// Derive the binding verification key from public bundle data.
 ///
 /// $$\mathsf{bvk} = \left(\bigoplus_i \mathsf{cv}_i\right) \ominus
