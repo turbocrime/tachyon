@@ -38,12 +38,11 @@ fn digest_action(cv: Coordinates<EpAffine>, rk: Coordinates<EpAffine>) -> Action
     ActionDigest(hash)
 }
 
-/// Order-independent accumulator of one or more actions.
-/// $$\mathsf{action\_acc} = \prod_i
-///     \text{Poseidon}(\text{domain},\; \mathsf{cv}_i \| \mathsf{rk}_i)$$
+/// Poseidon digest of a single action's $(\mathsf{cv}, \mathsf{rk})$ pair.
 ///
-/// Each action's $(\mathsf{cv}, \mathsf{rk})$ is hashed. Multiple digests
-/// combine via field multiplication.
+/// Each action produces one digest, which serves as a root in the
+/// accumulator polynomial. Multiple actions are accumulated via
+/// polynomial commitment, not on this type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ActionDigest(Fp);
 
@@ -84,24 +83,12 @@ impl ActionDigest {
 
         Ok(digest_action(cv_coords, rk_coords))
     }
-
-    /// Combine two digests.
-    #[must_use]
-    pub fn accumulate(self, other: Self) -> Self {
-        Self(self.0 * other.0)
-    }
 }
 
-impl FromIterator<Self> for ActionDigest {
-    fn from_iter<I: IntoIterator<Item = Self>>(iter: I) -> Self {
-        iter.into_iter().fold(Self::default(), Self::accumulate)
-    }
-}
-
-/// The identity element for accumulation (currently `Fp::ONE`).
-impl Default for ActionDigest {
-    fn default() -> Self {
-        Self(Fp::ONE)
+/// Extract the inner field element (polynomial root).
+impl From<ActionDigest> for Fp {
+    fn from(digest: ActionDigest) -> Self {
+        digest.0
     }
 }
 
@@ -216,21 +203,6 @@ mod tests {
         (cv, rk)
     }
 
-    /// Digest merge is commutative: A·B == B·A.
-    #[test]
-    fn digest_commutative() {
-        let mut rng = StdRng::seed_from_u64(200);
-        let sk = private::SpendingKey::from([0x42u8; 32]);
-
-        let (cv_a, rk_a) = make_action_parts(&mut rng, &sk, 1000, Fp::ZERO, Fp::ZERO);
-        let (cv_b, rk_b) = make_action_parts(&mut rng, &sk, 700, Fp::ONE, Fp::ONE);
-
-        let digest_a = ActionDigest::new(cv_a, rk_a).unwrap();
-        let digest_b = ActionDigest::new(cv_b, rk_b).unwrap();
-
-        assert_eq!(digest_a.accumulate(digest_b), digest_b.accumulate(digest_a));
-    }
-
     /// Different (cv, rk) pairs produce different digests.
     #[test]
     fn distinct_actions_distinct_digests() {
@@ -244,26 +216,6 @@ mod tests {
             ActionDigest::new(cv_a, rk_a).unwrap(),
             ActionDigest::new(cv_b, rk_b).unwrap()
         );
-    }
-
-    /// Identity element: merging with identity is a no-op.
-    #[test]
-    fn identity_element() {
-        let mut rng = StdRng::seed_from_u64(202);
-        let sk = private::SpendingKey::from([0x42u8; 32]);
-
-        let (cv, rk) = make_action_parts(&mut rng, &sk, 500, Fp::ZERO, Fp::ZERO);
-        let digest = ActionDigest::new(cv, rk).unwrap();
-
-        assert_eq!(digest.accumulate(ActionDigest::default()), digest);
-        assert_eq!(ActionDigest::default().accumulate(digest), digest);
-    }
-
-    /// Empty accumulation produces the identity.
-    #[test]
-    fn empty_accumulate_is_identity() {
-        let acc: ActionDigest = vec![].into_iter().collect();
-        assert_eq!(acc, ActionDigest::default());
     }
 
     /// Identity cv is rejected.

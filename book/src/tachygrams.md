@@ -41,25 +41,29 @@ An observer sees a bag of actions and a bag of tachygrams with no individual cor
 
 ## Public Data
 
-The PCD header carries three field elements:
+The PCD header carries two polynomial commitments and one scalar:
 
-| Field | Type | Elements | Description |
-| ----- | ---- | -------- | ----------- |
-| `action_acc` | $\mathbb{F}_p$ scalar | 1 | Multiplicative Poseidon accumulator over action digests |
-| `tachygram_acc` | $\mathbb{F}_p$ scalar | 1 | Multiplicative Poseidon accumulator over tachygrams |
-| `anchor` | $\mathbb{F}_p$ scalar | 1 | Accumulator state reference |
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `action_acc` | EC point (Vesta) | Pedersen vector commitment to the action accumulator polynomial |
+| `tachygram_acc` | EC point (Vesta) | Pedersen vector commitment to the tachygram accumulator polynomial |
+| `anchor` | $\mathbb{F}_p$ scalar | Accumulator state reference |
 
-Both accumulators use multiplicative field-element accumulation.
-Each element is hashed (Poseidon, domain-separated) and offset by $+1$ to guarantee nonzero output.
-The accumulator is the product of all such values:
+Both accumulators use polynomial commitments.
+Each element is hashed (Poseidon, domain-separated) into a root $r_i \in \mathbb{F}_p$.
+The accumulator polynomial is the product of linear factors:
 
-$$\mathsf{action\_acc} = \prod_i \bigl(\text{Poseidon}_\text{Tachyon-ActnDgst}(\mathsf{cv}_i \| \mathsf{rk}_i) + 1\bigr)$$
+$$\mathsf{action\_poly}(X) = \prod_i \bigl(X - \text{Poseidon}_\text{Tachyon-ActnDgst}(\mathsf{cv}_i \| \mathsf{rk}_i)\bigr)$$
 
-$$\mathsf{tachygram\_acc} = \prod_i \bigl(\text{Poseidon}_\text{Tachyon-TgrmDgst}(\mathsf{tg}_i) + 1\bigr)$$
+$$\mathsf{tachygram\_poly}(X) = \prod_i \bigl(X - \text{Poseidon}_\text{Tachyon-TgrmDgst}(\mathsf{tg}_i)\bigr)$$
 
-Field multiplication is commutative, so PCD tree shape doesn't matter.
+The header values are Pedersen vector commitments to the coefficients:
+$\mathsf{action\_acc} = \text{Commit}(\mathsf{action\_poly})$,
+$\mathsf{tachygram\_acc} = \text{Commit}(\mathsf{tachygram\_poly})$.
 
-Multiplicative accumulation prevents the post-proof substitution attack: finding substitute values whose product matches the proven accumulator reduces to the discrete logarithm problem in the scalar field, maintaining 128-bit security regardless of the number of elements.
+Polynomial coefficients are canonical (independent of root ordering), so PCD tree shape doesn't matter.
+
+Polynomial commitment prevents the post-proof substitution attack: finding a substitute set of roots whose committed polynomial matches the proven commitment reduces to the discrete logarithm problem on the elliptic curve, maintaining 128-bit security regardless of the number of elements.
 
 **This header is 'public' but not published.**
 The stamp carries only tachygrams, anchor, and proof bytes.
@@ -68,8 +72,8 @@ The stamp carries only tachygrams, anchor, and proof bytes.
 The verifier reconstructs the full header following appropriate rules.
 This way, the verifier knows a consensus-valid set of tachygrams was used in proof generation.
 
-Each `ActionStep` seed computes one tachygram contribution; `MergeStep` multiplies
-them together.
+Each `ActionStep` seed builds a degree-1 polynomial from one root and commits it;
+`MergeStep` multiplies the polynomials together and recommits.
 PCD soundness means the only way to produce a valid
 proof is through `seed` + `fuse`, so an attacker cannot skip leaf circuits or
 strip duplicate contributions between steps.
@@ -89,8 +93,8 @@ tachygrams $tg_i$, the anchor, and the proof bytes.
 3. **Action sigs**: verify each $sig_i$ against $rk_i$ (RedPallas)
 4. **Binding sig**: verify against $\sum cv_i$
 5. **Reconstruct**: build `(action_acc, tachygram_acc, anchor)`
-   - **Recompute action_acc**: $\prod(\text{Poseidon}(\mathsf{cv}_i \| \mathsf{rk}_i) + 1)$ from visible actions
-   - **Recompute tachygram_acc**: $\prod(\text{Poseidon}(\mathsf{tg}_i) + 1)$ from listed tachygrams
+   - **Recompute action_acc**: build polynomial from roots $\text{Poseidon}(\mathsf{cv}_i \| \mathsf{rk}_i)$, commit
+   - **Recompute tachygram_acc**: build polynomial from roots $\text{Poseidon}(\mathsf{tg}_i)$, commit
 6. **Verify proof**: call Ragu `verify(Pcd { proof, data: header })`
 
 <!-- TODO
@@ -107,15 +111,15 @@ produce $\{a,b,c\}$?
 
 ### 1. An overlapping merge is detectable
 
-The multiplicative accumulator encodes multiplicity, committing to *how many times* each element appears.
-In the formulas below, $H(x) = \text{Poseidon}(x) + 1$ denotes the nonzero hash used for accumulator elements (as described in [Verification](#verification) above).
-When `MergeStep` multiplies two intersecting accumulators, the intersection is evident:
+The polynomial accumulator encodes multiplicity, committing to *how many times* each element appears.
+In the formulas below, $r(x) = \text{Poseidon}(x)$ denotes the root derived from element $x$.
+When `MergeStep` multiplies two intersecting polynomials, the intersection is evident:
 
-$$\text{merged} = H(a) \cdot H(b) \cdot H(b) \cdot H(c) \quad (b \text{ counted twice})$$
+$$\text{merged} = (X - r(a))(X - r(b))(X - r(b))(X - r(c)) \quad (b \text{ counted twice})$$
 
-$$\text{clean} = H(a) \cdot H(b) \cdot H(c) \quad (b \text{ counted once})$$
+$$\text{clean} = (X - r(a))(X - r(b))(X - r(c)) \quad (b \text{ counted once})$$
 
-These are different field elements (since $H(b)^2 \neq H(b)$ for nonzero, non-unity hash outputs).
+These are different polynomials with different commitments.
 
 ### 2. Lying about an overlapping merge is not possible
 
@@ -123,16 +127,16 @@ An aggregator who merged overlapping stamps has exactly two options:
 
 **Option A** — list tachygrams without duplicates $\{a, b, c\}$:
 
-$$\text{reconstructed} = H(a) \cdot H(b) \cdot H(c)$$
-$$\text{proof's actual} = H(a) \cdot H(b) \cdot H(b) \cdot H(c)$$
+$$\text{reconstructed commitment} = \text{Commit}((X - r(a))(X - r(b))(X - r(c)))$$
+$$\text{proof's actual commitment} = \text{Commit}((X - r(a))(X - r(b))^2(X - r(c)))$$
 
 Proof doesn't verify against the reconstructed header.
 Rejected.
 
 **Option B** — list tachygrams with duplicates $\{a, b, b, c\}$:
 
-$$\text{reconstructed} = H(a) \cdot H(b) \cdot H(b) \cdot H(c)$$
-$$\text{proof's actual} = H(a) \cdot H(b) \cdot H(b) \cdot H(c)$$
+$$\text{reconstructed commitment} = \text{Commit}((X - r(a))(X - r(b))^2(X - r(c)))$$
+$$\text{proof's actual commitment} = \text{Commit}((X - r(a))(X - r(b))^2(X - r(c)))$$
 
 Proof *would* verify, but consensus detects duplicate $b$, so the stamp was
 already rejected.

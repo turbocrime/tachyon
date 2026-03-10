@@ -58,5 +58,5 @@ mod serde_helpers;
 pub use action::{Action, Plan as ActionPlan};
 pub use bundle::{Bundle, Plan as BundlePlan, Stamped, Stripped};
 pub use note::Note;
-pub use primitives::{ActionDigest, ActionDigestError, Anchor, Epoch, Tachygram, TachygramDigest};
+pub use primitives::{ActionDigest, ActionDigestError, Anchor, Epoch, Tachygram, digest_tachygram};
 pub use stamp::{Stamp, proof::Proof};
