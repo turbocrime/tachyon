@@ -14,7 +14,7 @@ All BLAKE2b personalizations are exactly 16 bytes. Poseidon domain tags are 16-b
 | PRF expansion | `Zcash_ExpandSeed` | $\text{BLAKE2b-512}(\mathsf{sk} \| t)$ — key derivation (shared with Sapling/Orchard) |
 | Spend alpha | `Tachyon-Spend` | $\alpha_\text{spend} = \text{BLAKE2b-512}(\theta \| \mathsf{cm})$ |
 | Output alpha | `Tachyon-Output` | $\alpha_\text{output} = \text{BLAKE2b-512}(\theta \| \mathsf{cm})$ |
-| Bundle commitment | `Tachyon-BndlHash` | $\text{BLAKE2b-512}(\mathsf{action\_acc} \| \mathsf{v\_balance})$ |
+| Bundle commitment | `Tachyon-BndlHash` | $\text{BLAKE2b-512}(d_1 \| \ldots \| d_n \| \mathsf{v\_balance})$ |
 
 ## Poseidon
 
@@ -22,12 +22,12 @@ All BLAKE2b personalizations are exactly 16 bytes. Poseidon domain tags are 16-b
 | --- | --- | --- |
 | Nullifier | `Tachyon-NfDerive` | $\mathsf{mk} = \text{Poseidon}(\mathsf{tag}, \Psi, \mathsf{nk})$ — master key KDF; also each GGM tree step |
 | Note commitment | `Tachyon-NoteCmmt` | $\mathsf{cm} = \text{Poseidon}(\mathsf{tag}, \mathsf{rcm}, \mathsf{pk}, v, \Psi)$ |
-| Action digest | `Tachyon-ActnDgst` | $\text{Poseidon}(\mathsf{tag}, \mathsf{cv}_x, \mathsf{cv}_y, \mathsf{rk}_x, \mathsf{rk}_y) + 1$ |
-| Tachygram digest | `Tachyon-TgrmDgst` | $\text{Poseidon}(\mathsf{tag}, \mathsf{tg}) + 1$ |
+| Action digest | `Tachyon-ActnDgst` | $\text{Poseidon}(\mathsf{tag}, \mathsf{cv}_x, \mathsf{cv}_y, \mathsf{rk}_x, \mathsf{rk}_y)$ |
+| Tachygram digest | `Tachyon-TgrmDgst` | $\text{Poseidon}(\mathsf{tag}, \mathsf{tg})$ |
 
 ## Other
 
 | Constant | Value | Purpose |
 | --- | --- | --- |
 | Value commitment | `z.cash:Orchard-cv` | Hash-to-curve generators $\mathcal{V}$, $\mathcal{R}$ (shared with Orchard) |
-| Accumulator | `z.cash:Tachyon-acc` | Polynomial accumulator hash-to-curve |
+| Accumulator generators | `mock_ragu:generators` | Hash-to-curve for Pedersen commitment generators (mock; replaced by Ragu generators) |

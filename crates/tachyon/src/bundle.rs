@@ -139,24 +139,25 @@ pub enum BuildError {
 ///
 /// $$\mathsf{bundle\_commitment} = \text{BLAKE2b-512}(
 ///   \text{"Tachyon-BndlHash"},\;
-///   \mathsf{action\_acc} \| \mathsf{v\_balance})$$
+///   d_1 \| d_2 \| \ldots \| d_n \| \mathsf{v\_balance})$$
 ///
-/// where $\mathsf{action\_acc}$ is an [`ActionDigest`] — the
-/// order-independent digest of all actions in the bundle.
+/// where each $d_i$ is an [`ActionDigest`] serialized in order.
+/// The digest is order-dependent — actions must be in canonical order.
 ///
 /// The stamp is excluded because it is stripped during aggregation.
 pub fn commit_bundle_digest(
     action_digests: impl Iterator<Item = ActionDigest>,
     value_balance: i64,
 ) -> [u8; 64] {
-    let action_acc: ActionDigest = action_digests.collect();
-    let acc_bytes: [u8; 32] = action_acc.into();
-
     let mut state = blake2b_simd::Params::new()
         .hash_length(64)
         .personal(BUNDLE_COMMITMENT_PERSONALIZATION)
         .to_state();
-    state.update(&acc_bytes);
+
+    for digest in action_digests {
+        let bytes: [u8; 32] = digest.into();
+        state.update(&bytes);
+    }
 
     #[expect(clippy::little_endian_bytes, reason = "specified behavior")]
     state.update(&value_balance.to_le_bytes());
@@ -390,7 +391,7 @@ mod tests {
             rcv: output_plan.rcv,
         };
 
-        let (spend_stamp, spend_header) = Stamp::prove_action(
+        let (spend_stamp, spend_state) = Stamp::prove_action(
             &mut *rng,
             &spend_witness,
             &spend_action,
@@ -399,7 +400,7 @@ mod tests {
             &pak,
         )
         .expect("prove_action (spend)");
-        let (output_stamp, output_header) = Stamp::prove_action(
+        let (output_stamp, output_state) = Stamp::prove_action(
             &mut *rng,
             &output_witness,
             &output_action,
@@ -408,8 +409,8 @@ mod tests {
             &pak,
         )
         .expect("prove_action (output)");
-        let (stamp, _stamp_data) = spend_stamp
-            .prove_merge(spend_header, output_stamp, output_header, &mut *rng)
+        let (stamp, _stamp_state) = spend_stamp
+            .prove_merge(spend_state, output_stamp, output_state, &mut *rng)
             .expect("prove_merge");
 
         // Binding signature
@@ -498,7 +499,7 @@ mod tests {
             value_balance,
             binding_sig: Signature::from([0u8; 64]),
             stamp: {
-                let (stamp, _stamp_data) = Stamp::prove_action(
+                let (stamp, _stamp_state) = Stamp::prove_action(
                     &mut rng,
                     &ActionPrivate {
                         alpha: ActionRandomizer::from(
