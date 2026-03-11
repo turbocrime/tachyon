@@ -45,6 +45,9 @@ pub const VALUE_COMMITMENT_DOMAIN: &str = "z.cash:Orchard-cv";
 /// Poseidon domain tag for note master derivation: $mk = \text{KDF}(\psi, nk)$.
 pub const NOTE_MASTER_DOMAIN: &[u8; 16] = b"Tachyon-MkDerive";
 
+/// Poseidon domain tag for nullifier derivation (GGM tree steps).
+pub const NOTE_NULLIFIER_DOMAIN: &[u8; 16] = b"Tachyon-NfDerive";
+
 /// Poseidon domain tag for note commitments.
 pub const NOTE_COMMITMENT_DOMAIN: &[u8; 16] = b"Tachyon-NoteCmmt";
 
