@@ -55,7 +55,6 @@ pub mod constants;
 pub mod entropy;
 pub mod keys;
 pub mod note;
-pub mod proof;
 pub mod stamp;
 pub mod value;
 pub mod witness;
@@ -71,5 +70,4 @@ pub use primitives::{
     ActionDigest, ActionDigestError, Anchor, Epoch, Tachygram,
     multiset::{self, Multiset},
 };
-pub use proof::Proof;
-pub use stamp::Stamp;
+pub use stamp::{Stamp, proof::Proof};
