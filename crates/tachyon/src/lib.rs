@@ -38,7 +38,6 @@
 #[cfg(feature = "std")]
 extern crate std;
 
-#[macro_use]
 extern crate alloc;
 
 /// `todo!` macro: code after a `todo!()` call executes with stub values.

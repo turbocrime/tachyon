@@ -339,7 +339,7 @@ mod tests {
         let output_plan = action::Plan::output(output_note, theta_output, output_rcv);
         let value_balance: i64 = 300;
 
-        let bundle_plan = Plan::new(vec![spend_plan, output_plan], value_balance);
+        let bundle_plan = Plan::new(alloc::vec![spend_plan, output_plan], value_balance);
         let sighash = mock_sighash(bundle_plan.commitment());
 
         // Sign each action
@@ -365,7 +365,7 @@ mod tests {
             rk: output_plan.rk,
             sig: output_sig,
         };
-        let actions = vec![spend_action, output_action];
+        let actions = alloc::vec![spend_action, output_action];
 
         let spend_witness = ActionPrivate {
             alpha: ActionRandomizer::from(spend_alpha),
@@ -474,12 +474,12 @@ mod tests {
         let output_plan = action::Plan::output(output_note, theta_output, output_rcv);
         let value_balance: i64 = 300;
 
-        let bundle_plan = Plan::new(vec![spend_plan, output_plan], value_balance);
+        let bundle_plan = Plan::new(alloc::vec![spend_plan, output_plan], value_balance);
         let plan_commitment = bundle_plan.commitment();
 
         // Materialize actions from the same plans
         let bundle: Stamped = Bundle {
-            actions: vec![
+            actions: alloc::vec![
                 Action {
                     cv: spend_plan.cv(),
                     rk: spend_plan.rk,

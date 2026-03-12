@@ -30,6 +30,7 @@ serde = [
 ]
 std = [
     "blake2b_simd/std",
+    "mock_ragu/std",
     "rand_core/std",
     "reddsa/std",
 ]
@@ -45,7 +46,7 @@ halo2_poseidon = "0.1"
 lazy_static = { version = "1", default-features = false, features = [
     "spin_no_std",
 ] }
-mock_ragu = { path = "../mock_ragu" }
+mock_ragu = { path = "../mock_ragu", default-features = false }
 pasta_curves = "0.5.1"
 rand_core = { version = "0.6", default-features = false }
 reddsa = { version = "0.5.1", default-features = false }

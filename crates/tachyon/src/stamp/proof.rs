@@ -25,11 +25,10 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use std::sync::LazyLock;
 
 use ff::PrimeField as _;
 pub use mock_ragu::Proof;
-use mock_ragu::{self, Application, ApplicationBuilder, Header, Index, Step, Suffix};
+use mock_ragu::{self, Header, Index, Step, Suffix};
 use pasta_curves::{EqAffine, Fp, group::GroupEncoding as _};
 
 use crate::{
@@ -176,15 +175,3 @@ impl Step for MergeStep {
         Ok((header, (action_acc, tachygram_acc)))
     }
 }
-
-/// Ragu application with the Tachyon stamp steps registered.
-#[expect(clippy::expect_used, reason = "registration is infallible")]
-pub(crate) static PROOF_SYSTEM: LazyLock<Application> = LazyLock::new(|| {
-    ApplicationBuilder::new()
-        .register(ActionStep)
-        .expect("register ActionStep")
-        .register(MergeStep)
-        .expect("register MergeStep")
-        .finalize()
-        .expect("finalize")
-});

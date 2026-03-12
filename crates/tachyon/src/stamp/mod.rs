@@ -18,10 +18,12 @@ pub mod proof;
 use alloc::vec::Vec;
 use core::{error::Error, fmt};
 
+use lazy_static::lazy_static;
+use mock_ragu::{Application, ApplicationBuilder};
 pub use proof::Proof;
-use rand::CryptoRng;
+use rand_core::CryptoRng;
 
-use self::proof::{ActionStep, ActionWitness, MergeStep, MergeWitness, PROOF_SYSTEM, StampHeader};
+use self::proof::{ActionStep, ActionWitness, MergeStep, MergeWitness, StampHeader};
 use crate::{
     ActionDigest, Epoch,
     action::{Action, Effect},
@@ -97,7 +99,7 @@ impl Stamp {
         epoch: Epoch,
         pak: &ProofAuthorizingKey,
     ) -> Result<(Self, (Multiset<ActionDigest>, Multiset<Tachygram>)), mock_ragu::Error> {
-        let app = &*PROOF_SYSTEM;
+        let app = &PROOF_SYSTEM;
         let (proof, (tachygram, action_acc, tachygram_acc)) = app.seed(
             rng,
             &ActionStep,
@@ -141,7 +143,7 @@ impl Stamp {
         right: Self,
         right_actions: Multiset<ActionDigest>,
     ) -> Result<(Self, (Multiset<ActionDigest>, Multiset<Tachygram>)), mock_ragu::Error> {
-        let app = &*PROOF_SYSTEM;
+        let app = &PROOF_SYSTEM;
 
         let left_tachygrams = Multiset::<Tachygram>::from(left.tachygrams.as_slice());
         let right_tachygrams = Multiset::<Tachygram>::from(right.tachygrams.as_slice());
@@ -197,8 +199,12 @@ impl Stamp {
     /// and calls Ragu `verify(Pcd { proof, data: header })`. The proof
     /// only verifies against the header that matches the circuit's honest
     /// execution — a mismatched header causes verification failure.
-    pub fn verify(&self, actions: &[Action]) -> Result<(), VerificationError> {
-        let app = &*PROOF_SYSTEM;
+    pub fn verify(
+        &self,
+        actions: &[Action],
+        rng: &mut impl CryptoRng,
+    ) -> Result<(), VerificationError> {
+        let app = &PROOF_SYSTEM;
 
         let action_commitment = <Multiset<ActionDigest>>::try_from(actions)
             .map_err(VerificationError::ActionDigest)?
@@ -213,7 +219,7 @@ impl Stamp {
         ));
 
         let valid = app
-            .verify(&pcd, rand::thread_rng())
+            .verify(&pcd, rng)
             .map_err(|_err| VerificationError::ProofSystem)?;
 
         if valid {
@@ -295,7 +301,9 @@ mod tests {
         )
         .expect("prove_action");
 
-        stamp.verify(&[action]).expect("verify should succeed");
+        stamp
+            .verify(&[action], &mut rng)
+            .expect("verify should succeed");
     }
 
     #[test]
@@ -321,7 +329,7 @@ mod tests {
         let (action_b, _witness_b) = make_action_and_witness(&mut rng, &sk, 200, Effect::Output);
 
         assert!(
-            stamp.verify(&[action_b]).is_err(),
+            stamp.verify(&[action_b], &mut rng).is_err(),
             "verify with wrong action must fail"
         );
     }
@@ -363,7 +371,7 @@ mod tests {
                 .expect("prove_merge");
 
         merged
-            .verify(&[action_a, action_b])
+            .verify(&[action_a, action_b], &mut rng)
             .expect("merged stamp should verify");
     }
 
@@ -404,8 +412,21 @@ mod tests {
                 .expect("prove_merge");
 
         assert!(
-            merged.verify(&[action_a]).is_err(),
+            merged.verify(&[action_a], &mut rng).is_err(),
             "verify with partial actions must fail"
         );
     }
+}
+
+lazy_static! {
+    static ref PROOF_SYSTEM: Application = {
+        #[expect(clippy::expect_used, reason = "mock registration is infallible")]
+        ApplicationBuilder::new()
+            .register(ActionStep)
+            .expect("register ActionStep")
+            .register(MergeStep)
+            .expect("register MergeStep")
+            .finalize()
+            .expect("finalize")
+    };
 }
