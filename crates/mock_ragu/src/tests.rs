@@ -12,7 +12,7 @@ use super::{
     error::Result,
     header::{Header, Suffix},
     polynomial::*,
-    proof::{Pcd, Proof, PROOF_SIZE_COMPRESSED},
+    proof::{PROOF_SIZE_COMPRESSED, Pcd, Proof},
     step::{Index, Step},
 };
 

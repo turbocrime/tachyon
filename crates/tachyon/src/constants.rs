@@ -14,7 +14,7 @@ pub const PRF_EXPAND_PERSONALIZATION: &[u8; 16] = b"Zcash_ExpandSeed";
 ///
 /// $$\mathsf{bundle\_commitment} =
 /// \text{BLAKE2b-512}(\text{"Tachyon-BndlHash"},\;   \mathsf{action\_acc} \|
-/// \mathsf{v\_balance})$$
+/// \mathsf{value\_balance})$$
 ///
 /// Commits to the bundle's effecting data. The digest contributes to the
 /// transaction-level sighash, which is what signatures actually sign.
@@ -42,20 +42,14 @@ pub const OUTPUT_ALPHA_PERSONALIZATION: &[u8; 14] = b"Tachyon-Output";
 /// generators, same basepoint, same binding signature verification.
 pub const VALUE_COMMITMENT_DOMAIN: &str = "z.cash:Orchard-cv";
 
-/// Poseidon domain tag for nullifier derivation (GGM tree steps + mk KDF).
-pub const NULLIFIER_DOMAIN: &[u8; 16] = b"Tachyon-NfDerive";
+/// Poseidon domain tag for note master derivation: $mk = \text{KDF}(\psi, nk)$.
+pub const NOTE_MASTER_DOMAIN: &[u8; 16] = b"Tachyon-MkDerive";
 
 /// Poseidon domain tag for note commitments.
 pub const NOTE_COMMITMENT_DOMAIN: &[u8; 16] = b"Tachyon-NoteCmmt";
 
 /// Poseidon domain tag for action digests.
 pub const ACTION_DIGEST_PERSONALIZATION: &[u8; 16] = b"Tachyon-ActnDgst";
-
-/// Poseidon domain tag for tachygram digests (accumulator pre-image hash).
-pub const TACHYGRAM_DIGEST_DOMAIN: &[u8; 16] = b"Tachyon-TgrmDgst";
-
-/// Domain for the polynomial accumulator hash-to-curve.
-pub const ACCUMULATOR_DOMAIN: &str = "z.cash:Tachyon-acc";
 
 /// Maximum note value in zatoshis (§5.3 of the protocol spec)
 pub const NOTE_VALUE_MAX: u64 = 2_100_000_000_000_000;

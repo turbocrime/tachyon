@@ -15,7 +15,7 @@ use crate::{
     action::{self, Action},
     constants::BUNDLE_COMMITMENT_PERSONALIZATION,
     keys::{private, public},
-    primitives::{ActionDigest, ActionDigestError},
+    primitives::{ActionDigest, ActionDigestError, multiset::Multiset},
     stamp::{Stamp, Stampless},
 };
 
@@ -139,32 +139,30 @@ pub enum BuildError {
 ///
 /// This contributes to the transaction sighash.
 ///
-/// $$\mathsf{bundle\_commitment} = \text{BLAKE2b-512}(
-///   \text{"Tachyon-BndlHash"},\;
-///   d_1 \| d_2 \| \ldots \| d_n \| \mathsf{v\_balance})$$
+/// $$ \mathsf{bundle\_commitment} = \text{BLAKE2b-512}(
+/// \text{"Tachyon-BndlHash"},\; \mathsf{action\_commitment} \|
+/// \mathsf{value\_balance}) $$
 ///
-/// where each $d_i$ is an [`ActionDigest`] serialized in order.
-/// The digest is order-dependent — actions must be in canonical order.
+/// where $\mathsf{action\_commitment}$ is the multiset polynomial commitment
+/// over all action digests — order-independent by construction.
 ///
 /// The stamp is excluded because it is stripped during aggregation.
-pub fn commit_bundle_digest(
-    action_digests: impl Iterator<Item = ActionDigest>,
+#[expect(clippy::module_name_repetitions, reason = "consistent naming")]
+pub fn digest_bundle(
+    action_acc: &Multiset<ActionDigest>,
     value_balance: i64,
-) -> [u8; 64] {
+) -> Result<[u8; 64], ActionDigestError> {
     let mut state = blake2b_simd::Params::new()
         .hash_length(64)
         .personal(BUNDLE_COMMITMENT_PERSONALIZATION)
         .to_state();
 
-    for digest in action_digests {
-        let bytes: [u8; 32] = digest.into();
-        state.update(&bytes);
-    }
+    state.update(&<[u8; 32]>::from(action_acc.commit()));
 
     #[expect(clippy::little_endian_bytes, reason = "specified behavior")]
     state.update(&value_balance.to_le_bytes());
 
-    *state.finalize().as_array()
+    Ok(*state.finalize().as_array())
 }
 
 /// A complete bundle plan, awaiting authorization.
@@ -190,16 +188,12 @@ impl Plan {
 
     /// Compute the bundle commitment.
     /// See [`commit_bundle_digest`].
+    #[must_use]
     pub fn commitment(&self) -> [u8; 64] {
         #[expect(clippy::expect_used, reason = "don't plan invalid actions")]
-        let action_digests = self
-            .actions
-            .iter()
-            .map(ActionDigest::try_from)
-            .collect::<Result<Vec<ActionDigest>, ActionDigestError>>()
-            .expect("don't plan invalid actions");
-
-        commit_bundle_digest(action_digests.into_iter(), self.value_balance)
+        Multiset::try_from(self.actions.as_slice())
+            .and_then(|action_acc| digest_bundle(&action_acc, self.value_balance))
+            .expect("don't plan invalid actions")
     }
 
     /// Derive the binding signing key, which is the scalar sum of value
@@ -234,16 +228,8 @@ impl Stamped {
 impl<S: StampState> Bundle<S> {
     /// See [`commit_bundle_digest`].
     pub fn commitment(&self) -> Result<[u8; 64], ActionDigestError> {
-        let action_digests = self
-            .actions
-            .iter()
-            .map(ActionDigest::try_from)
-            .collect::<Result<Vec<ActionDigest>, ActionDigestError>>()?;
-
-        Ok(commit_bundle_digest(
-            action_digests.into_iter(),
-            self.value_balance,
-        ))
+        let action_acc = Multiset::try_from(self.actions.as_slice())?;
+        digest_bundle(&action_acc, self.value_balance)
     }
 
     /// Verify the bundle's binding signature and all action signatures.

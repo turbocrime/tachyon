@@ -34,6 +34,7 @@
 //! (e.g. Sinsemilla, Poseidon) depends on what is efficient inside
 //! Ragu circuits and is TBD.
 use ff::{Field as _, PrimeField as _};
+// TODO(#39): replace halo2_poseidon with Ragu Poseidon params
 use halo2_poseidon::{ConstantLength, Hash, P128Pow5T3};
 use pasta_curves::Fp;
 use rand_core::{CryptoRng, RngCore};
@@ -128,28 +129,6 @@ impl<'de> serde::Deserialize<'de> for CommitmentTrapdoor {
 }
 
 impl CommitmentTrapdoor {
-    /// Computes the note commitment `cm`.
-    ///
-    /// Commits to $(pk, v, \psi)$ with randomness $rcm$:
-    ///
-    /// $cm = \text{Poseidon}(rcm, pk, v, \psi)$
-    ///
-    /// Domain separation is implicit via `ConstantLength<4>`.
-    #[must_use]
-    pub fn commit(self, value: Value, pk: &PaymentKey, psi: &NullifierTrapdoor) -> Commitment {
-        #[expect(clippy::little_endian_bytes, reason = "specified behavior")]
-        let domain = Fp::from_u128(u128::from_le_bytes(*NOTE_COMMITMENT_DOMAIN));
-        Commitment::from(
-            Hash::<_, P128Pow5T3, ConstantLength<5>, 3, 2>::init().hash([
-                domain,
-                self.0,
-                pk.0,
-                Fp::from(value.0),
-                psi.0,
-            ]),
-        )
-    }
-
     /// Generate a fresh random trapdoor.
     pub fn random<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
         Self(Fp::random(rng))
@@ -267,7 +246,17 @@ impl Note {
     /// Commits to $(pk, v, \psi)$ with randomness $rcm$
     #[must_use]
     pub fn commitment(&self) -> Commitment {
-        self.rcm.commit(self.value, &self.pk, &self.psi)
+        #[expect(clippy::little_endian_bytes, reason = "specified behavior")]
+        let domain = Fp::from_u128(u128::from_le_bytes(*NOTE_COMMITMENT_DOMAIN));
+        Commitment::from(
+            Hash::<_, P128Pow5T3, ConstantLength<5>, 3, 2>::init().hash([
+                domain,
+                self.rcm.0,
+                self.pk.0,
+                Fp::from(self.value.0),
+                self.psi.0,
+            ]),
+        )
     }
 
     /// Derives a nullifier for this note at the given flavor (epoch).
@@ -411,9 +400,21 @@ mod tests {
     fn distinct_rcm_distinct_commitments() {
         let pk = PaymentKey(Fp::from(1u64));
         let psi = NullifierTrapdoor::from(Fp::from(2u64));
-        let cm1 = CommitmentTrapdoor::from(Fp::from(3u64)).commit(Value::from(100u64), &pk, &psi);
-        let cm2 = CommitmentTrapdoor::from(Fp::from(4u64)).commit(Value::from(100u64), &pk, &psi);
-        assert_ne!(cm1, cm2);
+
+        let note1 = Note {
+            pk,
+            value: Value::from(100u64),
+            psi,
+            rcm: CommitmentTrapdoor::from(Fp::from(3u64)),
+        };
+        let note2 = Note {
+            pk,
+            value: Value::from(100u64),
+            psi,
+            rcm: CommitmentTrapdoor::from(Fp::from(4u64)),
+        };
+
+        assert_ne!(note1.commitment(), note2.commitment());
     }
 
     /// `Note::nullifier` delegates correctly to key derivation.

@@ -1,6 +1,7 @@
 use core::{error::Error, fmt};
 
-use ff::{Field as _, PrimeField as _};
+use ff::PrimeField as _;
+// TODO(#39): replace halo2_poseidon with Ragu Poseidon params
 use halo2_poseidon::{ConstantLength, Hash, P128Pow5T3};
 use pasta_curves::{
     EpAffine, Fp,
@@ -17,10 +18,6 @@ use crate::{
 /// $$ \mathsf{action\_acc} = \prod_i
 /// \bigl(\text{Poseidon}_\text{Tachyon-ActnDgst}(\mathsf{cv}_i \|
 /// \mathsf{rk}_i) + 1\bigr) $$
-///
-/// # Panics
-///
-/// Panics if the digest is zero. Do not digest a preimage for zero.
 fn digest_action(cv: Coordinates<EpAffine>, rk: Coordinates<EpAffine>) -> ActionDigest {
     #[expect(clippy::little_endian_bytes, reason = "specified behavior")]
     let personalization = Fp::from_u128(u128::from_le_bytes(*ACTION_DIGEST_PERSONALIZATION));
@@ -32,8 +29,6 @@ fn digest_action(cv: Coordinates<EpAffine>, rk: Coordinates<EpAffine>) -> Action
         *rk.x(),
         *rk.y(),
     ]);
-
-    assert!(!hash.is_zero_vartime(), "sell now");
 
     ActionDigest(hash)
 }
@@ -136,9 +131,6 @@ impl TryFrom<&[u8; 32]> for ActionDigest {
 
     fn try_from(bytes: &[u8; 32]) -> Result<Self, Self::Error> {
         let fp: Fp = Option::from(Fp::from_repr(*bytes)).ok_or("invalid field element")?;
-        if fp.is_zero_vartime() {
-            return Err("zero digest");
-        }
         Ok(Self(fp))
     }
 }

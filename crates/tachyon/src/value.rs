@@ -8,8 +8,10 @@ use core::{iter, ops, ops::Neg as _};
 use ff::Field as _;
 use lazy_static::lazy_static;
 use pasta_curves::{
-    Ep, EpAffine, Fq, arithmetic::CurveExt as _, group::GroupEncoding as _,
-    group::prime::PrimeCurveAffine as _, pallas,
+    Ep, EpAffine, Fq,
+    arithmetic::CurveExt as _,
+    group::{GroupEncoding as _, prime::PrimeCurveAffine as _},
+    pallas,
 };
 use rand_core::{CryptoRng, RngCore};
 

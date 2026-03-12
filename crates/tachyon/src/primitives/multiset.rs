@@ -11,12 +11,9 @@ use alloc::vec::Vec;
 use core::{marker::PhantomData, ops::Mul};
 
 use ff::Field as _;
-use pasta_curves::{EqAffine, Fp};
+use pasta_curves::{EqAffine, Fp, group::GroupEncoding as _};
 
-use crate::{
-    action::Action,
-    primitives::{ActionDigest, ActionDigestError},
-};
+use crate::primitives::{ActionDigest, ActionDigestError};
 
 /// Blinding factor for multiset polynomial commitments.
 ///
@@ -57,10 +54,6 @@ impl From<CommitmentTrapdoor> for Fp {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Commitment<T>
-// ---------------------------------------------------------------------------
-
 /// A typed Pedersen commitment to a [`Multiset<T>`] — a Vesta curve point.
 ///
 /// The type parameter prevents action commitments from being passed where
@@ -84,7 +77,6 @@ impl<T> From<Commitment<T>> for EqAffine {
 
 impl<T> From<Commitment<T>> for [u8; 32] {
     fn from(commitment: Commitment<T>) -> Self {
-        use pasta_curves::group::GroupEncoding as _;
         commitment.0.to_bytes()
     }
 }
@@ -145,18 +137,20 @@ impl<'multiset, T: Into<Fp> + Copy> Mul<&'multiset Multiset<T>> for &'multiset M
     }
 }
 
-/// Multi-action constructor: builds `∏(X - digestᵢ)` from a slice of actions.
-impl TryFrom<&[Action]> for Multiset<ActionDigest> {
+impl<T> TryFrom<&[T]> for Multiset<ActionDigest>
+where
+    for<'item> ActionDigest: TryFrom<&'item T, Error = ActionDigestError>,
+{
     type Error = ActionDigestError;
 
-    fn try_from(actions: &[Action]) -> Result<Self, Self::Error> {
-        let roots: Vec<Fp> = actions
+    fn try_from(items: &[T]) -> Result<Self, Self::Error> {
+        let digests = items
             .iter()
             .map(ActionDigest::try_from)
-            .collect::<Result<Vec<ActionDigest>, ActionDigestError>>()?
-            .into_iter()
-            .map(Fp::from)
-            .collect();
+            .collect::<Result<Vec<ActionDigest>, ActionDigestError>>()?;
+
+        let roots: Vec<Fp> = digests.into_iter().map(Fp::from).collect();
+
         Ok(Self(mock_ragu::Polynomial::from_roots(&roots), PhantomData))
     }
 }
