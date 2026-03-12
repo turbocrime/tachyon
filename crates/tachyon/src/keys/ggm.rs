@@ -5,6 +5,7 @@
 //! Traversal is MSB-first so that left subtrees cover lower-numbered
 //! leaves, enabling contiguous-range prefix delegation.
 
+use alloc::vec::Vec;
 use core::num::NonZeroU8;
 
 use ff::PrimeField as _;
