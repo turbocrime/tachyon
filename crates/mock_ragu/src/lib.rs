@@ -1,15 +1,4 @@
-//! Mock Ragu PCD proof system.
-//!
-//! API-level mock of the Ragu Proof-Carrying Data framework for testing
-//! the Tachyon protocol before the real Ragu implementation is available.
-//!
-//! ## Core types (mirroring `ragu_pcd`)
-//!
-//! - [`Header`] trait: defines data carried by proofs
-//! - [`Step`] trait: defines computation nodes in the PCD graph
-//! - [`ApplicationBuilder`] / [`Application`]: build and use a PCD application
-//! - [`Proof`]: the proof bytes (128 bytes)
-//! - [`Pcd`]: proof + header data bundle
+//! Mock Ragu PCD proof system — API-level mock of `ragu_pcd`.
 // Lints that don't apply to a mock crate mirroring an external API.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![expect(clippy::pub_use, reason = "crate public API re-exports")]
@@ -33,3 +22,6 @@ pub mod header;
 pub mod polynomial;
 pub mod proof;
 pub mod step;
+
+#[cfg(test)]
+mod tests;
