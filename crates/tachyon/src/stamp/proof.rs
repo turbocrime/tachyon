@@ -82,6 +82,8 @@ pub(crate) struct ActionWitness<'action> {
     pub(crate) effect: Effect,
     /// Accumulator state reference.
     pub(crate) anchor: Anchor,
+    /// Epoch index for nullifier derivation.
+    pub(crate) epoch: Epoch,
     /// Wallet-wide proof authorizing key.
     pub(crate) pak: &'action ProofAuthorizingKey,
 }
@@ -108,9 +110,10 @@ impl Step for ActionStep {
         // receives it through Aux for data availability on the stamp).
         let tachygram: Tachygram = match witness.effect {
             | Effect::Spend => {
-                todo!("derive epoch from anchor");
-                let epoch = Epoch::from(0u32);
-                let nf = witness.witness.note.nullifier(witness.pak.nk(), epoch);
+                let nf = witness
+                    .witness
+                    .note
+                    .nullifier(witness.pak.nk(), witness.epoch);
                 nf.into()
             },
             | Effect::Output => {

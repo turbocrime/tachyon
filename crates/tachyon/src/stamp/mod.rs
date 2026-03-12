@@ -23,7 +23,7 @@ use rand::CryptoRng;
 
 use self::proof::{ActionStep, ActionWitness, MergeStep, MergeWitness, PROOF_SYSTEM, StampHeader};
 use crate::{
-    ActionDigest,
+    ActionDigest, Epoch,
     action::{Action, Effect},
     keys::ProofAuthorizingKey,
     primitives::{ActionDigestError, Anchor, Tachygram, multiset::Multiset},
@@ -31,7 +31,7 @@ use crate::{
 };
 
 /// Marker for the absence of a stamp.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Stampless;
 
@@ -95,22 +95,26 @@ impl Stamp {
         action: &Action,
         effect: Effect,
         anchor: Anchor,
+        epoch: Epoch,
         pak: &ProofAuthorizingKey,
     ) -> Result<(Self, (Multiset<ActionDigest>, Multiset<Tachygram>)), mock_ragu::Error> {
         let app = &*PROOF_SYSTEM;
-        let action_witness = ActionWitness {
-            action,
-            witness,
-            effect,
-            anchor,
-            pak,
-        };
-        let (proof, (tachygram, action_acc, tachygram_acc)) =
-            app.seed(rng, &ActionStep, action_witness)?;
+        let (proof, (tachygram, action_acc, tachygram_acc)) = app.seed(
+            rng,
+            &ActionStep,
+            ActionWitness {
+                action,
+                witness,
+                effect,
+                anchor,
+                epoch,
+                pak,
+            },
+        )?;
 
-        let header = (action_acc.commit(), tachygram_acc.commit(), anchor);
-        let carried = proof.carry::<StampHeader>(header);
-        let rerand = app.rerandomize(carried, rng)?;
+        let pcd = proof.carry::<StampHeader>((action_acc.commit(), tachygram_acc.commit(), anchor));
+
+        let rerand = app.rerandomize(pcd, rng)?;
 
         Ok((
             Self {
@@ -132,39 +136,41 @@ impl Stamp {
     /// polynomials, recommits, and takes the max anchor.
     #[expect(clippy::type_complexity, reason = "deal with it")]
     pub fn prove_merge<RNG: CryptoRng>(
-        self,
-        (self_action_acc, self_tachygram_acc): (Multiset<ActionDigest>, Multiset<Tachygram>),
-        other: Self,
-        (other_action_acc, other_tachygram_acc): (Multiset<ActionDigest>, Multiset<Tachygram>),
         rng: &mut RNG,
+        left: Self,
+        left_actions: Multiset<ActionDigest>,
+        right: Self,
+        right_actions: Multiset<ActionDigest>,
     ) -> Result<(Self, (Multiset<ActionDigest>, Multiset<Tachygram>)), mock_ragu::Error> {
         let app = &*PROOF_SYSTEM;
 
-        let self_header = (
-            self_action_acc.commit(),
-            self_tachygram_acc.commit(),
-            self.anchor,
-        );
-        let other_header = (
-            other_action_acc.commit(),
-            other_tachygram_acc.commit(),
-            other.anchor,
-        );
-        let left_pcd = self.proof.carry::<StampHeader>(self_header);
-        let right_pcd = other.proof.carry::<StampHeader>(other_header);
+        let left_tachygrams = Multiset::<Tachygram>::from(left.tachygrams.as_slice());
+        let right_tachygrams = Multiset::<Tachygram>::from(right.tachygrams.as_slice());
+
+        let left_pcd = left.proof.carry::<StampHeader>((
+            left_actions.commit(),
+            left_tachygrams.commit(),
+            left.anchor,
+        ));
+
+        let right_pcd = right.proof.carry::<StampHeader>((
+            right_actions.commit(),
+            right_tachygrams.commit(),
+            right.anchor,
+        ));
 
         let merge_witness = MergeWitness {
-            left_action_acc: self_action_acc,
-            left_tachygram_acc: self_tachygram_acc,
-            right_action_acc: other_action_acc,
-            right_tachygram_acc: other_tachygram_acc,
+            left_action_acc: left_actions,
+            left_tachygram_acc: left_tachygrams,
+            right_action_acc: right_actions,
+            right_tachygram_acc: right_tachygrams,
         };
 
         let (proof, (merged_action_acc, merged_tachygram_acc)) =
             app.fuse(rng, &MergeStep, merge_witness, left_pcd, right_pcd)?;
 
-        let merged_anchor = self.anchor.max(other.anchor);
-        let merged_tachygrams = [self.tachygrams, other.tachygrams].concat();
+        let merged_anchor = left.anchor.max(right.anchor);
+        let merged_tachygrams = [left.tachygrams, right.tachygrams].concat();
 
         let merged_header = (
             merged_action_acc.commit(),
@@ -276,11 +282,19 @@ mod tests {
         let sk = private::SpendingKey::from([0x42u8; 32]);
         let pak = sk.derive_proof_private();
         let anchor = Anchor::from(Fp::ZERO);
+        let epoch = Epoch::from(0u32);
 
         let (action, witness) = make_action_and_witness(&mut rng, &sk, 500, Effect::Spend);
-        let (stamp, _accs) =
-            Stamp::prove_action(&mut rng, &witness, &action, Effect::Spend, anchor, &pak)
-                .expect("prove_action");
+        let (stamp, _accs) = Stamp::prove_action(
+            &mut rng,
+            &witness,
+            &action,
+            Effect::Spend,
+            anchor,
+            epoch,
+            &pak,
+        )
+        .expect("prove_action");
 
         stamp.verify(&[action]).expect("verify should succeed");
     }
@@ -291,11 +305,19 @@ mod tests {
         let sk = private::SpendingKey::from([0x42u8; 32]);
         let pak = sk.derive_proof_private();
         let anchor = Anchor::from(Fp::ZERO);
+        let epoch = Epoch::from(0u32);
 
         let (action_a, witness_a) = make_action_and_witness(&mut rng, &sk, 500, Effect::Spend);
-        let (stamp, _accs) =
-            Stamp::prove_action(&mut rng, &witness_a, &action_a, Effect::Spend, anchor, &pak)
-                .expect("prove_action");
+        let (stamp, _accs) = Stamp::prove_action(
+            &mut rng,
+            &witness_a,
+            &action_a,
+            Effect::Spend,
+            anchor,
+            epoch,
+            &pak,
+        )
+        .expect("prove_action");
 
         let (action_b, _witness_b) = make_action_and_witness(&mut rng, &sk, 200, Effect::Output);
 
@@ -311,20 +333,35 @@ mod tests {
         let sk = private::SpendingKey::from([0x42u8; 32]);
         let pak = sk.derive_proof_private();
         let anchor = Anchor::from(Fp::ZERO);
+        let epoch = Epoch::from(0u32);
 
         let (action_a, witness_a) = make_action_and_witness(&mut rng, &sk, 500, Effect::Spend);
-        let (stamp_a, accs_a) =
-            Stamp::prove_action(&mut rng, &witness_a, &action_a, Effect::Spend, anchor, &pak)
-                .expect("prove_action a");
+        let (stamp_a, accs_a) = Stamp::prove_action(
+            &mut rng,
+            &witness_a,
+            &action_a,
+            Effect::Spend,
+            anchor,
+            epoch,
+            &pak,
+        )
+        .expect("prove_action a");
 
         let (action_b, witness_b) = make_action_and_witness(&mut rng, &sk, 200, Effect::Output);
-        let (stamp_b, accs_b) =
-            Stamp::prove_action(&mut rng, &witness_b, &action_b, Effect::Output, anchor, &pak)
-                .expect("prove_action b");
+        let (stamp_b, accs_b) = Stamp::prove_action(
+            &mut rng,
+            &witness_b,
+            &action_b,
+            Effect::Output,
+            anchor,
+            epoch,
+            &pak,
+        )
+        .expect("prove_action b");
 
-        let (merged, _merged_accs) = stamp_a
-            .prove_merge(accs_a, stamp_b, accs_b, &mut rng)
-            .expect("prove_merge");
+        let (merged, _merged_accs) =
+            Stamp::prove_merge(&mut rng, stamp_a, accs_a.0, stamp_b, accs_b.0)
+                .expect("prove_merge");
 
         merged
             .verify(&[action_a, action_b])
@@ -337,20 +374,35 @@ mod tests {
         let sk = private::SpendingKey::from([0x42u8; 32]);
         let pak = sk.derive_proof_private();
         let anchor = Anchor::from(Fp::ZERO);
+        let epoch = Epoch::from(0u32);
 
         let (action_a, witness_a) = make_action_and_witness(&mut rng, &sk, 500, Effect::Spend);
-        let (stamp_a, accs_a) =
-            Stamp::prove_action(&mut rng, &witness_a, &action_a, Effect::Spend, anchor, &pak)
-                .expect("prove_action a");
+        let (stamp_a, accs_a) = Stamp::prove_action(
+            &mut rng,
+            &witness_a,
+            &action_a,
+            Effect::Spend,
+            anchor,
+            epoch,
+            &pak,
+        )
+        .expect("prove_action a");
 
         let (action_b, witness_b) = make_action_and_witness(&mut rng, &sk, 200, Effect::Output);
-        let (stamp_b, accs_b) =
-            Stamp::prove_action(&mut rng, &witness_b, &action_b, Effect::Output, anchor, &pak)
-                .expect("prove_action b");
+        let (stamp_b, accs_b) = Stamp::prove_action(
+            &mut rng,
+            &witness_b,
+            &action_b,
+            Effect::Output,
+            anchor,
+            epoch,
+            &pak,
+        )
+        .expect("prove_action b");
 
-        let (merged, _merged_accs) = stamp_a
-            .prove_merge(accs_a, stamp_b, accs_b, &mut rng)
-            .expect("prove_merge");
+        let (merged, _merged_accs) =
+            Stamp::prove_merge(&mut rng, stamp_a, accs_a.0, stamp_b, accs_b.0)
+                .expect("prove_merge");
 
         assert!(
             merged.verify(&[action_a]).is_err(),

@@ -291,7 +291,7 @@ mod tests {
         entropy::{ActionEntropy, ActionRandomizer},
         keys::private,
         note::{self, Note},
-        primitives::Anchor,
+        primitives::{Anchor, Epoch},
         stamp::Stamp,
         value,
         witness::ActionPrivate,
@@ -379,27 +379,35 @@ mod tests {
             rcv: output_plan.rcv,
         };
 
-        let (spend_stamp, spend_state) = Stamp::prove_action(
+        let epoch = Epoch::from(0u32);
+        let (spend_stamp, (spend_actions, _spend_tachygrams)) = Stamp::prove_action(
             &mut *rng,
             &spend_witness,
             &spend_action,
             action::Effect::Spend,
             anchor,
+            epoch,
             &pak,
         )
         .expect("prove_action (spend)");
-        let (output_stamp, output_state) = Stamp::prove_action(
+        let (output_stamp, (output_actions, _output_tachygrams)) = Stamp::prove_action(
             &mut *rng,
             &output_witness,
             &output_action,
             action::Effect::Output,
             anchor,
+            epoch,
             &pak,
         )
         .expect("prove_action (output)");
-        let (stamp, _stamp_state) = spend_stamp
-            .prove_merge(spend_state, output_stamp, output_state, &mut *rng)
-            .expect("prove_merge");
+        let (stamp, _stamp_state) = Stamp::prove_merge(
+            &mut *rng,
+            spend_stamp,
+            spend_actions,
+            output_stamp,
+            output_actions,
+        )
+        .expect("prove_merge");
 
         // Binding signature
         let bsk = bundle_plan.derive_bsk_private();
@@ -503,6 +511,7 @@ mod tests {
                     },
                     action::Effect::Spend,
                     Anchor::from(Fp::ZERO),
+                    Epoch::from(0u32),
                     &pak,
                 )
                 .expect("prove_action");
