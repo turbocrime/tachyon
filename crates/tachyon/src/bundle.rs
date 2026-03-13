@@ -65,22 +65,18 @@ impl TryFrom<Bundle<Option<Stamp>>> for Stripped {
 
     fn try_from(bundle: Bundle<Option<Stamp>>) -> Result<Self, Self::Error> {
         match bundle.stamp {
-            | None => {
-                Ok(Self {
-                    actions: bundle.actions,
-                    value_balance: bundle.value_balance,
-                    binding_sig: bundle.binding_sig,
-                    stamp: Stampless,
-                })
-            },
-            | Some(stamp) => {
-                Err(Stamped {
-                    actions: bundle.actions,
-                    value_balance: bundle.value_balance,
-                    binding_sig: bundle.binding_sig,
-                    stamp,
-                })
-            },
+            | None => Ok(Self {
+                actions: bundle.actions,
+                value_balance: bundle.value_balance,
+                binding_sig: bundle.binding_sig,
+                stamp: Stampless,
+            }),
+            | Some(stamp) => Err(Stamped {
+                actions: bundle.actions,
+                value_balance: bundle.value_balance,
+                binding_sig: bundle.binding_sig,
+                stamp,
+            }),
         }
     }
 }
@@ -104,22 +100,18 @@ impl TryFrom<Bundle<Option<Stamp>>> for Stamped {
 
     fn try_from(bundle: Bundle<Option<Stamp>>) -> Result<Self, Self::Error> {
         match bundle.stamp {
-            | Some(stamp) => {
-                Ok(Self {
-                    actions: bundle.actions,
-                    value_balance: bundle.value_balance,
-                    binding_sig: bundle.binding_sig,
-                    stamp,
-                })
-            },
-            | None => {
-                Err(Stripped {
-                    actions: bundle.actions,
-                    value_balance: bundle.value_balance,
-                    binding_sig: bundle.binding_sig,
-                    stamp: Stampless,
-                })
-            },
+            | Some(stamp) => Ok(Self {
+                actions: bundle.actions,
+                value_balance: bundle.value_balance,
+                binding_sig: bundle.binding_sig,
+                stamp,
+            }),
+            | None => Err(Stripped {
+                actions: bundle.actions,
+                value_balance: bundle.value_balance,
+                binding_sig: bundle.binding_sig,
+                stamp: Stampless,
+            }),
         }
     }
 }
@@ -541,9 +533,9 @@ mod tests {
         bundle.verify_signatures(&[0u8; 32]).unwrap();
     }
 
-    /// Build a stamped bundle, returning the bundle and its action multiset
+    /// Build an autonome, returning the bundle and its action multiset
     /// accumulator (needed for stamp merging).
-    fn build_test_bundle_with_accs(
+    fn build_autonome_with_accs(
         rng: &mut (impl RngCore + CryptoRng),
         spend_value: u64,
         output_value: u64,
@@ -659,191 +651,122 @@ mod tests {
         (bundle, action_acc)
     }
 
-    /// Merge stamps from two bundles into a zero-action aggregate bundle.
+    /// An innocent aggregate merges stamps from two autonomes.
     ///
-    /// Two stamped bundles are built, their stamps merged via `prove_merge`,
-    /// and the result placed in a new bundle with no actions and zero balance.
-    /// The merged stamp verifies against actions collected from both source
-    /// bundles.
+    /// Two autonomes are built, their stamps merged via `prove_merge`,
+    /// and the result placed in a new bundle with no actions and zero
+    /// balance. The merged stamp verifies against actions collected from
+    /// both autonomes (which become adjuncts once stripped).
     #[test]
-    fn merged_stamp_in_zero_action_bundle() {
+    fn innocent_aggregate_from_two_autonomes() {
         let mut rng = StdRng::seed_from_u64(0xCAFE);
 
-        let (bundle_a, action_acc_a) =
-            build_test_bundle_with_accs(&mut rng, 1000, 700);
-        let (bundle_b, action_acc_b) =
-            build_test_bundle_with_accs(&mut rng, 500, 200);
+        // Build two autonomes, strip them into adjuncts.
+        let (autonome_a, acc_a) = build_autonome_with_accs(&mut rng, 1000, 700);
+        let (autonome_b, acc_b) = build_autonome_with_accs(&mut rng, 500, 200);
+        let (adjunct_a, stamp_a) = autonome_a.strip();
+        let (adjunct_b, stamp_b) = autonome_b.strip();
 
-        let (merged_stamp, _merged_accs) = Stamp::prove_merge(
-            &mut rng,
-            bundle_a.stamp,
-            action_acc_a,
-            bundle_b.stamp,
-            action_acc_b,
-        )
-        .expect("prove_merge (cross-bundle)");
+        // Merge stamps into an innocent aggregate.
+        let (merged_stamp, _merged_accs) =
+            Stamp::prove_merge(&mut rng, stamp_a, acc_a, stamp_b, acc_b)
+                .expect("prove_merge (innocent)");
 
-        // Zero-action aggregate bundle carries only the merged stamp.
         let bsk = private::BindingSigningKey::from([].as_slice());
-        let aggregate_sighash = [0u8; 32];
-        let aggregate: Stamped = Bundle {
+        let sighash = [0u8; 32];
+        let innocent: Stamped = Bundle {
             actions: alloc::vec![],
             value_balance: 0,
-            binding_sig: bsk.sign(&mut rng, &aggregate_sighash),
+            binding_sig: bsk.sign(&mut rng, &sighash),
             stamp: merged_stamp,
         };
 
-        aggregate
-            .verify_signatures(&aggregate_sighash)
-            .expect("zero-action binding sig should verify");
+        innocent
+            .verify_signatures(&sighash)
+            .expect("innocent binding sig should verify");
 
-        // Collect all actions from both source bundles for stamp verification.
-        let all_actions: Vec<Action> =
-            [bundle_a.actions, bundle_b.actions].concat();
-        aggregate
+        // Stamp covers both adjuncts' actions.
+        let adjunct_actions: Vec<Action> = [adjunct_a.actions, adjunct_b.actions].concat();
+        innocent
             .stamp
-            .verify(&all_actions, &mut rng)
-            .expect("merged stamp should verify against combined actions");
+            .verify(&adjunct_actions, &mut rng)
+            .expect("innocent stamp should verify against adjunct actions");
     }
 
-    /// Build a stamped bundle (like `build_test_bundle_with_accs`) but return
-    /// the stamp and action accumulator separately from the bundle plan and
-    /// materialized actions, so the caller can merge stamps independently.
-    fn build_actions_and_stamp(
-        rng: &mut (impl RngCore + CryptoRng),
-        spend_value: u64,
-        output_value: u64,
-    ) -> (Vec<Action>, Plan, Stamp, Multiset<ActionDigest>) {
-        let sk = private::SpendingKey::from([0x42u8; 32]);
-        let ask = sk.derive_auth_private();
-        let pak = sk.derive_proof_private();
-        let anchor = Anchor::from(Fp::ZERO);
-        let epoch = Epoch::from(0u32);
-
-        let spend_note = Note {
-            pk: sk.derive_payment_key(),
-            value: note::Value::from(spend_value),
-            psi: note::NullifierTrapdoor::from(Fp::random(&mut *rng)),
-            rcm: note::CommitmentTrapdoor::from(Fp::random(&mut *rng)),
-        };
-        let output_note = Note {
-            pk: sk.derive_payment_key(),
-            value: note::Value::from(output_value),
-            psi: note::NullifierTrapdoor::from(Fp::random(&mut *rng)),
-            rcm: note::CommitmentTrapdoor::from(Fp::random(&mut *rng)),
-        };
-
-        let theta_spend = ActionEntropy::random(&mut *rng);
-        let theta_output = ActionEntropy::random(&mut *rng);
-        let spend_rcv = value::CommitmentTrapdoor::random(&mut *rng);
-        let output_rcv = value::CommitmentTrapdoor::random(&mut *rng);
-
-        let spend_plan = action::Plan::spend(spend_note, theta_spend, spend_rcv, pak.ak());
-        let output_plan = action::Plan::output(output_note, theta_output, output_rcv);
-        let value_balance: i64 = i64::try_from(spend_value).expect("spend_value fits")
-            - i64::try_from(output_value).expect("output_value fits");
-
-        let bundle_plan = Plan::new(alloc::vec![spend_plan, output_plan], value_balance);
-        let sighash = mock_sighash(bundle_plan.commitment());
-
-        let spend_alpha = theta_spend.spend_randomizer(&spend_note.commitment());
-        let spend_sig = ask
-            .derive_action_private(&spend_alpha)
-            .sign(&mut *rng, &sighash);
-        let output_alpha = theta_output.output_randomizer(&output_note.commitment());
-        let output_sig = private::ActionSigningKey::new(output_alpha).sign(&mut *rng, &sighash);
-
-        let spend_action = Action { cv: spend_plan.cv(), rk: spend_plan.rk, sig: spend_sig };
-        let output_action = Action { cv: output_plan.cv(), rk: output_plan.rk, sig: output_sig };
-
-        let spend_witness = ActionPrivate {
-            alpha: ActionRandomizer::from(spend_alpha),
-            note: spend_note,
-            rcv: spend_plan.rcv,
-        };
-        let output_witness = ActionPrivate {
-            alpha: ActionRandomizer::from(output_alpha),
-            note: output_note,
-            rcv: output_plan.rcv,
-        };
-
-        let (spend_stamp, (spend_acc, _)) = Stamp::prove_action(
-            &mut *rng, &spend_witness, &spend_action, action::Effect::Spend, anchor, epoch, &pak,
-        )
-        .expect("prove_action (spend)");
-        let (output_stamp, (output_acc, _)) = Stamp::prove_action(
-            &mut *rng, &output_witness, &output_action, action::Effect::Output, anchor, epoch, &pak,
-        )
-        .expect("prove_action (output)");
-
-        let (stamp, (action_acc, _)) = Stamp::prove_merge(
-            &mut *rng, spend_stamp, spend_acc, output_stamp, output_acc,
-        )
-        .expect("prove_merge");
-
-        let actions = alloc::vec![spend_action, output_action];
-        (actions, bundle_plan, stamp, action_acc)
-    }
-
-    /// Build an aggregate: two source bundles' stamps merged with the
-    /// aggregate's own actions. Returns all actions covered by the stamp,
-    /// the stamp itself, and its action accumulator.
-    fn build_aggregate(
-        rng: &mut (impl RngCore + CryptoRng),
-        src: [(u64, u64); 2],
-        own: (u64, u64),
-    ) -> (Vec<Action>, Stamp, Multiset<ActionDigest>) {
-        let (actions_a, _, stamp_a, acc_a) = build_actions_and_stamp(rng, src[0].0, src[0].1);
-        let (actions_b, _, stamp_b, acc_b) = build_actions_and_stamp(rng, src[1].0, src[1].1);
-
-        let (cross_stamp, (cross_acc, _)) =
-            Stamp::prove_merge(rng, stamp_a, acc_a, stamp_b, acc_b)
-                .expect("prove_merge (cross-bundle)");
-
-        let (own_actions, _, own_stamp, own_acc) = build_actions_and_stamp(rng, own.0, own.1);
-
-        let (final_stamp, (final_acc, _)) =
-            Stamp::prove_merge(rng, own_stamp, own_acc, cross_stamp, cross_acc)
-                .expect("prove_merge (final)");
-
-        let all_actions = [own_actions, actions_a, actions_b].concat();
-        (all_actions, final_stamp, final_acc)
-    }
-
-    /// An aggregate bundle with its own actions carries a merged stamp from
-    /// two source bundles.
+    /// A based aggregate proves its own actions and covers two adjuncts.
     ///
-    /// The aggregate has a spend and output of its own, plus the merged stamp
-    /// covering all six actions (two per source bundle + two of its own).
+    /// Three autonomes are built and stripped. Two become adjuncts whose
+    /// stamps merge, then that merged stamp merges with the third's stamp.
+    /// The based aggregate carries the third's actions + the final stamp.
     #[test]
-    fn aggregate_with_own_actions_and_merged_stamp() {
+    fn based_aggregate_with_two_adjuncts() {
         let mut rng = StdRng::seed_from_u64(0xBEEF);
 
-        let (all_actions, final_stamp, _) =
-            build_aggregate(&mut rng, [(1000, 700), (500, 200)], (800, 400));
+        // Build two autonomes and strip them into adjuncts.
+        let (autonome_a, acc_a) = build_autonome_with_accs(&mut rng, 1000, 700);
+        let (autonome_b, acc_b) = build_autonome_with_accs(&mut rng, 500, 200);
+        let (adjunct_a, stamp_a) = autonome_a.strip();
+        let (adjunct_b, stamp_b) = autonome_b.strip();
 
-        final_stamp
+        // Merge adjunct stamps.
+        let (merged_stamp, (merged_acc, _)) =
+            Stamp::prove_merge(&mut rng, stamp_a, acc_a, stamp_b, acc_b)
+                .expect("prove_merge (adjuncts)");
+
+        // Build the aggregate's own autonome. Move its stamp out for
+        // merging — no stripping needed, since this is the aggregate itself.
+        let (autonome_own, acc_own) = build_autonome_with_accs(&mut rng, 800, 400);
+        let sighash = mock_sighash(autonome_own.commitment().unwrap());
+
+        let (final_stamp, _) = Stamp::prove_merge(
+            &mut rng,
+            autonome_own.stamp,
+            acc_own,
+            merged_stamp,
+            merged_acc,
+        )
+        .expect("prove_merge (based)");
+
+        // Assemble the based aggregate: own actions + merged stamp.
+        let based_aggregate: Stamped = Bundle {
+            actions: autonome_own.actions.clone(),
+            value_balance: autonome_own.value_balance,
+            binding_sig: autonome_own.binding_sig,
+            stamp: final_stamp,
+        };
+
+        based_aggregate
+            .verify_signatures(&sighash)
+            .expect("based aggregate binding sig should verify");
+
+        // Stamp covers all six actions.
+        let all_actions: Vec<Action> =
+            [autonome_own.actions, adjunct_a.actions, adjunct_b.actions].concat();
+        based_aggregate
+            .stamp
             .verify(&all_actions, &mut rng)
-            .expect("merged stamp should verify against all actions");
+            .expect("based aggregate stamp should verify against all actions");
     }
 
     /// An innocent aggregate (no own actions) is stripped and its stamp
     /// merged into a based aggregate (has own actions).
     ///
     /// Flow:
-    /// 1. Two autonomes → stamps merged → innocent aggregate (zero actions)
-    /// 2. Third autonome built separately
+    /// 1. Two autonomes built and stripped → adjuncts + stamps
+    /// 2. Stamps merged → innocent aggregate (zero actions)
     /// 3. Innocent stripped → adjunct + extracted stamp
-    /// 4. Innocent's stamp merged with autonome's stamp → based aggregate
-    /// 5. Based aggregate verifies binding sig + stamp against all 6 actions
+    /// 4. Third autonome's stamp merged with extracted stamp → based aggregate
     #[test]
     fn innocent_stripped_into_based_aggregate() {
         let mut rng = StdRng::seed_from_u64(0xF00D);
 
-        // Two autonomes whose stamps merge into an innocent aggregate.
-        let (actions_1, _, stamp_1, acc_1) = build_actions_and_stamp(&mut rng, 1000, 700);
-        let (actions_2, _, stamp_2, acc_2) = build_actions_and_stamp(&mut rng, 500, 200);
+        // Build two autonomes, strip them into adjuncts.
+        let (autonome_1, acc_1) = build_autonome_with_accs(&mut rng, 1000, 700);
+        let (autonome_2, acc_2) = build_autonome_with_accs(&mut rng, 500, 200);
+        let (adjunct_1, stamp_1) = autonome_1.strip();
+        let (adjunct_2, stamp_2) = autonome_2.strip();
 
+        // Merge into an innocent aggregate.
         let (innocent_stamp, (innocent_acc, _)) =
             Stamp::prove_merge(&mut rng, stamp_1, acc_1, stamp_2, acc_2)
                 .expect("prove_merge (innocent)");
@@ -851,42 +774,52 @@ mod tests {
         let innocent: Stamped = Bundle {
             actions: alloc::vec![],
             value_balance: 0,
-            binding_sig: private::BindingSigningKey::from([].as_slice())
-                .sign(&mut rng, &[0u8; 32]),
+            binding_sig: private::BindingSigningKey::from([].as_slice()).sign(&mut rng, &[0u8; 32]),
             stamp: innocent_stamp,
         };
 
-        // Strip the innocent → adjunct (stampless) + extracted stamp.
-        let (_adjunct, extracted_stamp) = innocent.strip();
+        // Strip the innocent → adjunct + extracted stamp.
+        let (innocent_adjunct, extracted_stamp) = innocent.strip();
+        assert!(
+            innocent_adjunct.actions.is_empty(),
+            "innocent adjunct has no actions"
+        );
+        assert_eq!(
+            innocent_adjunct.value_balance, 0,
+            "innocent adjunct has zero balance"
+        );
+        innocent_adjunct
+            .verify_signatures(&[0u8; 32])
+            .expect("innocent adjunct should be a valid bundle");
 
-        // Third autonome: will become the based aggregate's own actions.
-        let (based_actions, based_plan, based_own_stamp, based_own_acc) =
-            build_actions_and_stamp(&mut rng, 800, 400);
-        let based_sighash = mock_sighash(based_plan.commitment());
+        // Third autonome becomes the based aggregate. Move its stamp out
+        // for merging — no stripping, since this is the aggregate itself.
+        let (autonome_own, acc_own) = build_autonome_with_accs(&mut rng, 800, 400);
+        let sighash = mock_sighash(autonome_own.commitment().unwrap());
 
-        // Merge the innocent's stamp with the based aggregate's own stamp.
         let (final_stamp, _) = Stamp::prove_merge(
             &mut rng,
-            based_own_stamp,
-            based_own_acc,
+            autonome_own.stamp,
+            acc_own,
             extracted_stamp,
             innocent_acc,
         )
         .expect("prove_merge (based)");
 
         let based_aggregate: Stamped = Bundle {
-            actions: based_actions.clone(),
-            value_balance: based_plan.value_balance,
-            binding_sig: based_plan.derive_bsk_private().sign(&mut rng, &based_sighash),
+            actions: autonome_own.actions.clone(),
+            value_balance: autonome_own.value_balance,
+            binding_sig: autonome_own.binding_sig,
             stamp: final_stamp,
         };
 
         based_aggregate
-            .verify_signatures(&based_sighash)
+            .verify_signatures(&sighash)
             .expect("based aggregate binding sig should verify");
 
-        // Stamp covers all 6 actions: based's own + both autonomes'.
-        let all_actions: Vec<Action> = [based_actions, actions_1, actions_2].concat();
+        // Stamp covers all 6 actions.
+        let all_actions: Vec<Action> =
+            [autonome_own.actions, adjunct_1.actions, adjunct_2.actions].concat();
         based_aggregate
             .stamp
             .verify(&all_actions, &mut rng)
