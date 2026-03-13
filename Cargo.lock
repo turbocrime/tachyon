@@ -158,8 +158,10 @@ version = "0.0.0"
 dependencies = [
  "blake2b_simd",
  "ff",
+ "lazy_static",
  "pasta_curves",
  "rand",
+ "rand_core",
 ]
 
 [[package]]
