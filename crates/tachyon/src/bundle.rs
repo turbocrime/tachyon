@@ -785,54 +785,112 @@ mod tests {
         (actions, bundle_plan, stamp, action_acc)
     }
 
+    /// Build an aggregate: two source bundles' stamps merged with the
+    /// aggregate's own actions. Returns all actions covered by the stamp,
+    /// the stamp itself, and its action accumulator.
+    fn build_aggregate(
+        rng: &mut (impl RngCore + CryptoRng),
+        src: [(u64, u64); 2],
+        own: (u64, u64),
+    ) -> (Vec<Action>, Stamp, Multiset<ActionDigest>) {
+        let (actions_a, _, stamp_a, acc_a) = build_actions_and_stamp(rng, src[0].0, src[0].1);
+        let (actions_b, _, stamp_b, acc_b) = build_actions_and_stamp(rng, src[1].0, src[1].1);
+
+        let (cross_stamp, (cross_acc, _)) =
+            Stamp::prove_merge(rng, stamp_a, acc_a, stamp_b, acc_b)
+                .expect("prove_merge (cross-bundle)");
+
+        let (own_actions, _, own_stamp, own_acc) = build_actions_and_stamp(rng, own.0, own.1);
+
+        let (final_stamp, (final_acc, _)) =
+            Stamp::prove_merge(rng, own_stamp, own_acc, cross_stamp, cross_acc)
+                .expect("prove_merge (final)");
+
+        let all_actions = [own_actions, actions_a, actions_b].concat();
+        (all_actions, final_stamp, final_acc)
+    }
+
     /// An aggregate bundle with its own actions carries a merged stamp from
     /// two source bundles.
     ///
     /// The aggregate has a spend and output of its own, plus the merged stamp
     /// covering all six actions (two per source bundle + two of its own).
-    /// Both binding signature and stamp verification must pass.
     #[test]
     fn aggregate_with_own_actions_and_merged_stamp() {
         let mut rng = StdRng::seed_from_u64(0xBEEF);
 
-        // Two source bundles whose stamps will be merged into the aggregate.
-        let (actions_a, _, stamp_a, acc_a) = build_actions_and_stamp(&mut rng, 1000, 700);
-        let (actions_b, _, stamp_b, acc_b) = build_actions_and_stamp(&mut rng, 500, 200);
+        let (all_actions, final_stamp, _) =
+            build_aggregate(&mut rng, [(1000, 700), (500, 200)], (800, 400));
 
-        let (cross_stamp, (cross_acc, _)) = Stamp::prove_merge(
-            &mut rng, stamp_a, acc_a, stamp_b, acc_b,
-        )
-        .expect("prove_merge (cross-bundle)");
+        final_stamp
+            .verify(&all_actions, &mut rng)
+            .expect("merged stamp should verify against all actions");
+    }
 
-        // The aggregate's own actions.
-        let (agg_actions, agg_plan, own_stamp, own_acc) =
+    /// An innocent aggregate (no own actions) is stripped and its stamp
+    /// merged into a based aggregate (has own actions).
+    ///
+    /// Flow:
+    /// 1. Two autonomes → stamps merged → innocent aggregate (zero actions)
+    /// 2. Third autonome built separately
+    /// 3. Innocent stripped → adjunct + extracted stamp
+    /// 4. Innocent's stamp merged with autonome's stamp → based aggregate
+    /// 5. Based aggregate verifies binding sig + stamp against all 6 actions
+    #[test]
+    fn innocent_stripped_into_based_aggregate() {
+        let mut rng = StdRng::seed_from_u64(0xF00D);
+
+        // Two autonomes whose stamps merge into an innocent aggregate.
+        let (actions_1, _, stamp_1, acc_1) = build_actions_and_stamp(&mut rng, 1000, 700);
+        let (actions_2, _, stamp_2, acc_2) = build_actions_and_stamp(&mut rng, 500, 200);
+
+        let (innocent_stamp, (innocent_acc, _)) =
+            Stamp::prove_merge(&mut rng, stamp_1, acc_1, stamp_2, acc_2)
+                .expect("prove_merge (innocent)");
+
+        let innocent: Stamped = Bundle {
+            actions: alloc::vec![],
+            value_balance: 0,
+            binding_sig: private::BindingSigningKey::from([].as_slice())
+                .sign(&mut rng, &[0u8; 32]),
+            stamp: innocent_stamp,
+        };
+
+        // Strip the innocent → adjunct (stampless) + extracted stamp.
+        let (_adjunct, extracted_stamp) = innocent.strip();
+
+        // Third autonome: will become the based aggregate's own actions.
+        let (based_actions, based_plan, based_own_stamp, based_own_acc) =
             build_actions_and_stamp(&mut rng, 800, 400);
-        let agg_sighash = mock_sighash(agg_plan.commitment());
+        let based_sighash = mock_sighash(based_plan.commitment());
 
-        // Merge own stamp with cross-bundle stamp.
+        // Merge the innocent's stamp with the based aggregate's own stamp.
         let (final_stamp, _) = Stamp::prove_merge(
-            &mut rng, own_stamp, own_acc, cross_stamp, cross_acc,
+            &mut rng,
+            based_own_stamp,
+            based_own_acc,
+            extracted_stamp,
+            innocent_acc,
         )
-        .expect("prove_merge (final)");
+        .expect("prove_merge (based)");
 
-        let bsk = agg_plan.derive_bsk_private();
-        let aggregate: Stamped = Bundle {
-            actions: agg_actions.clone(),
-            value_balance: agg_plan.value_balance,
-            binding_sig: bsk.sign(&mut rng, &agg_sighash),
+        let based_aggregate: Stamped = Bundle {
+            actions: based_actions.clone(),
+            value_balance: based_plan.value_balance,
+            binding_sig: based_plan.derive_bsk_private().sign(&mut rng, &based_sighash),
             stamp: final_stamp,
         };
 
-        aggregate
-            .verify_signatures(&agg_sighash)
-            .expect("aggregate binding sig should verify");
+        based_aggregate
+            .verify_signatures(&based_sighash)
+            .expect("based aggregate binding sig should verify");
 
-        // Stamp covers all six actions: aggregate's own + both source bundles'.
-        let all_actions: Vec<Action> = [agg_actions, actions_a, actions_b].concat();
-        aggregate
+        // Stamp covers all 6 actions: based's own + both autonomes'.
+        let all_actions: Vec<Action> = [based_actions, actions_1, actions_2].concat();
+        based_aggregate
             .stamp
             .verify(&all_actions, &mut rng)
-            .expect("merged stamp should verify against all actions");
+            .expect("based aggregate stamp should verify against all actions");
     }
 
     /// A tampered action signature must cause verification to fail.
