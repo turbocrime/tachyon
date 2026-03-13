@@ -34,19 +34,16 @@ flowchart TB
     sign --- action["action { cv, rk, sig }"]
 ```
 
-
 The arbitrary entropy `theta` which combines with note commitment `cm` to deterministically produce the randomizer `alpha`:
 
 $$ \alpha_{\text{spend}} = \text{BLAKE2b-512}_\text{Tachyon-Spend}(\theta \| \mathsf{cm}) $$
 $$ \alpha_{\text{output}} = \text{BLAKE2b-512}_\text{Tachyon-Output}(\theta \| \mathsf{cm}) $$
-
 
 Actions are signed with a unique per-action `rsk` signing key.
 Spends and outputs have different relationships between `alpha` and `rsk`, but in both cases,
 the action's published `rk` validating key is the public counterpart of `rsk`.
 
 $$ \mathsf{rk} = [\mathsf{rsk}]\,\mathcal{G} $$
-
 
 ### Spend
 
@@ -76,15 +73,13 @@ Then during authorization, the custody device is able to confirm correctness of 
 
 The bundle commitment is a digest of the bundle's effect.
 
+$$ d_i = \text{Poseidon}_\text{Tachyon-ActnDgst}(\mathsf{cv}_i \| \mathsf{rk}_i) $$
+$$ \text{BLAKE2b-512}_\text{Tachyon-BndlHash}( d_1 \| d_2 \| \ldots \| d_n \| \mathsf{value\_balance}) $$
 
-$$ \mathsf{action\_acc} = \sum_i H(\mathsf{cv}_i \| \mathsf{rk}_i) $$
-$$ \text{BLAKE2b-512}_\text{Tachyon-BndlHash}( \mathsf{action\_acc} \| \mathsf{value\_balance}) $$
-
-The accumulator is order-independent (addition is commutative), so the bundle commitment does not depend on action ordering.
-
+The bundle commitment hashes the individual action digests in order.
+The same action digests are used as polynomial roots in the PCD stamp header's accumulator commitment, binding the stamp to the same set of actions as the signatures.
 
 The stamp is excluded because it is stripped during [aggregation](./aggregation.md).
-The same `action_acc` appears in the Ragu PCD stamp header, binding the stamp to the same set of actions as the signatures.
 
 ### Transaction sighash
 
@@ -108,7 +103,6 @@ where $v$ is the signed integer value (positive for spends, negative for outputs
 The generators $\mathcal{V}$ and $\mathcal{R}$ are shared with Orchard, derived from the domain `z.cash:Orchard-cv`.[^generator-todo]
 
 [^generator-todo]: The binding signature scheme uses `reddsa::orchard::Binding` which hardcodes $\mathcal{R}$ as its basepoint. We should consider defining a unique personalization.
-
 
 ### Binding signature
 
@@ -149,7 +143,7 @@ A bundle plan feeds three independent paths that converge in the final bundle.
 Each path consumes the same action plans but produces a different component of the bundle:
 
 - **Authorizing**: custody derives `rsk` per spend action and signs the transaction sighash; output actions are signed by the user device.
-- **Binding**: the bundle commitment (from `action_acc` and `value_balance`) feeds into the transaction sighash, which the binding key signs.
+- **Binding**: the bundle commitment (from ordered action digests and `value_balance`) feeds into the transaction sighash, which the binding key signs.
 - **Proving**: each action plan yields a leaf stamp; leaves merge into a single Ragu PCD stamp.
 
 ```mermaid
@@ -221,7 +215,7 @@ flowchart LR
     pczt ~~~ sighash
 ```
 
-Consensus recomputes `action_acc` from the visible actions and checks it against both the sighash (via the bundle commitment) and the stamp (via the PCD header).
+Consensus recomputes action digests from visible actions and checks them against both the sighash (via the bundle commitment) and the stamp (via the polynomial commitment in the PCD header).
 
 A modified action breaks both checks.
 
@@ -241,15 +235,15 @@ rect rgb(100, 149, 237, 0.1)
 
         note over User: random theta
         note over User: random rcv
-        note over User: cm = NoteCommit(pk, psi, rcm, v)
+        note over User: cm = Poseidon(pk, psi, rcm, v)
         alt spend
-            note over User: alpha = Blake2b("Tachyon-Spend", theta || cm)
+            note over User: alpha = Blake2b(theta || cm)
             note over User: rk = ak + [alpha]G
-            note over User: cv = ValueCommit(v, rcv)
+            note over User: cv = Pedersen(v, rcv)
         else output
-            note over User: alpha = Blake2b("Tachyon-Output", theta || cm)
+            note over User: alpha = Blake2b(theta || cm)
             note over User: rk = [alpha]G
-            note over User: cv = ValueCommit(-v, rcv)
+            note over User: cv = Pedersen(-v, rcv)
         end
         note over User: action_plan { rk, note, theta, rcv, effect }
     end
@@ -275,14 +269,13 @@ par Authorizing
 
         loop per action
             alt spend
-                note over Custody: cv = ValueCommit(v, rcv)
+                note over Custody: cv = Pedersen(v, rcv)
             else output
-                note over Custody: cv = ValueCommit(-v, rcv)
+                note over Custody: cv = Pedersen(-v, rcv)
             end
-            note over Custody: action_digest = H(cv || rk)
+            note over Custody: action_digest_i = Poseidon(cv || rk)
         end
-        note over Custody: action_acc = Sum action_digest_i
-        note over Custody: bundle_commitment = Blake2b("Tachyon-BndlHash", action_acc || value_balance)
+        note over Custody: bundle_commitment = Blake2b(d_1 || ... || d_n || value_balance)
         note over Custody: compute sighash
 
         break
@@ -291,7 +284,7 @@ par Authorizing
         end
 
         loop per spend action
-            note over Custody: alpha = Blake2b("Tachyon-Spend", theta || cm)
+            note over Custody: alpha = Blake2b(theta || cm)
             note over Custody: rsk = ask + alpha
             note over Custody: sig = Sign(rsk, sighash)
         end
@@ -309,13 +302,16 @@ and Proving
                 alt effect == spend
                     User --> User: rk == ak + [alpha]G
                     note over User: flavor = epoch(anchor)
-                    note over User: tachygram_acc = PRF(nk, psi, flavor)
+                    note over User: nf = Poseidon(nk, psi, flavor)
+                    note over User: tg_root = Poseidon(nf)
                 else effect == output
                     User --> User: rk == [alpha]G
-                    note over User: tachygram_acc = NoteCommit(pk, psi, rcm, v)
+                    note over User: cm = Poseidon(pk, psi, rcm, v)
+                    note over User: tg_root = Poseidon(cm)
                 end
-                note over User: action_acc = H(cv || rk)
-                note over User: pcd: leaf stamp(action_acc, tachygram_acc, anchor)
+                note over User: action_root = Poseidon(cv || rk)
+                note over User: action_poly = (X - action_root), tg_poly = (X - tg_root)
+                note over User: pcd: leaf stamp(Commit(action_poly), Commit(tg_poly), anchor)
             end
         end
 
@@ -324,18 +320,18 @@ and Proving
 
 
         loop while stamps > 1
-            critical left(action_acc, tachygram_acc, anchor), right(action_acc, tachygram_acc, anchor)
-                note over Stamper: action_acc = union(left.action_acc, right.action_acc)
-                note over Stamper: tachygram_acc = union(left.tachygram_acc, right.tachygram_acc)
-                note over Stamper: anchor = intersect(left.anchor, right.anchor)
-                note over Stamper: pcd: stamp(action_acc, tachygram_acc, anchor)
+            critical left(action_poly, tg_poly, anchor), right(action_poly, tg_poly, anchor)
+                note over Stamper: merged_action = left.action_poly * right.action_poly
+                note over Stamper: merged_tg = left.tg_poly * right.tg_poly
+                note over Stamper: anchor = max(left.anchor, right.anchor)
+                note over Stamper: pcd: stamp(Commit(merged_action), Commit(merged_tg), anchor)
             end
         end
         destroy Stamper
-        Stamper ->> User: stamp(tachygram_acc, action_acc, anchor)
+        Stamper ->> User: stamp(tachygrams, anchor, proof)
 
         break
-            note over User: verify stamp(tachygram_acc, action_acc, anchor)
+            note over User: reconstruct polynomials from roots, commit, verify
         end
     end
 end
@@ -348,12 +344,13 @@ deactivate User
 destroy User
 User ->> Consensus: transaction
 break
-    note over Consensus: action_acc = Sum H(cv_i || rk_i)
-    note over Consensus: bundle_commitment = Blake2b("Tachyon-BndlHash", action_acc || value_balance)
+    note over Consensus: action_digest_i = Poseidon(cv_i || rk_i)
+    note over Consensus: bundle_commitment = Blake2b(d_1 || ... || d_n || value_balance)
     note over Consensus: compute sighash
     note over Consensus: check action sigs against sighash
     note over Consensus: check binding sig against sighash
-    note over Consensus: verify stamp(tachygram_acc, action_acc, anchor)
+    note over Consensus: action_acc = Commit(poly from action roots)
+    note over Consensus: tachygram_acc = Commit(poly from tachygram roots)
+    note over Consensus: verify stamp(action_acc, tachygram_acc, anchor)
 end
 ```
-

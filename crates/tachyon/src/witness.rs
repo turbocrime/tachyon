@@ -14,7 +14,7 @@ use crate::{entropy::ActionRandomizer, note::Note, value};
 /// Per-wallet key material ($\mathsf{ak}$, $\mathsf{nk}$) is shared across
 /// all actions and passed separately via
 /// [`ProofAuthorizingKey`](crate::keys::ProofAuthorizingKey)
-/// to [`Proof::create`](crate::proof::Proof::create).
+/// to [`Stamp::prove_action`](crate::stamp::Stamp::prove_action).
 #[derive(Clone, Copy, Debug)]
 pub struct ActionPrivate {
     /// Action randomizer $\alpha$ with derivation path.

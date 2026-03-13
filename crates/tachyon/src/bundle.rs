@@ -32,7 +32,6 @@ impl<T: sealed::Sealed> StampState for T {}
 
 /// A Tachyon transaction bundle parameterized by stamp state `S`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bundle<S: StampState> {
     /// Actions (cv, rk, sig).
     pub actions: Vec<Action>,
@@ -291,7 +290,7 @@ mod tests {
         entropy::{ActionEntropy, ActionRandomizer},
         keys::private,
         note::{self, Note},
-        primitives::Anchor,
+        primitives::{Anchor, Epoch},
         stamp::Stamp,
         value,
         witness::ActionPrivate,
@@ -340,7 +339,7 @@ mod tests {
         let output_plan = action::Plan::output(output_note, theta_output, output_rcv);
         let value_balance: i64 = 300;
 
-        let bundle_plan = Plan::new(vec![spend_plan, output_plan], value_balance);
+        let bundle_plan = Plan::new(alloc::vec![spend_plan, output_plan], value_balance);
         let sighash = mock_sighash(bundle_plan.commitment());
 
         // Sign each action
@@ -366,7 +365,7 @@ mod tests {
             rk: output_plan.rk,
             sig: output_sig,
         };
-        let actions = vec![spend_action, output_action];
+        let actions = alloc::vec![spend_action, output_action];
 
         let spend_witness = ActionPrivate {
             alpha: ActionRandomizer::from(spend_alpha),
@@ -379,9 +378,35 @@ mod tests {
             rcv: output_plan.rcv,
         };
 
-        let spend_stamp = Stamp::prove_action(&spend_witness, &spend_action, anchor, &pak);
-        let output_stamp = Stamp::prove_action(&output_witness, &output_action, anchor, &pak);
-        let stamp = spend_stamp.prove_merge(output_stamp);
+        let epoch = Epoch::from(0u32);
+        let (spend_stamp, (spend_actions, _spend_tachygrams)) = Stamp::prove_action(
+            &mut *rng,
+            &spend_witness,
+            &spend_action,
+            action::Effect::Spend,
+            anchor,
+            epoch,
+            &pak,
+        )
+        .expect("prove_action (spend)");
+        let (output_stamp, (output_actions, _output_tachygrams)) = Stamp::prove_action(
+            &mut *rng,
+            &output_witness,
+            &output_action,
+            action::Effect::Output,
+            anchor,
+            epoch,
+            &pak,
+        )
+        .expect("prove_action (output)");
+        let (stamp, _stamp_state) = Stamp::prove_merge(
+            &mut *rng,
+            spend_stamp,
+            spend_actions,
+            output_stamp,
+            output_actions,
+        )
+        .expect("prove_merge");
 
         // Binding signature
         let bsk = bundle_plan.derive_bsk_private();
@@ -449,12 +474,12 @@ mod tests {
         let output_plan = action::Plan::output(output_note, theta_output, output_rcv);
         let value_balance: i64 = 300;
 
-        let bundle_plan = Plan::new(vec![spend_plan, output_plan], value_balance);
+        let bundle_plan = Plan::new(alloc::vec![spend_plan, output_plan], value_balance);
         let plan_commitment = bundle_plan.commitment();
 
         // Materialize actions from the same plans
         let bundle: Stamped = Bundle {
-            actions: vec![
+            actions: alloc::vec![
                 Action {
                     cv: spend_plan.cv(),
                     rk: spend_plan.rk,
@@ -468,22 +493,29 @@ mod tests {
             ],
             value_balance,
             binding_sig: Signature::from([0u8; 64]),
-            stamp: Stamp::prove_action(
-                &ActionPrivate {
-                    alpha: ActionRandomizer::from(
-                        theta_spend.spend_randomizer(&spend_note.commitment()),
-                    ),
-                    note: spend_note,
-                    rcv: spend_rcv,
-                },
-                &Action {
-                    cv: spend_plan.cv(),
-                    rk: spend_plan.rk,
-                    sig: action::Signature::from([0u8; 64]),
-                },
-                Anchor::from(Fp::ZERO),
-                &pak,
-            ),
+            stamp: {
+                let (stamp, _stamp_state) = Stamp::prove_action(
+                    &mut rng,
+                    &ActionPrivate {
+                        alpha: ActionRandomizer::from(
+                            theta_spend.spend_randomizer(&spend_note.commitment()),
+                        ),
+                        note: spend_note,
+                        rcv: spend_rcv,
+                    },
+                    &Action {
+                        cv: spend_plan.cv(),
+                        rk: spend_plan.rk,
+                        sig: action::Signature::from([0u8; 64]),
+                    },
+                    action::Effect::Spend,
+                    Anchor::from(Fp::ZERO),
+                    Epoch::from(0u32),
+                    &pak,
+                )
+                .expect("prove_action");
+                stamp
+            },
         };
 
         assert_eq!(plan_commitment, bundle.commitment().unwrap());

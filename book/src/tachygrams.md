@@ -4,8 +4,8 @@
 
 A tachygram is a deterministic field element ($\mathbb{F}_p$) derived from a note:
 
-- **Spend**: nullifier $\mathsf{tg} = \mathsf{nf} = F_{\mathsf{nk}}(\psi \| \text{flavor})$
-- **Output**: commitment $\mathsf{tg} = \mathsf{cm} = \text{NoteCommit}(pk, v, \psi, rcm)$
+- **Spend**: nullifier $\mathsf{tg} = \mathsf{nf} = F_{\mathsf{nk}}(\Psi \| \text{flavor})$ (Poseidon GGM tree PRF, domain `Tachyon-NfDerive`)
+- **Output**: commitment $\mathsf{tg} = \mathsf{cm} = \text{Poseidon}_\text{Tachyon-NoteCmmt}(\mathsf{rcm}, \mathsf{pk}, v, \Psi)$
 
 The circuit computes both values with the constraint that a witness tachygram
 matches one of them: $(\mathsf{tg} - \mathsf{nf})(\mathsf{tg} - \mathsf{cm}) = 0$.
@@ -41,29 +41,39 @@ An observer sees a bag of actions and a bag of tachygrams with no individual cor
 
 ## Public Data
 
-The proof's public output `StampDigest` may carry five field elements:
+The PCD header carries two polynomial commitments and one scalar:
 
-| Field | Type | Elements | Description |
-| ----- | ---- | -------- | ----------- |
-| `action_acc` | Pallas point | 2 (x,y) | Pedersen hash over action digests |
-| `tachygram_acc` | Pallas point | 2 (x,y) | Pedersen hash over tachygrams |
-| `anchor` | $\mathbb{F}_p$ scalar | 1 | Accumulator state reference |
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `action_acc` | EC point (Vesta) | Pedersen vector commitment to the action accumulator polynomial |
+| `tachygram_acc` | EC point (Vesta) | Pedersen vector commitment to the tachygram accumulator polynomial |
+| `anchor` | $\mathbb{F}_p$ scalar | Accumulator state reference |
 
-Both accumulators are Pedersen multiset hashes.
-Each element is hashed (Poseidon) then mapped to a Pallas point via scalar multiplication against a
-fixed generator $G_\text{acc}$.
-The accumulator is the EC sum of all such points.
-EC addition is commutative, so PCD tree shape doesn't matter.
+Both accumulators use polynomial commitments.
+Each element is hashed (Poseidon, domain-separated) into a root $r_i \in \mathbb{F}_p$.
+The accumulator polynomial is the product of linear factors:
+
+$$\mathsf{action\_poly}(X) = \prod_i \bigl(X - \text{Poseidon}_\text{Tachyon-ActnDgst}(\mathsf{cv}_i \| \mathsf{rk}_i)\bigr)$$
+
+$$\mathsf{tachygram\_poly}(X) = \prod_i \bigl(X - \text{Poseidon}_\text{Tachyon-TgrmDgst}(\mathsf{tg}_i)\bigr)$$
+
+The header values are Pedersen vector commitments to the coefficients:
+$\mathsf{action\_acc} = \text{Commit}(\mathsf{action\_poly})$,
+$\mathsf{tachygram\_acc} = \text{Commit}(\mathsf{tachygram\_poly})$.
+
+Polynomial coefficients are canonical (independent of root ordering), so PCD tree shape doesn't matter.
+
+Polynomial commitment prevents the post-proof substitution attack: finding a substitute set of roots whose committed polynomial matches the proven commitment reduces to the discrete logarithm problem on the elliptic curve, maintaining 128-bit security regardless of the number of elements.
 
 **This header is 'public' but not published.**
 The stamp carries only tachygrams, anchor, and proof bytes.
 **The header is recoverable if you have the correct set of tachygrams and the correct set of actions.**
 
-The verifier reconstructs the full `StampDigest` following appropriate rules.
+The verifier reconstructs the full header following appropriate rules.
 This way, the verifier knows a consensus-valid set of tachygrams was used in proof generation.
 
-Each `ActionLeaf` seed computes one tachygram contribution; `StampMerge` sums
-them via EC point addition.
+Each `ActionStep` seed builds a degree-1 polynomial from one root and commits it;
+`MergeStep` multiplies the polynomials together and recommits.
 PCD soundness means the only way to produce a valid
 proof is through `seed` + `fuse`, so an attacker cannot skip leaf circuits or
 strip duplicate contributions between steps.
@@ -82,9 +92,9 @@ tachygrams $tg_i$, the anchor, and the proof bytes.
 2. **No duplicate tachygrams**: check the tachygram list for repeats
 3. **Action sigs**: verify each $sig_i$ against $rk_i$ (RedPallas)
 4. **Binding sig**: verify against $\sum cv_i$
-5. **Reconstruct header**: build `StampDigest { anchor, action_acc, tachygram_acc }`
-   - **Recompute action_acc**: $\sum[\text{Poseidon}(rk_i \| cv_i)] \cdot G_\text{acc}$ from visible actions
-   - **Recompute tachygram_acc**: $\sum[\text{Poseidon}(tg_i)] \cdot G_\text{acc}$ from listed tachygrams
+5. **Reconstruct**: build `(action_acc, tachygram_acc, anchor)`
+   - **Recompute action_acc**: build polynomial from roots $\text{Poseidon}(\mathsf{cv}_i \| \mathsf{rk}_i)$, commit
+   - **Recompute tachygram_acc**: build polynomial from roots $\text{Poseidon}(\mathsf{tg}_i)$, commit
 6. **Verify proof**: call Ragu `verify(Pcd { proof, data: header })`
 
 <!-- TODO
@@ -101,14 +111,15 @@ produce $\{a,b,c\}$?
 
 ### 1. An overlapping merge is detectable
 
-A Pedersen multiset hash encodes multiplicity, committing to *how many times* each element appears.
-When `StampMerge` adds two intersecting accumulators, the intersection is evident:
+The polynomial accumulator encodes multiplicity, committing to *how many times* each element appears.
+In the formulas below, $r(x) = \text{Poseidon}(x)$ denotes the root derived from element $x$.
+When `MergeStep` multiplies two intersecting polynomials, the intersection is evident:
 
-$$\text{merged} = [H(a) + H(b) + H(b) + H(c)] \cdot G \quad (b \text{ counted twice})$$
+$$\text{merged} = (X - r(a))(X - r(b))(X - r(b))(X - r(c)) \quad (b \text{ counted twice})$$
 
-$$\text{clean} = [H(a) + H(b) + H(c)] \cdot G \quad (b \text{ counted once})$$
+$$\text{clean} = (X - r(a))(X - r(b))(X - r(c)) \quad (b \text{ counted once})$$
 
-These are different curve points.
+These are different polynomials with different commitments.
 
 ### 2. Lying about an overlapping merge is not possible
 
@@ -116,16 +127,16 @@ An aggregator who merged overlapping stamps has exactly two options:
 
 **Option A** — list tachygrams without duplicates $\{a, b, c\}$:
 
-$$\text{reconstructed header} = [H(a) + H(b) + H(c)] \cdot G$$
-$$\text{proof's actual header} = [H(a) + H(b) + H(b) + H(c)] \cdot G$$
+$$\text{reconstructed commitment} = \text{Commit}((X - r(a))(X - r(b))(X - r(c)))$$
+$$\text{proof's actual commitment} = \text{Commit}((X - r(a))(X - r(b))^2(X - r(c)))$$
 
 Proof doesn't verify against the reconstructed header.
 Rejected.
 
 **Option B** — list tachygrams with duplicates $\{a, b, b, c\}$:
 
-$$\text{reconstructed header} = [H(a) + H(b) + H(b) + H(c)] \cdot G$$
-$$\text{proof's actual header} = [H(a) + H(b) + H(b) + H(c)] \cdot G$$
+$$\text{reconstructed commitment} = \text{Commit}((X - r(a))(X - r(b))^2(X - r(c)))$$
+$$\text{proof's actual commitment} = \text{Commit}((X - r(a))(X - r(b))^2(X - r(c)))$$
 
 Proof *would* verify, but consensus detects duplicate $b$, so the stamp was
 already rejected.
