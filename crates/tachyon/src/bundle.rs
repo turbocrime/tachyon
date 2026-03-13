@@ -706,6 +706,135 @@ mod tests {
             .expect("merged stamp should verify against combined actions");
     }
 
+    /// Build a stamped bundle (like `build_test_bundle_with_accs`) but return
+    /// the stamp and action accumulator separately from the bundle plan and
+    /// materialized actions, so the caller can merge stamps independently.
+    fn build_actions_and_stamp(
+        rng: &mut (impl RngCore + CryptoRng),
+        spend_value: u64,
+        output_value: u64,
+    ) -> (Vec<Action>, Plan, Stamp, Multiset<ActionDigest>) {
+        let sk = private::SpendingKey::from([0x42u8; 32]);
+        let ask = sk.derive_auth_private();
+        let pak = sk.derive_proof_private();
+        let anchor = Anchor::from(Fp::ZERO);
+        let epoch = Epoch::from(0u32);
+
+        let spend_note = Note {
+            pk: sk.derive_payment_key(),
+            value: note::Value::from(spend_value),
+            psi: note::NullifierTrapdoor::from(Fp::random(&mut *rng)),
+            rcm: note::CommitmentTrapdoor::from(Fp::random(&mut *rng)),
+        };
+        let output_note = Note {
+            pk: sk.derive_payment_key(),
+            value: note::Value::from(output_value),
+            psi: note::NullifierTrapdoor::from(Fp::random(&mut *rng)),
+            rcm: note::CommitmentTrapdoor::from(Fp::random(&mut *rng)),
+        };
+
+        let theta_spend = ActionEntropy::random(&mut *rng);
+        let theta_output = ActionEntropy::random(&mut *rng);
+        let spend_rcv = value::CommitmentTrapdoor::random(&mut *rng);
+        let output_rcv = value::CommitmentTrapdoor::random(&mut *rng);
+
+        let spend_plan = action::Plan::spend(spend_note, theta_spend, spend_rcv, pak.ak());
+        let output_plan = action::Plan::output(output_note, theta_output, output_rcv);
+        let value_balance: i64 = i64::try_from(spend_value).expect("spend_value fits")
+            - i64::try_from(output_value).expect("output_value fits");
+
+        let bundle_plan = Plan::new(alloc::vec![spend_plan, output_plan], value_balance);
+        let sighash = mock_sighash(bundle_plan.commitment());
+
+        let spend_alpha = theta_spend.spend_randomizer(&spend_note.commitment());
+        let spend_sig = ask
+            .derive_action_private(&spend_alpha)
+            .sign(&mut *rng, &sighash);
+        let output_alpha = theta_output.output_randomizer(&output_note.commitment());
+        let output_sig = private::ActionSigningKey::new(output_alpha).sign(&mut *rng, &sighash);
+
+        let spend_action = Action { cv: spend_plan.cv(), rk: spend_plan.rk, sig: spend_sig };
+        let output_action = Action { cv: output_plan.cv(), rk: output_plan.rk, sig: output_sig };
+
+        let spend_witness = ActionPrivate {
+            alpha: ActionRandomizer::from(spend_alpha),
+            note: spend_note,
+            rcv: spend_plan.rcv,
+        };
+        let output_witness = ActionPrivate {
+            alpha: ActionRandomizer::from(output_alpha),
+            note: output_note,
+            rcv: output_plan.rcv,
+        };
+
+        let (spend_stamp, (spend_acc, _)) = Stamp::prove_action(
+            &mut *rng, &spend_witness, &spend_action, action::Effect::Spend, anchor, epoch, &pak,
+        )
+        .expect("prove_action (spend)");
+        let (output_stamp, (output_acc, _)) = Stamp::prove_action(
+            &mut *rng, &output_witness, &output_action, action::Effect::Output, anchor, epoch, &pak,
+        )
+        .expect("prove_action (output)");
+
+        let (stamp, (action_acc, _)) = Stamp::prove_merge(
+            &mut *rng, spend_stamp, spend_acc, output_stamp, output_acc,
+        )
+        .expect("prove_merge");
+
+        let actions = alloc::vec![spend_action, output_action];
+        (actions, bundle_plan, stamp, action_acc)
+    }
+
+    /// An aggregate bundle with its own actions carries a merged stamp from
+    /// two source bundles.
+    ///
+    /// The aggregate has a spend and output of its own, plus the merged stamp
+    /// covering all six actions (two per source bundle + two of its own).
+    /// Both binding signature and stamp verification must pass.
+    #[test]
+    fn aggregate_with_own_actions_and_merged_stamp() {
+        let mut rng = StdRng::seed_from_u64(0xBEEF);
+
+        // Two source bundles whose stamps will be merged into the aggregate.
+        let (actions_a, _, stamp_a, acc_a) = build_actions_and_stamp(&mut rng, 1000, 700);
+        let (actions_b, _, stamp_b, acc_b) = build_actions_and_stamp(&mut rng, 500, 200);
+
+        let (cross_stamp, (cross_acc, _)) = Stamp::prove_merge(
+            &mut rng, stamp_a, acc_a, stamp_b, acc_b,
+        )
+        .expect("prove_merge (cross-bundle)");
+
+        // The aggregate's own actions.
+        let (agg_actions, agg_plan, own_stamp, own_acc) =
+            build_actions_and_stamp(&mut rng, 800, 400);
+        let agg_sighash = mock_sighash(agg_plan.commitment());
+
+        // Merge own stamp with cross-bundle stamp.
+        let (final_stamp, _) = Stamp::prove_merge(
+            &mut rng, own_stamp, own_acc, cross_stamp, cross_acc,
+        )
+        .expect("prove_merge (final)");
+
+        let bsk = agg_plan.derive_bsk_private();
+        let aggregate: Stamped = Bundle {
+            actions: agg_actions.clone(),
+            value_balance: agg_plan.value_balance,
+            binding_sig: bsk.sign(&mut rng, &agg_sighash),
+            stamp: final_stamp,
+        };
+
+        aggregate
+            .verify_signatures(&agg_sighash)
+            .expect("aggregate binding sig should verify");
+
+        // Stamp covers all six actions: aggregate's own + both source bundles'.
+        let all_actions: Vec<Action> = [agg_actions, actions_a, actions_b].concat();
+        aggregate
+            .stamp
+            .verify(&all_actions, &mut rng)
+            .expect("merged stamp should verify against all actions");
+    }
+
     /// A tampered action signature must cause verification to fail.
     #[test]
     fn invalid_action_sig_fails_verification() {
