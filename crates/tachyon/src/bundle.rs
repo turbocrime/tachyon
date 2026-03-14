@@ -378,14 +378,14 @@ mod tests {
                 .theta
                 .spend_randomizer(&spend_plan.note.commitment()),
         );
-        let spend_action = spend_plan.sign(&mut rng, &spend_rsk, &sighash);
+        let spend_action = spend_rsk.sign_plan(&mut rng, &spend_plan, &sighash);
 
         let output_rsk = private::ActionSigningKey::new(
             output_plan
                 .theta
                 .output_randomizer(&output_plan.note.commitment()),
         );
-        let output_action = output_plan.sign(&mut rng, &output_rsk, &sighash);
+        let output_action = output_rsk.sign_plan(&mut rng, &output_plan, &sighash);
 
         let bundle: Stamped = Bundle {
             actions: alloc::vec![spend_action, output_action],
@@ -480,7 +480,7 @@ mod tests {
                 .theta
                 .spend_randomizer(&spend_plan.note.commitment()),
         );
-        let spend_action = spend_plan.sign(&mut *rng, &spend_rsk, &sighash);
+        let spend_action = spend_rsk.sign_plan(&mut *rng, &spend_plan, &sighash);
         let (spend_stamp, (spend_acc, _)) = Stamp::prove_action(
             &mut *rng,
             &spend_plan.witness(),
@@ -497,7 +497,7 @@ mod tests {
                 .theta
                 .output_randomizer(&output_plan.note.commitment()),
         );
-        let output_action = output_plan.sign(&mut *rng, &output_rsk, &sighash);
+        let output_action = output_rsk.sign_plan(&mut *rng, &output_plan, &sighash);
         let (output_stamp, (output_acc, _)) = Stamp::prove_action(
             &mut *rng,
             &output_plan.witness(),

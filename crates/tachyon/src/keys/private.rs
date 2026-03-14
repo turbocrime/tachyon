@@ -232,6 +232,28 @@ impl<K: ActionAuthority> ActionSigningKey<K> {
         action::Signature(self.0.sign(rng, sighash))
     }
 
+    /// Sign an action plan, producing an authorized action.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the plan's effect does not match this key's authority.
+    pub fn sign_plan(
+        &self,
+        rng: &mut (impl RngCore + CryptoRng),
+        plan: &action::Plan,
+        sighash: &[u8; 32],
+    ) -> action::Action {
+        assert!(
+            plan.effect == K::EFFECT,
+            "plan effect must match signing key authority"
+        );
+        action::Action {
+            cv: plan.cv(),
+            rk: plan.rk,
+            sig: self.sign(rng, sighash),
+        }
+    }
+
     /// Derive the per-action verification (public) key: `rk = [rsk]G`.
     #[must_use]
     pub fn derive_action_public(&self) -> public::ActionVerificationKey {

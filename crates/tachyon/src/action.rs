@@ -115,29 +115,6 @@ impl Plan {
         }
     }
 
-    /// Sign this plan with the per-action signing key, producing an
-    /// authorized action.
-    ///
-    /// # Panics
-    ///
-    /// Panics if planned effect does not match the signing key's authority.
-    pub fn sign<K: private::ActionAuthority>(
-        &self,
-        rng: &mut (impl rand_core::RngCore + rand_core::CryptoRng),
-        rsk: &private::ActionSigningKey<K>,
-        sighash: &[u8; 32],
-    ) -> Action {
-        assert!(
-            self.effect == K::EFFECT,
-            "plan effect must match signing key authority"
-        );
-        Action {
-            cv: self.cv(),
-            rk: self.rk,
-            sig: rsk.sign(rng, sighash),
-        }
-    }
-
     /// Derive the value commitment of this action plan.
     ///
     /// $$\mathsf{cv} = [\pm v]\,\mathcal{V} + [\mathsf{rcv}]\,\mathcal{R}$$
