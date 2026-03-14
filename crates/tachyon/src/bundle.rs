@@ -304,13 +304,10 @@ mod tests {
     use super::*;
     use crate::{
         action,
-        entropy::{ActionEntropy, ActionRandomizer},
         keys::private,
         note::{self, Note},
         primitives::{Anchor, Epoch},
         stamp::Stamp,
-        value,
-        witness::ActionPrivate,
     };
 
     /// Normally, data from other parts of the transaction is included in the
@@ -359,60 +356,47 @@ mod tests {
         let spend_note = Note {
             pk: sk.derive_payment_key(),
             value: note::Value::from(500u64),
-            psi: note::NullifierTrapdoor::from(Fp::ZERO),
-            rcm: note::CommitmentTrapdoor::from(Fp::ZERO),
+            psi: note::NullifierTrapdoor::from(Fp::random(&mut rng)),
+            rcm: note::CommitmentTrapdoor::from(Fp::random(&mut rng)),
         };
         let output_note = Note {
             pk: sk.derive_payment_key(),
             value: note::Value::from(200u64),
-            psi: note::NullifierTrapdoor::from(Fp::ONE),
-            rcm: note::CommitmentTrapdoor::from(Fp::ONE),
+            psi: note::NullifierTrapdoor::from(Fp::random(&mut rng)),
+            rcm: note::CommitmentTrapdoor::from(Fp::random(&mut rng)),
         };
 
-        let spend_rcv = value::CommitmentTrapdoor::random(&mut rng);
-        let theta_spend = ActionEntropy::random(&mut rng);
-        let theta_output = ActionEntropy::random(&mut rng);
-
-        let spend_plan =
-            action::Plan::spend(spend_note, theta_spend, spend_rcv, pak.ak());
-        let output_plan = action::Plan::output(
-            output_note,
-            theta_output,
-            value::CommitmentTrapdoor::random(&mut rng),
-        );
+        let spend_plan = action::Plan::spend(&mut rng, spend_note, pak.ak());
+        let output_plan = action::Plan::output(&mut rng, output_note);
 
         let bundle_plan = Plan::new(alloc::vec![spend_plan, output_plan], 300);
+        let sighash = mock_sighash(bundle_plan.commitment());
+        let ask = sk.derive_auth_private();
+
+        let spend_rsk = ask.derive_action_private(
+            &spend_plan
+                .theta
+                .spend_randomizer(&spend_plan.note.commitment()),
+        );
+        let spend_action = spend_plan.sign(&mut rng, &spend_rsk, &sighash);
+
+        let output_rsk = private::ActionSigningKey::new(
+            output_plan
+                .theta
+                .output_randomizer(&output_plan.note.commitment()),
+        );
+        let output_action = output_plan.sign(&mut rng, &output_rsk, &sighash);
 
         let bundle: Stamped = Bundle {
-            actions: alloc::vec![
-                Action {
-                    cv: spend_plan.cv(),
-                    rk: spend_plan.rk,
-                    sig: action::Signature::from([0u8; 64]),
-                },
-                Action {
-                    cv: output_plan.cv(),
-                    rk: output_plan.rk,
-                    sig: action::Signature::from([0u8; 64]),
-                },
-            ],
+            actions: alloc::vec![spend_action, output_action],
             value_balance: 300,
-            binding_sig: Signature::from([0u8; 64]),
+            binding_sig: bundle_plan.derive_bsk_private().sign(&mut rng, &sighash),
             stamp: {
-                let alpha = theta_spend.spend_randomizer(&spend_note.commitment());
                 let (stamp, _) = Stamp::prove_action(
                     &mut rng,
-                    &ActionPrivate {
-                        alpha: ActionRandomizer::from(alpha),
-                        note: spend_note,
-                        rcv: spend_rcv,
-                    },
-                    &Action {
-                        cv: spend_plan.cv(),
-                        rk: spend_plan.rk,
-                        sig: action::Signature::from([0u8; 64]),
-                    },
-                    action::Effect::Spend,
+                    &spend_plan.witness(),
+                    &spend_action,
+                    spend_plan.effect,
                     Anchor::from(Fp::ZERO),
                     Epoch::from(0u32),
                     &pak,
@@ -483,58 +467,47 @@ mod tests {
             rcm: note::CommitmentTrapdoor::from(Fp::random(&mut *rng)),
         };
 
-        let theta_spend = ActionEntropy::random(&mut *rng);
-        let theta_output = ActionEntropy::random(&mut *rng);
-        let spend_rcv = value::CommitmentTrapdoor::random(&mut *rng);
-        let output_rcv = value::CommitmentTrapdoor::random(&mut *rng);
+        let spend_plan = action::Plan::spend(&mut *rng, spend_note, pak.ak());
+        let output_plan = action::Plan::output(&mut *rng, output_note);
 
-        let spend_plan = action::Plan::spend(spend_note, theta_spend, spend_rcv, pak.ak());
-        let output_plan = action::Plan::output(output_note, theta_output, output_rcv);
-
-        let value_balance = i64::try_from(spend_value).expect("fits")
-            - i64::try_from(output_value).expect("fits");
+        let value_balance =
+            i64::try_from(spend_value).expect("fits") - i64::try_from(output_value).expect("fits");
         let bundle_plan = Plan::new(alloc::vec![spend_plan, output_plan], value_balance);
         let sighash = mock_sighash(bundle_plan.commitment());
 
-        let (spend_action, spend_stamp, spend_acc) = {
-            let alpha = theta_spend.spend_randomizer(&spend_note.commitment());
-            let spend_action = Action {
-                cv: spend_plan.cv(),
-                rk: spend_plan.rk,
-                sig: ask.derive_action_private(&alpha).sign(&mut *rng, &sighash),
-            };
-            let witness = ActionPrivate {
-                alpha: ActionRandomizer::from(alpha),
-                note: spend_note,
-                rcv: spend_plan.rcv,
-            };
-            let (stamp, (acc, _tg)) = Stamp::prove_action(
-                &mut *rng, &witness, &spend_action, action::Effect::Spend,
-                anchor, epoch, &pak,
-            )
-            .expect("prove_action (spend)");
-            (spend_action, stamp, acc)
-        };
+        let spend_rsk = ask.derive_action_private(
+            &spend_plan
+                .theta
+                .spend_randomizer(&spend_plan.note.commitment()),
+        );
+        let spend_action = spend_plan.sign(&mut *rng, &spend_rsk, &sighash);
+        let (spend_stamp, (spend_acc, _)) = Stamp::prove_action(
+            &mut *rng,
+            &spend_plan.witness(),
+            &spend_action,
+            spend_plan.effect,
+            anchor,
+            epoch,
+            &pak,
+        )
+        .expect("prove_action (spend)");
 
-        let (output_action, output_stamp, output_acc) = {
-            let alpha = theta_output.output_randomizer(&output_note.commitment());
-            let output_action = Action {
-                cv: output_plan.cv(),
-                rk: output_plan.rk,
-                sig: private::ActionSigningKey::new(alpha).sign(&mut *rng, &sighash),
-            };
-            let witness = ActionPrivate {
-                alpha: ActionRandomizer::from(alpha),
-                note: output_note,
-                rcv: output_plan.rcv,
-            };
-            let (stamp, (acc, _tg)) = Stamp::prove_action(
-                &mut *rng, &witness, &output_action, action::Effect::Output,
-                anchor, epoch, &pak,
-            )
-            .expect("prove_action (output)");
-            (output_action, stamp, acc)
-        };
+        let output_rsk = private::ActionSigningKey::new(
+            output_plan
+                .theta
+                .output_randomizer(&output_plan.note.commitment()),
+        );
+        let output_action = output_plan.sign(&mut *rng, &output_rsk, &sighash);
+        let (output_stamp, (output_acc, _)) = Stamp::prove_action(
+            &mut *rng,
+            &output_plan.witness(),
+            &output_action,
+            output_plan.effect,
+            anchor,
+            epoch,
+            &pak,
+        )
+        .expect("prove_action (output)");
 
         let bundle: Stamped = {
             let mut bundle = Bundle {
@@ -544,10 +517,9 @@ mod tests {
                 stamp: None,
             };
 
-            let (stamp, _accs) = Stamp::prove_merge(
-                &mut *rng, spend_stamp, spend_acc, output_stamp, output_acc,
-            )
-            .expect("prove_merge");
+            let (stamp, _accs) =
+                Stamp::prove_merge(&mut *rng, spend_stamp, spend_acc, output_stamp, output_acc)
+                    .expect("prove_merge");
 
             bundle.stamp = Some(stamp);
             Stamped::try_from(bundle).expect("valid")

@@ -37,8 +37,18 @@ mod sealed {
 }
 
 /// Sealed trait constraining signing authority.
-pub trait ActionAuthority: sealed::Sealed {}
-impl<T: sealed::Sealed> ActionAuthority for T {}
+pub trait ActionAuthority: sealed::Sealed {
+    /// The action effect this authority corresponds to.
+    const EFFECT: action::Effect;
+}
+
+impl ActionAuthority for SpendAuthority {
+    const EFFECT: action::Effect = action::Effect::Spend;
+}
+
+impl ActionAuthority for OutputAuthority {
+    const EFFECT: action::Effect = action::Effect::Output;
+}
 
 /// A Tachyon spending key — raw 32-byte entropy.
 ///

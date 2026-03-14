@@ -260,8 +260,8 @@ mod tests {
         let theta = ActionEntropy::random(rng);
 
         let plan = match effect {
-            | Effect::Spend => action::Plan::spend(note, theta, rcv, pak.ak()),
-            | Effect::Output => action::Plan::output(note, theta, rcv),
+            | Effect::Spend => action::Plan::spend_with(note, theta, rcv, pak.ak()),
+            | Effect::Output => action::Plan::output_with(note, theta, rcv),
         };
 
         let action = Action {
