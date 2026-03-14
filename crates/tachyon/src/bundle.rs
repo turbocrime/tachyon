@@ -562,11 +562,10 @@ mod tests {
         let empty_plan = Plan::new(alloc::vec![], 0);
         let sighash = mock_sighash(empty_plan.commitment());
 
-        let bsk = private::BindingSigningKey::from([].as_slice());
         let empty_bundle: Stripped = Bundle {
             actions: alloc::vec![],
             value_balance: 0,
-            binding_sig: bsk.sign(&mut rng, &sighash),
+            binding_sig: empty_plan.derive_bsk_private().sign(&mut rng, &sighash),
             stamp: Stampless,
         };
 
@@ -708,23 +707,29 @@ mod tests {
         let (adjunct_a, stamp_a) = autonome_a.strip();
         let (adjunct_b, stamp_b) = autonome_b.strip();
 
-        let (merged_stamp, _accs) =
-            Stamp::prove_merge(&mut rng, stamp_a, acc_a, stamp_b, acc_b).expect("prove_merge");
+        let innocent: Stamped = {
+            let innocent_plan = Plan::new(alloc::vec![], 0);
+            let innocent_sighash = mock_sighash(innocent_plan.commitment());
 
-        let innocent_plan = Plan::new(alloc::vec![], 0);
-        let sighash = mock_sighash(innocent_plan.commitment());
-        let bsk = private::BindingSigningKey::from([].as_slice());
-        let binding_sig = bsk.sign(&mut rng, &sighash);
+            let mut innocent = Bundle {
+                actions: alloc::vec![],
+                value_balance: 0,
+                binding_sig: innocent_plan
+                    .derive_bsk_private()
+                    .sign(&mut rng, &innocent_sighash),
+                stamp: None,
+            };
 
-        let innocent: Stamped = Bundle {
-            actions: alloc::vec![],
-            value_balance: 0,
-            binding_sig,
-            stamp: merged_stamp,
+            let (stamp, _accs) =
+                Stamp::prove_merge(&mut rng, stamp_a, acc_a, stamp_b, acc_b).expect("prove_merge");
+
+            innocent.stamp = Some(stamp);
+
+            Stamped::try_from(innocent).expect("valid")
         };
 
         innocent
-            .verify_signatures(&sighash)
+            .verify_signatures(&mock_sighash(innocent.commitment().unwrap()))
             .expect("innocent binding sig should verify");
 
         let adjunct_actions: Vec<Action> = [adjunct_a.actions, adjunct_b.actions].concat();
@@ -741,6 +746,7 @@ mod tests {
     ///
     /// The two contributing autonomes are first merged into an innocent
     /// aggregate, which is then aggregated into the based autonome.
+    /// After stripping, the innocent's binding signature still holds.
     #[test]
     fn based_aggregate_with_two_adjuncts() {
         let mut rng = StdRng::seed_from_u64(0xBEEF);
@@ -754,18 +760,48 @@ mod tests {
 
         let sighash = mock_sighash(becomes_based.commitment().unwrap());
 
-        // Merge a and b into an innocent stamp.
         let (adjunct_a, stamp_a) = autonome_a.strip();
         let (adjunct_b, stamp_b) = autonome_b.strip();
-        let (innocent_stamp, innocent_accs) =
-            Stamp::prove_merge(&mut rng, stamp_a, acc_a, stamp_b, acc_b).expect("innocent merge");
+
+        // Build the innocent aggregate as a full stamped bundle.
+        let (innocent, innocent_accs) = {
+            let innocent_plan = Plan::new(alloc::vec![], 0);
+            let innocent_sighash = mock_sighash(innocent_plan.commitment());
+
+            let mut innocent = Bundle {
+                actions: alloc::vec![],
+                value_balance: 0,
+                binding_sig: innocent_plan
+                    .derive_bsk_private()
+                    .sign(&mut rng, &innocent_sighash),
+                stamp: None,
+            };
+
+            let (stamp, accs) = Stamp::prove_merge(&mut rng, stamp_a, acc_a, stamp_b, acc_b)
+                .expect("innocent merge");
+
+            innocent.stamp = Some(stamp);
+
+            (Stamped::try_from(innocent).expect("valid"), accs)
+        };
+
+        innocent
+            .verify_signatures(&mock_sighash(innocent.commitment().unwrap()))
+            .expect("innocent aggregate binding sig should verify before stripping");
+
+        // Strip the innocent — its stamp merges into the based aggregate.
+        let (stripped_innocent, stripped_innocent_stamp) = innocent.strip();
+
+        stripped_innocent
+            .verify_signatures(&mock_sighash(stripped_innocent.commitment().unwrap()))
+            .expect("stripped innocent binding sig should still verify");
 
         // Merge own stamp with innocent stamp → based aggregate.
         let (based_stamp, based_accs) = Stamp::prove_merge(
             &mut rng,
             becomes_based.stamp,
             Multiset::try_from(becomes_based.actions.as_slice()).expect("valid"),
-            innocent_stamp,
+            stripped_innocent_stamp,
             innocent_accs.0,
         )
         .expect("based merge");
