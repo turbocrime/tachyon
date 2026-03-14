@@ -66,18 +66,22 @@ impl TryFrom<Bundle<Option<Stamp>>> for Stripped {
 
     fn try_from(bundle: Bundle<Option<Stamp>>) -> Result<Self, Self::Error> {
         match bundle.stamp {
-            | None => Ok(Self {
-                actions: bundle.actions,
-                value_balance: bundle.value_balance,
-                binding_sig: bundle.binding_sig,
-                stamp: Stampless,
-            }),
-            | Some(stamp) => Err(Stamped {
-                actions: bundle.actions,
-                value_balance: bundle.value_balance,
-                binding_sig: bundle.binding_sig,
-                stamp,
-            }),
+            | None => {
+                Ok(Self {
+                    actions: bundle.actions,
+                    value_balance: bundle.value_balance,
+                    binding_sig: bundle.binding_sig,
+                    stamp: Stampless,
+                })
+            },
+            | Some(stamp) => {
+                Err(Stamped {
+                    actions: bundle.actions,
+                    value_balance: bundle.value_balance,
+                    binding_sig: bundle.binding_sig,
+                    stamp,
+                })
+            },
         }
     }
 }
@@ -101,18 +105,22 @@ impl TryFrom<Bundle<Option<Stamp>>> for Stamped {
 
     fn try_from(bundle: Bundle<Option<Stamp>>) -> Result<Self, Self::Error> {
         match bundle.stamp {
-            | Some(stamp) => Ok(Self {
-                actions: bundle.actions,
-                value_balance: bundle.value_balance,
-                binding_sig: bundle.binding_sig,
-                stamp,
-            }),
-            | None => Err(Stripped {
-                actions: bundle.actions,
-                value_balance: bundle.value_balance,
-                binding_sig: bundle.binding_sig,
-                stamp: Stampless,
-            }),
+            | Some(stamp) => {
+                Ok(Self {
+                    actions: bundle.actions,
+                    value_balance: bundle.value_balance,
+                    binding_sig: bundle.binding_sig,
+                    stamp,
+                })
+            },
+            | None => {
+                Err(Stripped {
+                    actions: bundle.actions,
+                    value_balance: bundle.value_balance,
+                    binding_sig: bundle.binding_sig,
+                    stamp: Stampless,
+                })
+            },
         }
     }
 }
