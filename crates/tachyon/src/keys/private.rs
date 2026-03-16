@@ -234,24 +234,24 @@ impl<K: ActionAuthority> ActionSigningKey<K> {
 
     /// Sign an action plan, producing an authorized action.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the plan's effect does not match this key's authority.
+    /// Returns [`EffectMismatch`](action::EffectMismatch) if the plan's
+    /// effect does not match this key's authority.
     pub fn sign_plan(
         &self,
         rng: &mut (impl RngCore + CryptoRng),
         plan: &action::Plan,
         sighash: &[u8; 32],
-    ) -> action::Action {
-        assert!(
-            plan.effect == K::EFFECT,
-            "plan effect must match signing key authority"
-        );
-        action::Action {
+    ) -> Result<action::Action, action::EffectMismatch> {
+        if plan.effect != K::EFFECT {
+            return Err(action::EffectMismatch);
+        }
+        Ok(action::Action {
             cv: plan.cv(),
             rk: plan.rk,
             sig: self.sign(rng, sighash),
-        }
+        })
     }
 
     /// Derive the per-action verification (public) key: `rk = [rsk]G`.

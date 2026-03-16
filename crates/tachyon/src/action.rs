@@ -1,5 +1,7 @@
 //! Tachyon Action descriptions.
 
+use core::{error::Error, fmt};
+
 use reddsa::orchard::SpendAuth;
 
 use crate::{
@@ -126,6 +128,18 @@ impl Plan {
         }
     }
 }
+
+/// The plan's effect does not match the signing key's authority.
+#[derive(Clone, Copy, Debug)]
+pub struct EffectMismatch;
+
+impl fmt::Display for EffectMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "plan effect does not match signing key authority")
+    }
+}
+
+impl Error for EffectMismatch {}
 
 /// An authorized Tachyon action.
 ///
