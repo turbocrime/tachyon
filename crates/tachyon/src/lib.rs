@@ -63,7 +63,6 @@ mod primitives;
 mod serde_helpers;
 
 pub use action::{Action, Plan as ActionPlan};
-pub use primitives::{Effect, Output, Spend};
 pub use bundle::{Bundle, Plan as BundlePlan, Stamped, Stripped};
 pub use note::Note;
 pub use primitives::{

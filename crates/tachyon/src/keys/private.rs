@@ -14,7 +14,7 @@ use super::{
 use crate::{
     action, bundle,
     constants::PrfExpand,
-    entropy::Randomizer,
+    entropy::{OutputRandomizer, SpendRandomizer},
     value,
 };
 
@@ -37,18 +37,8 @@ mod sealed {
 }
 
 /// Sealed trait constraining signing authority.
-pub trait ActionAuthority: sealed::Sealed {
-    /// The plan effect type this authority signs.
-    type Effect: action::Effect;
-}
-
-impl ActionAuthority for SpendAuthority {
-    type Effect = action::Spend;
-}
-
-impl ActionAuthority for OutputAuthority {
-    type Effect = action::Output;
-}
+pub trait ActionAuthority: sealed::Sealed {}
+impl<T: sealed::Sealed> ActionAuthority for T {}
 
 /// A Tachyon spending key — raw 32-byte entropy.
 ///
@@ -198,10 +188,13 @@ impl SpendAuthorizingKey {
 
     /// Derive the per-action private (signing) key: $\mathsf{rsk} =
     /// \mathsf{ask} + \alpha$.
+    ///
+    /// Only accepts [`SpendRandomizer`] — passing an output randomizer is
+    /// a compile error.
     #[must_use]
     pub fn derive_action_private(
         &self,
-        alpha: &Randomizer<action::Spend>,
+        alpha: &SpendRandomizer,
     ) -> ActionSigningKey<SpendAuthority> {
         ActionSigningKey(self.0.randomize(&alpha.0), PhantomData)
     }
@@ -212,7 +205,7 @@ impl SpendAuthorizingKey {
 /// - [`ActionSigningKey<effect::Spend>`]: $\mathsf{rsk} = \mathsf{ask} +
 ///   \alpha$ — derived from [`SpendAuthorizingKey::derive_action_private`]
 /// - [`ActionSigningKey<effect::Output>`]: $\mathsf{rsk} = \alpha$ — derived
-///   from [`Randomizer<Output>`](crate::entropy::Randomizer)
+///   from [`OutputRandomizer`]
 ///
 /// Both variants sign via [`sign`](Self::sign) and derive `rk` via
 /// [`derive_action_public`](Self::derive_action_public).
@@ -239,42 +232,16 @@ impl<K: ActionAuthority> ActionSigningKey<K> {
     }
 }
 
-impl ActionSigningKey<SpendAuthority> {
-    /// Sign a spend action plan, producing an authorized action.
-    pub fn sign_plan(
-        &self,
-        rng: &mut (impl RngCore + CryptoRng),
-        plan: &action::Plan<action::Spend>,
-        sighash: &[u8; 32],
-    ) -> action::Action {
-        action::Action {
-            cv: plan.cv(),
-            rk: plan.rk,
-            sig: self.sign(rng, sighash),
-        }
-    }
-}
-
-impl ActionSigningKey<OutputAuthority> {
-    /// Sign an output action plan, producing an authorized action.
-    pub fn sign_plan(
-        &self,
-        rng: &mut (impl RngCore + CryptoRng),
-        plan: &action::Plan<action::Output>,
-        sighash: &[u8; 32],
-    ) -> action::Action {
-        action::Action {
-            cv: plan.cv(),
-            rk: plan.rk,
-            sig: self.sign(rng, sighash),
-        }
-    }
-}
-
 impl ActionSigningKey<OutputAuthority> {
     /// Create a new output action signing key from an output randomizer.
     #[must_use]
-    pub fn new(alpha: &Randomizer<action::Output>) -> Self {
+    pub fn new(alpha: OutputRandomizer) -> Self {
+        alpha.into()
+    }
+}
+
+impl From<OutputRandomizer> for ActionSigningKey<OutputAuthority> {
+    fn from(alpha: OutputRandomizer) -> Self {
         #[expect(clippy::expect_used, reason = "specified behavior")]
         Self(
             reddsa::SigningKey::<SpendAuth>::try_from(alpha.0.to_repr())

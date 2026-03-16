@@ -1,23 +1,30 @@
 //! Tachyon Action descriptions.
 
-use core::marker::PhantomData;
-
 use reddsa::orchard::SpendAuth;
 
-pub use crate::primitives::{Effect, Output, Spend};
 use crate::{
     entropy::ActionEntropy,
     keys::{SpendValidatingKey, private, public},
     note::Note,
     value,
-    witness::ActionPrivate,
 };
+
+/// Whether an action plan represents a spend or an output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Effect {
+    /// Spend — signed with
+    /// [`SpendAuthorizingKey::derive_action_private`](private::SpendAuthorizingKey::derive_action_private).
+    Spend,
+    /// Output — signed via
+    /// [`ActionSigningKey<Output>::sign`](private::ActionSigningKey::sign).
+    Output,
+}
 
 /// A planned Tachyon action, not yet authorized.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(bound = ""))]
-pub struct Plan<E: Effect> {
+pub struct Plan {
     /// Randomized action verification key.
     pub rk: public::ActionVerificationKey,
     /// The note being spent or created.
@@ -26,20 +33,16 @@ pub struct Plan<E: Effect> {
     pub theta: ActionEntropy,
     /// Value commitment trapdoor.
     pub rcv: value::CommitmentTrapdoor,
-    _effect: PhantomData<E>,
+    /// Spend or output.
+    pub effect: Effect,
 }
 
-impl Plan<Spend> {
-    /// Derive the value commitment: $\mathsf{cv} = [+v]\,\mathcal{V} + [\mathsf{rcv}]\,\mathcal{R}$.
+impl Plan {
+    /// Assemble a spend action plan.
+    ///
+    /// $\mathsf{rk} = \mathsf{ak} + [\alpha]\,\mathcal{G}$.
     #[must_use]
-    pub fn cv(&self) -> value::Commitment {
-        let value: i64 = self.note.value.into();
-        self.rcv.commit(value)
-    }
-
-    /// Assemble a spend action plan with given entropy and trapdoor.
-    #[must_use]
-    pub fn spend_with(
+    pub fn spend(
         note: Note,
         theta: ActionEntropy,
         rcv: value::CommitmentTrapdoor,
@@ -54,50 +57,18 @@ impl Plan<Spend> {
             note,
             theta,
             rcv,
-            _effect: PhantomData,
+            effect: Effect::Spend,
         }
     }
 
-    /// Assemble a spend action plan with random entropy and trapdoor.
-    pub fn spend(
-        rng: &mut (impl rand_core::RngCore + rand_core::CryptoRng),
-        note: Note,
-        ak: &SpendValidatingKey,
-    ) -> Self {
-        Self::spend_with(
-            note,
-            ActionEntropy::random(&mut *rng),
-            value::CommitmentTrapdoor::random(rng),
-            ak,
-        )
-    }
-
-    /// Assemble the proof witness for this action plan.
+    /// Assemble an output action plan.
+    ///
+    /// $\mathsf{rk} = [\alpha]\,\mathcal{G}$.
     #[must_use]
-    pub fn witness(&self) -> ActionPrivate<Spend> {
-        let cm = self.note.commitment();
-        ActionPrivate {
-            alpha: self.theta.spend_randomizer(&cm),
-            note: self.note,
-            rcv: self.rcv,
-        }
-    }
-}
-
-impl Plan<Output> {
-    /// Derive the value commitment: $\mathsf{cv} = [-v]\,\mathcal{V} + [\mathsf{rcv}]\,\mathcal{R}$.
-    #[must_use]
-    pub fn cv(&self) -> value::Commitment {
-        let value: i64 = self.note.value.into();
-        self.rcv.commit(-value)
-    }
-
-    /// Assemble an output action plan with given entropy and trapdoor.
-    #[must_use]
-    pub fn output_with(note: Note, theta: ActionEntropy, rcv: value::CommitmentTrapdoor) -> Self {
+    pub fn output(note: Note, theta: ActionEntropy, rcv: value::CommitmentTrapdoor) -> Self {
         let cm = note.commitment();
         let alpha = theta.output_randomizer(&cm);
-        let rsk = private::ActionSigningKey::new(&alpha);
+        let rsk = private::ActionSigningKey::new(alpha);
         let rk = rsk.derive_action_public();
 
         Self {
@@ -105,27 +76,18 @@ impl Plan<Output> {
             note,
             theta,
             rcv,
-            _effect: PhantomData,
+            effect: Effect::Output,
         }
     }
 
-    /// Assemble an output action plan with random entropy and trapdoor.
-    pub fn output(rng: &mut (impl rand_core::RngCore + rand_core::CryptoRng), note: Note) -> Self {
-        Self::output_with(
-            note,
-            ActionEntropy::random(&mut *rng),
-            value::CommitmentTrapdoor::random(rng),
-        )
-    }
-
-    /// Assemble the proof witness for this action plan.
+    /// Derive the value commitment of this action plan.
+    ///
+    /// $$\mathsf{cv} = [\pm v]\,\mathcal{V} + [\mathsf{rcv}]\,\mathcal{R}$$
     #[must_use]
-    pub fn witness(&self) -> ActionPrivate<Output> {
-        let cm = self.note.commitment();
-        ActionPrivate {
-            alpha: self.theta.output_randomizer(&cm),
-            note: self.note,
-            rcv: self.rcv,
+    pub fn cv(&self) -> value::Commitment {
+        match self.effect {
+            | Effect::Spend => self.rcv.commit_spend(self.note),
+            | Effect::Output => self.rcv.commit_output(self.note),
         }
     }
 }
