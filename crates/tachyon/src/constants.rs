@@ -54,6 +54,15 @@ pub const NOTE_COMMITMENT_DOMAIN: &[u8; 16] = b"Tachyon-NoteCmmt";
 /// Poseidon domain tag for action digests.
 pub const ACTION_DIGEST_PERSONALIZATION: &[u8; 16] = b"Tachyon-ActnDgst";
 
+/// Poseidon domain tag for note identity binding: H(mk, cm).
+pub const NOTE_ID_DOMAIN: &[u8; 16] = b"Tachyon-NoteMkCm";
+
+/// Poseidon domain tag for epoch chain hashing.
+pub const EPOCH_CHAIN_HASH_DOMAIN: &[u8; 16] = b"Tachyon-EpchHash";
+
+/// Poseidon domain tag for block chain hashing.
+pub const BLOCK_CHAIN_HASH_DOMAIN: &[u8; 16] = b"Tachyon-BlkCHash";
+
 /// Maximum note value in zatoshis (§5.3 of the protocol spec)
 pub const NOTE_VALUE_MAX: u64 = 2_100_000_000_000_000;
 
