@@ -22,8 +22,6 @@ use crate::{action, action::Action, bundle, value};
 /// This unification lets consensus treat all actions identically while
 /// the type system enforces the authority boundary at construction time.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct ActionVerificationKey(pub(crate) reddsa::VerificationKey<SpendAuth>);
 
 impl ActionVerificationKey {

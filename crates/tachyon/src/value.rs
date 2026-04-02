@@ -109,30 +109,6 @@ impl Default for CommitmentTrapdoor {
     }
 }
 
-#[cfg(feature = "serde")]
-impl serde::Serialize for CommitmentTrapdoor {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use ff::PrimeField as _;
-
-        serializer.serialize_bytes(&self.0.to_repr())
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for CommitmentTrapdoor {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use crate::serde_helpers::FqVisitor;
-
-        deserializer.deserialize_bytes(FqVisitor).map(Self)
-    }
-}
-
 impl From<CommitmentTrapdoor> for Fq {
     fn from(trapdoor: CommitmentTrapdoor) -> Self {
         trapdoor.0
@@ -215,30 +191,6 @@ impl iter::Sum for Commitment {
     /// commitments. Identity element is the point at infinity.
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.fold(Self(EpAffine::identity()), |acc, cv| acc + cv)
-    }
-}
-
-#[cfg(feature = "serde")]
-impl serde::Serialize for Commitment {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use group::GroupEncoding as _;
-
-        serializer.serialize_bytes(&self.0.to_bytes())
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for Commitment {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use crate::serde_helpers::EpAffineVisitor;
-
-        deserializer.deserialize_bytes(EpAffineVisitor).map(Self)
     }
 }
 

@@ -22,7 +22,6 @@ use crate::entropy::SpendRandomizer;
 // TODO: add proof-construction methods (e.g., create_action_proof, create_merge_proof)
 // once the Ragu circuit API is available.
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ProofAuthorizingKey {
     /// The spend validating key `ak = [ask] G`.
     pub(super) ak: SpendValidatingKey,
@@ -58,8 +57,6 @@ impl ProofAuthorizingKey {
 /// [`ProofAuthorizingKey`](super::ProofAuthorizingKey) for proof authorization
 /// without spend authority.
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct SpendValidatingKey(pub(super) reddsa::VerificationKey<SpendAuth>);
 
 impl SpendValidatingKey {

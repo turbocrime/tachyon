@@ -29,8 +29,6 @@ use crate::{
 /// and $\mathsf{cm}$ to recover $\alpha$
 /// ("Tachyaction at a Distance", Bowe 2025).
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
 #[expect(
     clippy::module_name_repetitions,
     reason = "ActionEntropy is the established protocol name"

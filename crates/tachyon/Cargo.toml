@@ -24,11 +24,6 @@ rust-version.workspace = true
 default = [
     "std",
 ]
-serde = [
-    "dep:serde",
-    "mock_ragu/serde",
-    "reddsa/serde",
-]
 std = [
     "blake2b_simd/std",
     "mock_ragu/std",
@@ -51,9 +46,6 @@ mock_ragu = { path = "../mock_ragu", default-features = false }
 pasta_curves = "0.5.1"
 rand_core = { version = "0.6", default-features = false }
 reddsa = { version = "0.5.1", default-features = false }
-serde = { version = "1.0", features = [
-    "derive",
-], optional = true }
 
 [dev-dependencies]
 rand = "0.8"

@@ -33,7 +33,6 @@ impl<T: sealed::Sealed> StampState for T {}
 
 /// A Tachyon transaction bundle parameterized by stamp state `S`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bundle<S: StampState> {
     /// Actions (cv, rk, sig).
     pub actions: Vec<Action>,
@@ -184,7 +183,6 @@ lazy_static! {
 
 /// A complete bundle plan, awaiting authorization.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Plan {
     /// Action plans (spends and outputs, in order).
     pub actions: Vec<action::Plan>,
@@ -280,8 +278,6 @@ impl<S: StampState> Bundle<S> {
 /// $\text{BindingSig.Validate}_{\mathsf{bvk}}(\mathsf{sighash},
 ///   \text{bindingSig}) = 1$
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Signature(pub(crate) reddsa::Signature<Binding>);
 
 impl From<[u8; 64]> for Signature {

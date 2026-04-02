@@ -135,30 +135,6 @@ impl TryFrom<&[u8; 32]> for ActionDigest {
     }
 }
 
-#[cfg(feature = "serde")]
-impl serde::Serialize for ActionDigest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use ff::PrimeField as _;
-
-        serializer.serialize_bytes(&self.0.to_repr())
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for ActionDigest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use crate::serde_helpers::FpVisitor;
-
-        deserializer.deserialize_bytes(FpVisitor).map(Self)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use ff::Field as _;

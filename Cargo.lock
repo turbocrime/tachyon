@@ -162,7 +162,6 @@ dependencies = [
  "pasta_curves",
  "rand",
  "rand_core",
- "serde",
 ]
 
 [[package]]
@@ -381,7 +380,6 @@ dependencies = [
  "rand",
  "rand_core",
  "reddsa",
- "serde",
 ]
 
 [[package]]
