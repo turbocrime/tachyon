@@ -78,9 +78,11 @@ impl Header for AnchorChain {
     }
 }
 
-/// Multi-stamp / multi-epoch nf-exclusion proof: an `elapsed` polynomial of one
-/// nullifier per crossed epoch boundary over `[start_epoch, present_epoch)`,
-/// plus the in-progress tip `present_nf` spliced in when its epoch completes.
+/// Multi-stamp / multi-epoch nf-exclusion proof
+///
+/// An `elapsed` polynomial of one nullifier per crossed epoch boundary over
+/// `[start_epoch, present_epoch)`, plus the in-progress tip `present_nf`
+/// spliced in when its epoch completes.
 #[derive(Clone, Debug)]
 pub struct Unspent;
 
@@ -110,7 +112,7 @@ impl Header for Unspent {
     }
 }
 
-/// An [`Unspent`] bound to a note's genuine `GGM(mk, ·)` leaves by
+/// An [`Unspent`] bound to a note's genuine `E_mk(·)` nullifiers by
 /// [`VerifyUnspent`], collapsed to boundary scalars.
 #[derive(Clone, Debug)]
 pub struct VerifiedUnspent;
@@ -155,7 +157,7 @@ impl Step for AnchorSeed {
     /// `(start, stamp_commit)`.
     type Witness<'source> = (Anchor, TachygramSetCommit);
 
-    const INDEX: Index = Index::new(4);
+    const INDEX: Index = Index::new(3);
 
     fn witness<'source>(
         &self,
@@ -186,7 +188,7 @@ impl Step for EmptyBlockSeed {
     /// `(start,)`.
     type Witness<'source> = (Anchor,);
 
-    const INDEX: Index = Index::new(5);
+    const INDEX: Index = Index::new(4);
 
     fn witness<'source>(
         &self,
@@ -211,7 +213,7 @@ impl Step for AnchorFuse {
     type Right = AnchorChain;
     type Witness<'source> = ();
 
-    const INDEX: Index = Index::new(6);
+    const INDEX: Index = Index::new(5);
 
     fn witness<'source>(
         &self,
@@ -240,7 +242,7 @@ impl Step for UnspentSeed {
     /// `(start, epoch, stamp_tg_set, nf)`.
     type Witness<'source> = (Anchor, EpochIndex, TachygramSetPoly, Nullifier);
 
-    const INDEX: Index = Index::new(7);
+    const INDEX: Index = Index::new(6);
 
     fn witness<'source>(
         &self,
@@ -278,7 +280,7 @@ impl Step for EmptyBlockUnspentSeed {
     /// `(start, epoch, nf)`.
     type Witness<'source> = (Anchor, EpochIndex, Nullifier);
 
-    const INDEX: Index = Index::new(8);
+    const INDEX: Index = Index::new(7);
 
     fn witness<'source>(
         &self,
@@ -300,9 +302,11 @@ impl Step for EmptyBlockUnspentSeed {
     }
 }
 
-/// Extend an [`Unspent`] within its tip epoch: the forwards half crosses no
-/// boundary, both halves share the tip `present_nf` at adjacent anchors, and
-/// the output keeps `left`'s span while only extending the anchor.
+/// Extend an [`Unspent`] within its tip epoch
+///
+/// The forwards half crosses no boundary, both halves share the tip
+/// `present_nf` at adjacent anchors, and the output keeps `left`'s span while
+/// only extending the anchor.
 #[derive(Debug)]
 pub struct UnspentFuse;
 
@@ -313,7 +317,7 @@ impl Step for UnspentFuse {
     type Right = Unspent;
     type Witness<'source> = ();
 
-    const INDEX: Index = Index::new(9);
+    const INDEX: Index = Index::new(8);
 
     fn witness<'source>(
         &self,
@@ -358,10 +362,12 @@ impl Step for UnspentFuse {
     }
 }
 
-/// Cross-epoch [`Unspent`] composition: at the boundary
-/// `left.end.next_epoch(new_epoch) == right.start`, left's tip epoch completes
-/// and splices in as `combined = left ++ [left.present_nf] ++ right`, with
-/// `new_epoch == left.present_epoch + 1`. The only step that grows `elapsed`.
+/// Cross-epoch [`Unspent`] composition
+///
+/// At the boundary `left.end.next_epoch(new_epoch) == right.start`, left's tip
+/// epoch completes and splices in as `combined = left ++ [left.present_nf] ++
+/// right`, with `new_epoch == left.present_epoch + 1`. The only step that grows
+/// `elapsed`.
 #[derive(Debug)]
 pub struct UnspentEpochFuse;
 
@@ -373,7 +379,7 @@ impl Step for UnspentEpochFuse {
     /// `(left_poly, right_poly, combined)`.
     type Witness<'source> = (NfSeqPoly, NfSeqPoly, NfSeqPoly);
 
-    const INDEX: Index = Index::new(10);
+    const INDEX: Index = Index::new(9);
 
     fn witness<'source>(
         &self,
@@ -431,10 +437,10 @@ impl Step for UnspentEpochFuse {
     }
 }
 
-/// Bind an [`Unspent`]'s free-witness nullifiers (crossings and tip) to a
-/// note's genuine `GGM(mk, ·)` leaves: proves `range == elapsed ++
-/// [present_nf]` against the derived [`NullifierHeader`], emitting a
-/// [`VerifiedUnspent`] with the `cm`.
+/// Bind an [`Unspent`]'s free-witness nullifiers
+///
+/// Proves `range == elapsed ++ [present_nf]` against the derived
+/// [`NullifierHeader`], emitting a [`VerifiedUnspent`] with the `cm`.
 #[derive(Debug)]
 pub struct VerifyUnspent;
 
@@ -446,7 +452,7 @@ impl Step for VerifyUnspent {
     /// `(elapsed_poly, tip_poly, range_poly)`.
     type Witness<'source> = (NfSeqPoly, NfSeqPoly, NfSeqPoly);
 
-    const INDEX: Index = Index::new(11);
+    const INDEX: Index = Index::new(10);
 
     fn witness<'source>(
         &self,

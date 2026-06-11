@@ -1,7 +1,7 @@
 //! Spendable bootstrap and lift.
 //!
 //! The spendable carries `(present_nf, anchor, cm)`: the note's current
-//! nullifier `GGM(mk, e)`, its pool position, and the minted-note commitment
+//! nullifier `E_mk(e)`, its pool position, and the minted-note commitment
 //! binding the lineage (and its value) across lifts. [`SpendableInit`]
 //! bootstraps it from a minted note; [`SpendableLift`] advances it over
 //! [`VerifiedUnspent`](super::pool::VerifiedUnspent) segments.
@@ -23,10 +23,10 @@ use crate::{
     primitives::{Anchor, NfSeqCommit, TachygramSetPoly},
 };
 
-/// Wallet's spendable position `(present_nf, anchor, cm)`: the note's
-/// current-epoch nullifier and pool position (advanced per lift) plus the
-/// minted-note commitment, threaded unchanged so the spent value cannot drift
-/// to a different same-`mk` note.
+/// Wallet's spendable position
+///
+/// The note's current-epoch nullifier and pool position (advanced per lift)
+/// plus the minted-note commitment, threaded unchanged across lifts.
 #[derive(Clone, Debug)]
 pub struct SpendableHeader;
 
@@ -49,7 +49,7 @@ impl Header for SpendableHeader {
 /// Bootstrap a spendable from a minted note, pinned to the creation epoch.
 ///
 /// Wallet-only. Fuses a boundary-rooted [`AnchorChain`] with the wallet's
-/// single-leaf [`NullifierHeader`](super::delegation::NullifierHeader): binds
+/// single-leaf [`NullifierHeader`]: binds
 /// `present_nf` to the proven leaf, checks `cm in creation_set`, roots the
 /// chain at the epoch boundary, and requires the cm-stamp to be its final link.
 #[derive(Debug)]
@@ -65,7 +65,7 @@ impl Step for SpendableInit {
     /// boundary); `pre_cm_anchor` the anchor immediately before the cm-stamp.
     type Witness<'source> = (Anchor, Anchor, TachygramSetPoly, Nullifier);
 
-    const INDEX: Index = Index::new(12);
+    const INDEX: Index = Index::new(11);
 
     fn witness<'source>(
         &self,
@@ -74,7 +74,7 @@ impl Step for SpendableInit {
         (chain_start, chain_end): <Self::Left as Header>::Data,
         (range_commit, range_start, range_end, cm): <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
-        // Bind `present_nf` to the single derived starting leaf `GGM(mk, epoch)`.
+        // Bind `present_nf` to the single derived starting nullifier `E_mk(epoch)`.
         if range_end.0 != range_start.0 + 1 {
             return Err(ragu::Error(
                 "SpendableInit: starting range must span one epoch",
@@ -102,7 +102,7 @@ impl Step for SpendableInit {
         // the real epoch boundary. `next_epoch` (`Tachyon-EpochStp`) is the sole
         // epoch-folding domain and the chain is intra-epoch, so matching
         // `pre_epoch_anchor.next_epoch(epoch)` against that boundary forces
-        // `epoch == E`, tying the GGM leaf index to the creation epoch.
+        // `epoch == E`, tying the derived epoch to the creation epoch.
         if chain_start != pre_epoch_anchor.next_epoch(epoch) {
             return Err(ragu::Error(
                 "SpendableInit: chain not rooted at epoch boundary",
@@ -138,7 +138,7 @@ impl Step for SpendableLift {
     type Right = VerifiedUnspent;
     type Witness<'source> = ();
 
-    const INDEX: Index = Index::new(13);
+    const INDEX: Index = Index::new(12);
 
     fn witness<'source>(
         &self,

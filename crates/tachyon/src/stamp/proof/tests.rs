@@ -1,4 +1,4 @@
-//! Proof-step tests: `StampLift`, `SpendBind` / `SpendStamp`, the GGM
+//! Proof-step tests: `StampLift`, `SpendBind` / `SpendStamp`, the MiMC
 //! derivation chain, `Unspent` composition, and the `Spendable*` lineage.
 
 extern crate alloc;
@@ -14,7 +14,7 @@ use rand_core::{CryptoRng, RngCore};
 use super::{PROOF_SYSTEM, delegation, pool, spend, spendable, stamp};
 use crate::{
     ActionSetCommit, Note, TachygramSetCommit, TachygramSetPoly,
-    constants::EPOCH_SIZE,
+    constants::{EPOCH_MAX, EPOCH_SIZE},
     entropy::ActionEntropy,
     fixtures::{
         PoolSim, SyncSim, WalletSim, build_anchor_chain_pcd, build_output_stamp, build_unspent_pcd,
@@ -1293,4 +1293,80 @@ fn nullifier_fuse_rejects_wrong_cm() {
         .err()
         .unwrap();
     assert_eq!(err.0, "NullifierFuse: note commitments differ");
+}
+
+/// The step's emitted rank-1 header matches the wallet's native `E_mk(e)`.
+#[test]
+fn nullifier_step_matches_native_derivation() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let user = WalletSim::random(rng);
+    let note = user.random_note(rng, 500);
+    let epoch = EpochIndex(42);
+
+    let pcd = user.nullifier_pcd(rng, note, epoch);
+    let (range_commit, start, end, cm) = *pcd.data();
+    assert_eq!(
+        range_commit,
+        NfSeqCommit::from([user.nf_at(&note, epoch)].as_slice()),
+        "step nullifier must equal native E_mk(e)"
+    );
+    assert_eq!(start, epoch);
+    assert_eq!(end, epoch.next());
+    assert_eq!(Fp::from(cm), Fp::from(note.commitment()));
+}
+
+/// A fused contiguous range commits to exactly the native sequence.
+#[test]
+fn derived_range_matches_native_sequence() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let user = WalletSim::random(rng);
+    let note = user.random_note(rng, 500);
+
+    let range = user.derived_range(rng, &note, EpochIndex(3), 4);
+    let nfs: Vec<Nullifier> = (3..7)
+        .map(|epoch| user.nf_at(&note, EpochIndex(epoch)))
+        .collect();
+    let (range_commit, start, end, cm) = *range.data();
+    assert_eq!(range_commit, NfSeqCommit::from(nfs.as_slice()));
+    assert_eq!(start, EpochIndex(3));
+    assert_eq!(end, EpochIndex(7));
+    assert_eq!(Fp::from(cm), Fp::from(note.commitment()));
+}
+
+#[test]
+fn nullifier_step_rejects_epoch_beyond_space() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let user = WalletSim::random(rng);
+    let note = user.random_note(rng, 500);
+    let master = user.note_master(rng, note);
+
+    let err = PROOF_SYSTEM
+        .fuse(
+            rng,
+            delegation::NullifierStep,
+            (EpochIndex(EPOCH_MAX + 1),),
+            master,
+            Proof::trivial().carry::<()>(()),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(err.0, "NullifierStep: epoch exceeds epoch space");
+}
+
+/// The last epoch in the space derives; its half-open end is `EPOCH_MAX + 1`.
+#[test]
+fn nullifier_step_accepts_epoch_max() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let user = WalletSim::random(rng);
+    let note = user.random_note(rng, 500);
+    let epoch = EpochIndex(EPOCH_MAX);
+
+    let pcd = user.nullifier_pcd(rng, note, epoch);
+    let (range_commit, start, end, _cm) = *pcd.data();
+    assert_eq!(
+        range_commit,
+        NfSeqCommit::from([user.nf_at(&note, epoch)].as_slice()),
+    );
+    assert_eq!(start, epoch);
+    assert_eq!(end, EpochIndex(EPOCH_MAX + 1));
 }

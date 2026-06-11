@@ -74,7 +74,7 @@ impl Step for OutputStamp {
         Anchor,
     );
 
-    const INDEX: Index = Index::new(14);
+    const INDEX: Index = Index::new(13);
 
     fn witness<'source>(
         &self,
@@ -108,7 +108,7 @@ impl Step for OutputStamp {
 /// and stamps the spend.
 ///
 /// Witnesses `nf_next` and binds the published pair to the note's genuine
-/// `GGM(mk, ·)` leaves: consumes the rank-2 range (`range.end == range.start +
+/// `E_mk(·)` nullifiers: consumes the rank-2 range (`range.end == range.start +
 /// 2`, `range.cm == cm`) and checks `[present_nf]G_0 + [nf_next]G_1 ==
 /// range_commit`.
 #[derive(Debug)]
@@ -122,7 +122,7 @@ impl Step for SpendStamp {
     /// `(nf_next,)`.
     type Witness<'source> = (Nullifier,);
 
-    const INDEX: Index = Index::new(16);
+    const INDEX: Index = Index::new(15);
 
     fn witness<'source>(
         &self,
@@ -138,7 +138,7 @@ impl Step for SpendStamp {
             return Err(ragu::Error("SpendStamp: derived range does not match note"));
         }
 
-        // Bind the published pair to the genuine rank-2 GGM leaves.
+        // Bind the published pair to the genuine rank-2 derived nullifiers.
         let nf_pair_ref: EqAffine = *((generators::g(0) * Fp::from(present_nf)
             + generators::g(1) * Fp::from(nf_next))
         .inner());
@@ -190,7 +190,7 @@ impl Step for MergeStamp {
         TachygramSetPoly,
     );
 
-    const INDEX: Index = Index::new(17);
+    const INDEX: Index = Index::new(16);
 
     fn witness<'source>(
         &self,
@@ -253,7 +253,7 @@ impl Step for StampLift {
     type Right = AnchorChain;
     type Witness<'source> = ();
 
-    const INDEX: Index = Index::new(18);
+    const INDEX: Index = Index::new(17);
 
     fn witness<'source>(
         &self,

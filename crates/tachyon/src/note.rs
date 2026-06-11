@@ -19,9 +19,9 @@
 //!
 //! ## Nullifier Derivation
 //!
-//! $mk = \text{KDF}(\psi, nk)$, then $nf = F_{mk}(\text{flavor})$ via a GGM
-//! tree PRF instantiated from Poseidon. The "flavor" is the epoch at which the
-//! nullifier is revealed, enabling range-restricted delegation.
+//! $mk = \text{KDF}(\psi, nk)$ (Poseidon), then $nf = E_{mk}(\text{flavor})$
+//! via MiMC in evaluation mode. The "flavor" is the epoch at which the
+//! nullifier is revealed.
 //!
 //! Evaluated natively by wallets; the sync service handles only opaque
 //! nullifier values. The Ragu circuit constrains that each consumed
@@ -48,9 +48,8 @@ use crate::{
 
 /// Nullifier trapdoor ($\psi$) — per-note randomness for nullifier derivation.
 ///
-/// Used to derive the master root key: $mk = \text{KDF}(\psi, nk)$.
-/// The GGM tree PRF then evaluates $nf = F_{mk}(\text{flavor})$.
-/// Prefix keys derived from $mk$ enable range-restricted delegation.
+/// Used to derive the per-note master key: $mk = \text{KDF}(\psi, nk)$.
+/// MiMC then evaluates $nf = E_{mk}(\text{flavor})$.
 #[derive(Clone, Copy)]
 #[expect(clippy::field_scoped_visibility_modifiers, reason = "for internal use")]
 pub struct NullifierTrapdoor(pub(super) Fp);
@@ -185,9 +184,8 @@ impl Note {
 
     /// Derives a nullifier for this note at the given flavor (epoch).
     ///
-    /// GGM tree PRF:
-    /// 1. $mk = \text{Poseidon}(\psi, nk)$ — master root key (per-note)
-    /// 2. $nf = F_{mk}(\text{flavor})$ — tree walk with bits of flavor
+    /// 1. $mk = \text{Poseidon}(\psi, nk)$ — master key (per-note)
+    /// 2. $nf = E_{mk}(\text{flavor})$ — MiMC evaluation at the epoch
     ///
     /// The same note at different flavors produces different nullifiers.
     #[must_use]
@@ -226,8 +224,8 @@ impl From<Commitment> for Tachygram {
 
 /// A Tachyon nullifier.
 ///
-/// Derived via GGM tree PRF: $mk = \text{KDF}(\psi, nk)$, then
-/// $nf = F_{mk}(\text{flavor})$. Published when a note is spent;
+/// Derived as $mk = \text{KDF}(\psi, nk)$, then
+/// $nf = E_{mk}(\text{flavor})$ (MiMC). Published when a note is spent;
 /// becomes a tachygram in the polynomial accumulator.
 ///
 /// Unlike Orchard, Tachyon nullifiers:

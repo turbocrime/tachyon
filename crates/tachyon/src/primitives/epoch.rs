@@ -4,9 +4,8 @@
 /// epoch identifies a specific pool accumulator state.
 ///
 /// Used as **flavor** in nullifier derivation:
-/// $mk = \text{KDF}(\psi, nk)$, then $nf = F_{mk}(\text{flavor})$.
-/// Different epochs produce different nullifiers for the same note,
-/// enabling range-restricted delegation via the GGM tree PRF.
+/// $mk = \text{KDF}(\psi, nk)$, then $nf = E_{mk}(\text{flavor})$.
+/// Different epochs produce different nullifiers for the same note.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct EpochIndex(pub u32);
 

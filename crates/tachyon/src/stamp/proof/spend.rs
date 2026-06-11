@@ -75,7 +75,7 @@ impl Step for SpendBind {
         ProofAuthorizingKey,
     );
 
-    const INDEX: Index = Index::new(15);
+    const INDEX: Index = Index::new(14);
 
     fn witness<'source>(
         &self,

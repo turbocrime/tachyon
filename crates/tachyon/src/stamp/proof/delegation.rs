@@ -1,6 +1,6 @@
-//! GGM nullifier-derivation chain: prove a contiguous range of a note's
-//! per-epoch nullifiers `GGM(mk, ·)`. Wallet-only; every range header carries
-//! `cm` for its consumers.
+//! MiMC nullifier-derivation chain: prove a contiguous range of a note's
+//! per-epoch nullifiers `N_e = E_mk(e)`. Wallet-only; every range header
+//! carries `cm` for its consumers.
 
 extern crate alloc;
 
@@ -11,29 +11,30 @@ use pasta_curves::Fp;
 use ragu::{Commitment, Header, Index, Polynomial, Step, Suffix, enforce_poly_concat, generators};
 
 use crate::{
-    digest::poseidon,
-    keys::{GGM_TREE_ARITY, GGM_TREE_DEPTH, ProofAuthorizingKey},
+    constants::EPOCH_MAX,
+    digest::mimc,
+    keys::ProofAuthorizingKey,
     note::{self, Note, Nullifier},
     primitives::{EpochIndex, NfSeqCommit, NfSeqPoly},
 };
 
-/// In-progress GGM walk position `(node, depth, index, cm)`: the current tree
-/// `node`, levels descended `depth`, leaf `index`, and the note commitment `cm`
-/// carried for the final binding. Wallet-only.
+/// The note's master key and commitment `(mk, cm)`. Wallet-only.
+///
+/// Carrying raw `mk` is required: it is the witness anchor every
+/// derivation step proves against. The header is private to the wallet's
+/// own proof tree and is never published.
 #[derive(Clone, Debug)]
-pub struct NfPrefixHeader;
+pub struct NfMasterHeader;
 
-impl Header for NfPrefixHeader {
-    type Data = (Fp, u8, EpochIndex, note::Commitment);
+impl Header for NfMasterHeader {
+    type Data = (Fp, note::Commitment);
 
     const SUFFIX: Suffix = Suffix::new(1);
 
     fn encode(data: &Self::Data) -> Vec<u8> {
-        let mut out = Vec::with_capacity(32 + 1 + 4 + 32);
+        let mut out = Vec::with_capacity(32 + 32);
         out.extend_from_slice(&data.0.to_repr());
-        out.extend_from_slice(&data.1.to_le_bytes());
-        out.extend_from_slice(&data.2.0.to_le_bytes());
-        out.extend_from_slice(&Fp::from(data.3).to_repr());
+        out.extend_from_slice(&Fp::from(data.1).to_repr());
         out
     }
 }
@@ -41,7 +42,7 @@ impl Header for NfPrefixHeader {
 /// A proven contiguous range of derived nullifiers (wallet-only).
 ///
 /// `(range_commit, start_epoch, end_epoch, cm)`: `range_commit` commits to the
-/// half-open range `[N_start, .., N_{end-1}]` (`N_e = GGM(mk, e)`) at degree 0;
+/// half-open range `[N_start, .., N_{end-1}]` (`N_e = E_mk(e)`) at degree 0;
 /// `cm` lets every consumer bind the range to the real note.
 #[derive(Clone, Debug)]
 pub struct NullifierHeader;
@@ -62,18 +63,18 @@ impl Header for NullifierHeader {
     }
 }
 
-/// Seed the GGM walk at the master root.
+/// Seed the derivation chain at the note's master key.
 ///
 /// Witnesses the note and `pak`, proves `mk` is the note's master key
-/// (`note.pk == pak.derive_payment_key()`), and emits the depth-0 node carrying
-/// the note's `cm`.
+/// (`note.pk == pak.derive_payment_key()` pins `nk`, and `mk =
+/// Poseidon(psi, nk)`), and emits `(mk, cm)`.
 #[derive(Debug)]
 pub struct NfMasterSeed;
 
 impl Step for NfMasterSeed {
     type Aux<'source> = ();
     type Left = ();
-    type Output = NfPrefixHeader;
+    type Output = NfMasterHeader;
     type Right = ();
     type Witness<'source> = (Note, ProofAuthorizingKey);
 
@@ -91,75 +92,43 @@ impl Step for NfMasterSeed {
         }
         let mk = pak.nk.derive_note_private(&note.psi);
         let cm = note.commitment();
-        Ok(((mk.0, 0, EpochIndex(0), cm), ()))
+        Ok(((mk.0, cm), ()))
     }
 }
 
-/// Descend one level of the GGM tree.
+/// Derive one epoch's nullifier into a rank-1 [`NullifierHeader`].
 ///
-/// Witnesses a free `chunk`; `node' = nf_prefix(node, chunk)`, `index' =
-/// index*ARITY + chunk`, `depth' = depth + 1`.
+/// Witnesses a free `epoch`; the nullifier is `E_mk(epoch)` and the range
+/// commits to it alone at degree 0, spanning the single epoch
+/// `[epoch, epoch + 1)`. The epoch is published on the header; which epoch
+/// matters is bound downstream by every consumer. The epoch-space bound
+/// keeps witnessed epochs inside the protocol's epoch space and rules out
+/// `next()` overflow.
 #[derive(Debug)]
-pub struct NfPrefixStep;
+pub struct NullifierStep;
 
-impl Step for NfPrefixStep {
+impl Step for NullifierStep {
     type Aux<'source> = ();
-    type Left = NfPrefixHeader;
-    type Output = NfPrefixHeader;
+    type Left = NfMasterHeader;
+    type Output = NullifierHeader;
     type Right = ();
-    type Witness<'source> = (u8,);
+    type Witness<'source> = (EpochIndex,);
 
     const INDEX: Index = Index::new(1);
 
     fn witness<'source>(
         &self,
         _ctx: &mut ragu::StepCtx<'_>,
-        (chunk,): Self::Witness<'source>,
-        (node, depth, index, cm): <Self::Left as Header>::Data,
+        (epoch,): Self::Witness<'source>,
+        (mk, cm): <Self::Left as Header>::Data,
         _right: <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
-        if depth >= GGM_TREE_DEPTH {
-            return Err(ragu::Error("NfPrefixStep: already at maximum depth"));
+        if epoch.0 > EPOCH_MAX {
+            return Err(ragu::Error("NullifierStep: epoch exceeds epoch space"));
         }
-        if chunk >= GGM_TREE_ARITY {
-            return Err(ragu::Error("NfPrefixStep: chunk exceeds GGM arity"));
-        }
-        let child = poseidon::nf_prefix(node, chunk);
-        let child_index = EpochIndex(index.0 * u32::from(GGM_TREE_ARITY) + u32::from(chunk));
-        Ok(((child, depth + 1, child_index, cm), ()))
-    }
-}
-
-/// Turn a leaf node into a rank-1 [`NullifierHeader`].
-///
-/// Requires the walk to be at a leaf (`depth == GGM_TREE_DEPTH`); the nullifier
-/// is `Poseidon(node)` and the range commits to it alone at degree 0, spanning
-/// the single epoch `[index, index + 1)`.
-#[derive(Debug)]
-pub struct NullifierStep;
-
-impl Step for NullifierStep {
-    type Aux<'source> = ();
-    type Left = NfPrefixHeader;
-    type Output = NullifierHeader;
-    type Right = ();
-    type Witness<'source> = ();
-
-    const INDEX: Index = Index::new(2);
-
-    fn witness<'source>(
-        &self,
-        _ctx: &mut ragu::StepCtx<'_>,
-        _witness: Self::Witness<'source>,
-        (node, depth, index, cm): <Self::Left as Header>::Data,
-        _right: <Self::Right as Header>::Data,
-    ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
-        if depth != GGM_TREE_DEPTH {
-            return Err(ragu::Error("NullifierStep: not at maximum depth"));
-        }
-        let nf = Nullifier::from(poseidon::nullifier(node));
+        let nf = Nullifier::from(mimc::nullifier(mk, Fp::from(u64::from(epoch.0))));
         let range_commit = NfSeqCommit::from(generators::g(0) * Fp::from(nf));
-        Ok(((range_commit, index, index.next(), cm), ()))
+        Ok(((range_commit, epoch, epoch.next(), cm), ()))
     }
 }
 
@@ -180,7 +149,7 @@ impl Step for NullifierFuse {
     /// `(left_poly, right_poly, merged)`.
     type Witness<'source> = (NfSeqPoly, NfSeqPoly, NfSeqPoly);
 
-    const INDEX: Index = Index::new(3);
+    const INDEX: Index = Index::new(2);
 
     fn witness<'source>(
         &self,
