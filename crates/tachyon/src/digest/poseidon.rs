@@ -8,6 +8,8 @@ use ff::PrimeField as _;
 use halo2_poseidon::{ConstantLength, Hash, P128Pow5T3};
 use pasta_curves::{EpAffine, EqAffine, Fp, arithmetic::Coordinates};
 
+use crate::EpochIndex;
+
 fn hash<const L: usize>(input: [Fp; L]) -> Fp {
     Hash::<Fp, P128Pow5T3, ConstantLength<L>, 3, 2>::init().hash(input)
 }
@@ -53,13 +55,14 @@ pub(crate) fn note_commitment(rcm: Fp, pk: Fp, value: u64, psi: Fp) -> Fp {
 
 const NULLIFIER_MASTER_DOMAIN: &[u8; 16] = b"Tachyon-NfMaster";
 
-/// Derives a note's master key from its trapdoor and the wallet nullifier key.
+/// Derives a master key element from note trapdoor and wallet nullifier key.
 #[must_use]
-pub(crate) fn nf_master(psi: Fp, nk: Fp) -> Fp {
-    hash::<3>([
+pub(crate) fn nf_master(psi: Fp, nk: Fp, index: Fp) -> Fp {
+    hash::<4>([
         Fp::from_u128(u128::from_le_bytes(*NULLIFIER_MASTER_DOMAIN)),
         psi,
         nk,
+        index,
     ])
 }
 
@@ -103,10 +106,10 @@ const ANCHOR_EPOCH_DOMAIN: &[u8; 16] = b"Tachyon-EpochStp";
 
 /// Advances the terminal anchor of an epoch into a new epoch's initial state.
 #[must_use]
-pub(crate) fn anchor_epoch_step(anchor_prev: Fp, new_epoch: u32) -> Fp {
+pub(crate) fn anchor_epoch_step(anchor_prev: Fp, new_epoch: EpochIndex) -> Fp {
     hash::<3>([
         Fp::from_u128(u128::from_le_bytes(*ANCHOR_EPOCH_DOMAIN)),
         anchor_prev,
-        Fp::from(u64::from(new_epoch)),
+        Fp::from(new_epoch),
     ])
 }

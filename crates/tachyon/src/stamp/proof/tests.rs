@@ -1295,7 +1295,8 @@ fn nullifier_fuse_rejects_wrong_cm() {
     assert_eq!(err.0, "NullifierFuse: note commitments differ");
 }
 
-/// The step's emitted rank-1 header matches the wallet's native `E_mk(e)`.
+/// The step's emitted rank-1 header matches the wallet's native
+/// `E_mk(psi' + e)`.
 #[test]
 fn nullifier_step_matches_native_derivation() {
     let rng = &mut StdRng::seed_from_u64(0);
@@ -1308,7 +1309,7 @@ fn nullifier_step_matches_native_derivation() {
     assert_eq!(
         range_commit,
         NfSeqCommit::from([user.nf_at(&note, epoch)].as_slice()),
-        "step nullifier must equal native E_mk(e)"
+        "step nullifier must equal native E_mk(psi' + e)"
     );
     assert_eq!(start, epoch);
     assert_eq!(end, epoch.next());

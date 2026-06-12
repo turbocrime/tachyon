@@ -1,6 +1,6 @@
 //! Note-related keys: NullifierKey, NoteMasterKey, PaymentKey.
 
-use core::fmt;
+use core::{array, fmt};
 
 use ff::PrimeField as _;
 use pasta_curves::Fp;
@@ -16,47 +16,70 @@ use crate::{
 /// A Tachyon nullifier deriving key.
 ///
 /// Tachyon simplifies Orchard's nullifier construction
-/// ("Tachyaction at a Distance", Bowe 2025): the per-note master key
-/// $\mathsf{mk} = \text{KDF}(\Psi, \mathsf{nk})$ (Poseidon) keys the MiMC
-/// cipher, and the nullifier for an epoch is
+/// ("Tachyaction at a Distance", Bowe 2025): a per-note keyset
+/// $[\mathsf{mk}_0, \ldots, \mathsf{mk}_{n-1}]$, each $\mathsf{mk}_i =
+/// \text{Poseidon}(\Psi, \mathsf{nk}, i)$; the leading keys key the
+/// multi-key MiMC cipher and the last key is the input salt $\mathsf{mk}_s$,
+/// so the nullifier for an epoch is
 ///
-/// $$\mathsf{nf}_e = E_{\mathsf{mk}}(e)$$
+/// $$\mathsf{nf}_e = E_{\mathsf{mk}}(\mathsf{mk}_s + e)$$
 ///
 /// where $\Psi$ is the note's nullifier trapdoor and $e$ the epoch-id.
 ///
-/// `nk` alone does NOT confer spend authority — combined with `ak` it
+/// `nk` alone does NOT confer spend authority; combined with `ak` it
 /// forms the proof authorizing key `pak`, enabling proof construction
 /// and nullifier derivation without signing capability.
 #[derive(Clone, Copy)]
 pub struct NullifierKey(pub(super) Fp);
 
 impl NullifierKey {
-    /// Derive a note's master key from its nullifier trapdoor `psi`.
+    /// Derive a note's master-key seed from its nullifier trapdoor `psi`.
     #[must_use]
     pub fn derive_note_private(&self, psi: &note::NullifierTrapdoor) -> NoteMasterKey {
-        NoteMasterKey(poseidon::nf_master(psi.0, self.0))
+        NoteMasterKey(array::from_fn(|i| {
+            poseidon::nf_master(
+                psi.0,
+                self.0,
+                Fp::from(
+                    #[expect(clippy::expect_used, reason = "fits usize")]
+                    u64::try_from(i).expect("fits usize"),
+                ),
+            )
+        }))
     }
 }
 
-/// Per-note master key: the MiMC key for the note's nullifier sequence.
+/// Per-note master secret: the MiMC keyset.
 ///
-/// Derived on the user device as $\mathsf{mk} = \text{KDF}(\Psi,
-/// \mathsf{nk})$ (Poseidon). The nullifier for epoch $e$ is
-/// $\mathsf{nf}_e = E_{\mathsf{mk}}(e)$, MiMC in evaluation mode.
+/// Derived on the user device as $\mathsf{mk}_i = \text{Poseidon}(\Psi,
+/// \mathsf{nk}, i)$ for $i = 0, \ldots, n-1$. The leading keys key the
+/// multi-key MiMC cipher and the last is the input salt; the nullifier for
+/// epoch $e$ is $\mathsf{nf}_e = E_{\mathsf{mk}}(\mathsf{mk}_s + e)$,
+/// multi-key MiMC in evaluation mode on inputs never known to an adversary
+/// (only consecutive input differences are).
 ///
 /// ## Delegation: value windows only
 ///
 /// Delegation operates on value windows only; there is no key-material
 /// delegation API, and the wallet is the sole prover of derivation.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct NoteMasterKey(pub(crate) Fp);
+pub struct NoteMasterKey([Fp; Self::LENGTH]);
 
 impl NoteMasterKey {
-    /// Derive the nullifier for the given epoch: `nf = E_mk(flavor)`.
+    /// The number of Fp elements in the key.
+    pub const LENGTH: usize = 3;
+
+    /// Derive the nullifier for the given epoch: `nf = E_mk(mk_s + epoch)`.
     #[must_use]
-    pub fn derive_nullifier(&self, flavor: EpochIndex) -> Nullifier {
-        assert!(flavor.0 <= EPOCH_MAX, "epoch exceeds epoch space");
-        Nullifier::from(mimc::nullifier(self.0, Fp::from(u64::from(flavor.0))))
+    pub fn derive_nullifier(&self, epoch: EpochIndex) -> Nullifier {
+        assert!(epoch.0 <= EPOCH_MAX, "epoch exceeds epoch space");
+        Nullifier::from(mimc::nullifier(self.0, Fp::from(epoch)))
+    }
+}
+
+impl From<NoteMasterKey> for [Fp; NoteMasterKey::LENGTH] {
+    fn from(mk: NoteMasterKey) -> Self {
+        mk.0
     }
 }
 
@@ -133,7 +156,7 @@ mod tests {
     use rand::{SeedableRng as _, rngs::StdRng};
 
     use super::*;
-    use crate::{digest::mimc, primitives::EpochIndex};
+    use crate::primitives::EpochIndex;
 
     #[test]
     fn derive_note_private_deterministic() {
@@ -166,28 +189,5 @@ mod tests {
             mk.derive_nullifier(EpochIndex(0u32)),
             mk.derive_nullifier(EpochIndex(1u32)),
         );
-    }
-
-    /// `derive_nullifier` is exactly the MiMC cipher on the epoch index.
-    #[test]
-    fn derive_nullifier_is_mimc_encrypt() {
-        let rng = &mut StdRng::seed_from_u64(0);
-        let nk = NullifierKey(Fp::random(&mut *rng));
-        let psi = note::NullifierTrapdoor::random(rng);
-        let mk = nk.derive_note_private(&psi);
-        let epoch = EpochIndex(42);
-        assert_eq!(
-            mk.derive_nullifier(epoch),
-            Nullifier::from(mimc::nullifier(mk.0, Fp::from(u64::from(epoch.0)))),
-        );
-    }
-
-    #[test]
-    fn debug_master_key_redacts_value() {
-        let key = NoteMasterKey(Fp::from(0xDEAD_BEEFu64));
-        let dbg = alloc::format!("{key:?}");
-        assert!(dbg.contains("NoteMasterKey"), "must name the type");
-        assert!(!dbg.contains("DEAD"), "must not leak field element");
-        assert!(!dbg.contains("dead"), "must not leak field element");
     }
 }

@@ -1,10 +1,10 @@
 //! Spendable bootstrap and lift.
 //!
 //! The spendable carries `(present_nf, anchor, cm)`: the note's current
-//! nullifier `E_mk(e)`, its pool position, and the minted-note commitment
-//! binding the lineage (and its value) across lifts. [`SpendableInit`]
-//! bootstraps it from a minted note; [`SpendableLift`] advances it over
-//! [`VerifiedUnspent`](super::pool::VerifiedUnspent) segments.
+//! nullifier `E_mk(psi' + e)`, its pool position, and the minted-note
+//! commitment binding the lineage (and its value) across lifts.
+//! [`SpendableInit`] bootstraps it from a minted note; [`SpendableLift`]
+//! advances it over [`VerifiedUnspent`](super::pool::VerifiedUnspent) segments.
 
 extern crate alloc;
 
@@ -74,7 +74,8 @@ impl Step for SpendableInit {
         (chain_start, chain_end): <Self::Left as Header>::Data,
         (range_commit, range_start, range_end, cm): <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
-        // Bind `present_nf` to the single derived starting nullifier `E_mk(epoch)`.
+        // Bind `present_nf` to the single derived starting nullifier
+        // `E_mk(psi' + epoch)`.
         if range_end.0 != range_start.0 + 1 {
             return Err(ragu::Error(
                 "SpendableInit: starting range must span one epoch",

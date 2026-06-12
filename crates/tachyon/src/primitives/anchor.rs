@@ -45,7 +45,7 @@ impl Anchor {
     /// initial state.
     #[must_use]
     pub fn next_epoch(self, new_epoch: EpochIndex) -> Self {
-        Self(poseidon::anchor_epoch_step(self.0, new_epoch.0))
+        Self(poseidon::anchor_epoch_step(self.0, new_epoch))
     }
 
     /// Read a 32-byte anchor.

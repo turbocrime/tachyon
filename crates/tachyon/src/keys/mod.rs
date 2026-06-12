@@ -56,10 +56,12 @@
 //!
 //! ## Nullifier Derivation
 //!
-//! Nullifiers are MiMC evaluations under a per-note Poseidon-derived key:
+//! Nullifiers are MiMC evaluations under a per-note Poseidon-derived key,
+//! at inputs blinded by its domain-separated sibling salt:
 //!
-//! $$\mathsf{mk} = \text{KDF}(\psi, \mathsf{nk})$$
-//! $$\mathsf{nf}_e = E_{\mathsf{mk}}(e)$$
+//! $$\mathsf{mk} = \text{KDF}(\psi, \mathsf{nk}) \qquad
+//! \psi' = \text{KDF}'(\psi, \mathsf{nk})$$
+//! $$\mathsf{nf}_e = E_{\mathsf{mk}}(\psi' + e)$$
 //!
 //! where $\psi$ is the note's nullifier trapdoor, $\mathsf{nk}$ is the
 //! nullifier key, and $e$ is the epoch-id. The wallet is the sole prover

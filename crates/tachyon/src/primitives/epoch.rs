@@ -1,10 +1,12 @@
+use pasta_curves::Fp;
+
 /// A tachyon epoch — a point in the accumulator's history.
 ///
 /// The tachyon accumulator evolves as tachygrams are included. Each
 /// epoch identifies a specific pool accumulator state.
 ///
-/// Used as **flavor** in nullifier derivation:
-/// $mk = \text{KDF}(\psi, nk)$, then $nf = E_{mk}(\text{flavor})$.
+/// Used as the cipher input in nullifier derivation:
+/// $mk = \text{KDF}(\psi, nk)$, then $nf = E_{mk}(\text{epoch})$.
 /// Different epochs produce different nullifiers for the same note.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct EpochIndex(pub u32);
@@ -26,5 +28,11 @@ impl From<u32> for EpochIndex {
 impl From<EpochIndex> for u32 {
     fn from(epoch: EpochIndex) -> Self {
         epoch.0
+    }
+}
+
+impl From<EpochIndex> for Fp {
+    fn from(epoch: EpochIndex) -> Self {
+        Self::from(u64::from(epoch.0))
     }
 }

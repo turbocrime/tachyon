@@ -19,8 +19,8 @@
 //!
 //! ## Nullifier Derivation
 //!
-//! $mk = \text{KDF}(\psi, nk)$ (Poseidon), then $nf = E_{mk}(\text{flavor})$
-//! via MiMC in evaluation mode. The "flavor" is the epoch at which the
+//! $mk = \text{KDF}(\psi, nk)$ (Poseidon), then $nf = E_{mk}(\text{epoch})$
+//! via MiMC in evaluation mode. The input is the epoch at which the
 //! nullifier is revealed.
 //!
 //! Evaluated natively by wallets; the sync service handles only opaque
@@ -49,7 +49,7 @@ use crate::{
 /// Nullifier trapdoor ($\psi$) — per-note randomness for nullifier derivation.
 ///
 /// Used to derive the per-note master key: $mk = \text{KDF}(\psi, nk)$.
-/// MiMC then evaluates $nf = E_{mk}(\text{flavor})$.
+/// MiMC then evaluates $nf = E_{mk}(\text{epoch})$.
 #[derive(Clone, Copy)]
 #[expect(clippy::field_scoped_visibility_modifiers, reason = "for internal use")]
 pub struct NullifierTrapdoor(pub(super) Fp);
@@ -182,16 +182,11 @@ impl Note {
         ))
     }
 
-    /// Derives a nullifier for this note at the given flavor (epoch).
-    ///
-    /// 1. $mk = \text{Poseidon}(\psi, nk)$ — master key (per-note)
-    /// 2. $nf = E_{mk}(\text{flavor})$ — MiMC evaluation at the epoch
-    ///
-    /// The same note at different flavors produces different nullifiers.
+    /// Derives a nullifier for this note at the given epoch.
     #[must_use]
-    pub fn nullifier(&self, nk: &NullifierKey, flavor: EpochIndex) -> Nullifier {
+    pub fn nullifier(&self, nk: &NullifierKey, epoch: EpochIndex) -> Nullifier {
         let mk = nk.derive_note_private(&self.psi);
-        mk.derive_nullifier(flavor)
+        mk.derive_nullifier(epoch)
     }
 }
 
@@ -225,12 +220,12 @@ impl From<Commitment> for Tachygram {
 /// A Tachyon nullifier.
 ///
 /// Derived as $mk = \text{KDF}(\psi, nk)$, then
-/// $nf = E_{mk}(\text{flavor})$ (MiMC). Published when a note is spent;
+/// $nf = E_{mk}(\text{epoch})$ (MiMC). Published when a note is spent;
 /// becomes a tachygram in the polynomial accumulator.
 ///
 /// Unlike Orchard, Tachyon nullifiers:
 /// - Don't need collision resistance (no faerie gold defense)
-/// - Have an epoch "flavor" component for sync delegation
+/// - Have an epoch component for sync delegation
 /// - Are prunable by validators after a window of blocks
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct Nullifier(Fp);
@@ -340,10 +335,10 @@ mod tests {
             psi: NullifierTrapdoor::random(rng),
             rcm: CommitmentTrapdoor::random(rng),
         };
-        let flavor = EpochIndex(5u32);
+        let epoch = EpochIndex(5u32);
 
         let mk = nk.derive_note_private(&note.psi);
-        assert_eq!(note.nullifier(&nk, flavor), mk.derive_nullifier(flavor));
+        assert_eq!(note.nullifier(&nk, epoch), mk.derive_nullifier(epoch));
     }
 
     #[test]

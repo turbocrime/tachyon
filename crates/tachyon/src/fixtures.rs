@@ -879,7 +879,8 @@ pub fn nullifier_range_from_master(
     let mut acc: Option<Pcd<delegation::NullifierHeader>> = None;
     for offset in 0..len {
         let epoch = EpochIndex(start_epoch.0 + offset);
-        let nf = NoteMasterKey(master_pcd.data().0).derive_nullifier(epoch);
+        let (mk, _cm) = *master_pcd.data();
+        let nf = mk.derive_nullifier(epoch);
         let (leaf, ()) = PROOF_SYSTEM
             .fuse(
                 rng,
