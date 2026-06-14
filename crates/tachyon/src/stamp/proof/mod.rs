@@ -7,6 +7,7 @@ extern crate alloc;
 
 pub mod delegation;
 pub mod pool;
+pub mod relations;
 pub mod spend;
 pub mod spendable;
 pub mod stamp;
@@ -38,6 +39,7 @@ fn make_app() -> Result<Application, ragu::Error> {
         .register(stamp::SpendStamp)?
         .register(stamp::MergeStamp)?
         .register(stamp::StampLift)?
+        .register(delegation::NullifierEraStep)?
         .finalize()
 }
 

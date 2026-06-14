@@ -87,7 +87,7 @@ undocumented_unsafe_blocks = "forbid" # every unsafe block must be documented.
 default_union_representation = "forbid" # unions must have explicit repr.
 
 # -- forbid: no panicking indexing -------------------------------------------
-indexing_slicing = "forbid" # use .get() or iterators. test/const exceptions via clippy.toml.
+indexing_slicing = "deny" # use .get() or iterators. test/const exceptions via clippy.toml.
 string_slice = "forbid" # string slicing can panic on char boundaries.
 # &container[..] instead of &*container obscures intent.
 deref_by_slicing = "forbid"

@@ -17,12 +17,12 @@ pub struct TachygramSetCommit(Commitment);
 pub struct ActionSetCommit(Commitment);
 
 /// Witness polynomial for a stamp's tachygram set (members encoded as roots).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct TachygramSetPoly(Polynomial);
 
 /// Witness polynomial for a stamp's action-digest set (members encoded as
 /// roots).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ActionSetPoly(Polynomial);
 
 impl TachygramSetPoly {

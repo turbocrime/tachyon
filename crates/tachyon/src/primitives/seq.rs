@@ -13,7 +13,7 @@ pub struct NfSeqCommit(Commitment);
 
 /// Witness polynomial for a nullifier sequence $N$ (members encoded as
 /// coefficients, ordered by ascending degree).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct NfSeqPoly(Polynomial);
 
 impl NfSeqCommit {

@@ -1,5 +1,7 @@
 use pasta_curves::Fp;
 
+use crate::constants::ERA_EPOCHS;
+
 /// A tachyon epoch — a point in the accumulator's history.
 ///
 /// The tachyon accumulator evolves as tachygrams are included. Each
@@ -16,6 +18,17 @@ impl EpochIndex {
     #[must_use]
     pub const fn next(self) -> Self {
         Self(self.0 + 1)
+    }
+
+    /// Returns the epoch [`ERA_EPOCHS`] into the future.
+    #[must_use]
+    pub const fn era(self) -> Self {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::as_conversions,
+            reason = "safe conversion"
+        )]
+        Self(self.0 + (ERA_EPOCHS as u32))
     }
 }
 

@@ -10,3 +10,6 @@ pub const EPOCH_SIZE: u32 = 1 << EPOCH_SHIFT;
 
 /// Maximum epoch index.
 pub const EPOCH_MAX: u32 = u32::MAX >> EPOCH_SHIFT;
+
+/// Number of epochs in an era.
+pub const ERA_EPOCHS: usize = 128;

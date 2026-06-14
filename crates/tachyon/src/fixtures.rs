@@ -1,4 +1,6 @@
 #![allow(unreachable_pub, reason = "test code")]
+#![allow(clippy::as_conversions, reason = "test code")]
+#![allow(clippy::cast_possible_truncation, reason = "test code")]
 #![allow(clippy::type_complexity, reason = "test code")]
 #![allow(clippy::partial_pub_fields, reason = "test code")]
 #![allow(clippy::too_many_lines, reason = "test code")]
@@ -554,7 +556,16 @@ impl WalletSim {
         target_epoch: EpochIndex,
     ) -> Pcd<delegation::NullifierHeader> {
         let master = self.note_master(rng, note);
-        nullifier_from_master(rng, &master, target_epoch)
+        let (pcd, ()) = PROOF_SYSTEM
+            .fuse(
+                rng,
+                delegation::NullifierStep,
+                (target_epoch,),
+                master,
+                Proof::trivial().carry::<()>(()),
+            )
+            .expect("nullifier step");
+        pcd
     }
 
     pub fn derived_range(
@@ -562,10 +573,83 @@ impl WalletSim {
         rng: &mut (impl RngCore + CryptoRng),
         note: &Note,
         start_epoch: EpochIndex,
-        len: u32,
+        len: usize,
     ) -> Pcd<delegation::NullifierHeader> {
         let master = self.note_master(rng, *note);
-        nullifier_range_from_master(rng, &master, start_epoch, len)
+        assert!(len >= 1, "range length must be at least 1");
+        let mut nfs: Vec<Nullifier> = Vec::new();
+        let mut acc: Option<Pcd<delegation::NullifierHeader>> = None;
+        for offset in 0..len {
+            let epoch = EpochIndex(start_epoch.0 + u32::try_from(offset).expect("fits u32"));
+            let (mk, _cm) = *master.data();
+            let nf = mk.derive_nullifier(epoch);
+            let (leaf, ()) = PROOF_SYSTEM
+                .fuse(
+                    rng,
+                    delegation::NullifierStep,
+                    (epoch,),
+                    master.clone(),
+                    Proof::trivial().carry::<()>(()),
+                )
+                .expect("nullifier step");
+            acc = Some(match acc {
+                | None => {
+                    nfs.push(nf);
+                    leaf
+                },
+                | Some(left) => {
+                    let left_poly = NfSeqPoly::from(nfs.as_slice());
+                    let right_poly = NfSeqPoly::from([nf].as_slice());
+                    nfs.push(nf);
+                    let merged = NfSeqPoly::from(nfs.as_slice());
+                    let (fused, ()) = PROOF_SYSTEM
+                        .fuse(
+                            rng,
+                            delegation::NullifierFuse,
+                            (left_poly, right_poly, merged),
+                            left,
+                            leaf,
+                        )
+                        .expect("NullifierFuse");
+                    fused
+                },
+            });
+        }
+        acc.expect("len >= 1 produced a range")
+    }
+
+    pub fn derived_era(
+        &self,
+        rng: &mut (impl RngCore + CryptoRng),
+        note: &Note,
+        start: EpochIndex,
+    ) -> Pcd<delegation::NullifierHeader> {
+        let master = self.note_master(rng, *note);
+        let (keyset, _cm) = *master.data();
+        let era = keyset.derive_era(start);
+        let range = NfSeqPoly::from(era.nullifiers().as_slice());
+        let trace = era.into_trace();
+        let (round_quotient, boundary_quotient, sumcheck_quotient, reduction) =
+            keyset.era_quotients(&trace, start, &range);
+        let witness = (
+            start,
+            trace,
+            round_quotient,
+            boundary_quotient,
+            sumcheck_quotient,
+            reduction,
+            range,
+        );
+        let (pcd, ()) = PROOF_SYSTEM
+            .fuse(
+                rng,
+                delegation::NullifierEraStep,
+                witness,
+                master,
+                Proof::trivial().carry::<()>(()),
+            )
+            .expect("era lift");
+        pcd
     }
 
     pub fn spendable_init(
@@ -612,7 +696,7 @@ impl WalletSim {
         start_epoch: EpochIndex,
         present_epoch: EpochIndex,
     ) -> Pcd<pool::VerifiedUnspent> {
-        let len = present_epoch.0 - start_epoch.0 + 1;
+        let len = usize::try_from(present_epoch.0 - start_epoch.0 + 1).expect("fits usize");
         let range = self.derived_range(rng, note, start_epoch, len);
         let elapsed: Vec<Nullifier> = (start_epoch.0..present_epoch.0)
             .map(|epoch| self.nf_at(note, EpochIndex(epoch)))
@@ -851,71 +935,9 @@ fn epoch_final_of(epoch: EpochIndex) -> BlockHeight {
     BlockHeight(next_first - 1)
 }
 
-pub fn nullifier_from_master(
-    rng: &mut (impl RngCore + CryptoRng),
-    master_pcd: &Pcd<delegation::NfMasterHeader>,
-    target_epoch: EpochIndex,
-) -> Pcd<delegation::NullifierHeader> {
-    let (pcd, ()) = PROOF_SYSTEM
-        .fuse(
-            rng,
-            delegation::NullifierStep,
-            (target_epoch,),
-            master_pcd.clone(),
-            Proof::trivial().carry::<()>(()),
-        )
-        .expect("nullifier step");
-    pcd
-}
-
-pub fn nullifier_range_from_master(
-    rng: &mut (impl RngCore + CryptoRng),
-    master_pcd: &Pcd<delegation::NfMasterHeader>,
-    start_epoch: EpochIndex,
-    len: u32,
-) -> Pcd<delegation::NullifierHeader> {
-    assert!(len >= 1, "range length must be at least 1");
-    let mut nfs: Vec<Nullifier> = Vec::new();
-    let mut acc: Option<Pcd<delegation::NullifierHeader>> = None;
-    for offset in 0..len {
-        let epoch = EpochIndex(start_epoch.0 + offset);
-        let (mk, _cm) = *master_pcd.data();
-        let nf = mk.derive_nullifier(epoch);
-        let (leaf, ()) = PROOF_SYSTEM
-            .fuse(
-                rng,
-                delegation::NullifierStep,
-                (epoch,),
-                master_pcd.clone(),
-                Proof::trivial().carry::<()>(()),
-            )
-            .expect("nullifier step");
-        acc = Some(match acc {
-            | None => {
-                nfs.push(nf);
-                leaf
-            },
-            | Some(left) => {
-                let left_poly = NfSeqPoly::from(nfs.as_slice());
-                let right_poly = NfSeqPoly::from([nf].as_slice());
-                nfs.push(nf);
-                let merged = NfSeqPoly::from(nfs.as_slice());
-                let (fused, ()) = PROOF_SYSTEM
-                    .fuse(
-                        rng,
-                        delegation::NullifierFuse,
-                        (left_poly, right_poly, merged),
-                        left,
-                        leaf,
-                    )
-                    .expect("NullifierFuse");
-                fused
-            },
-        });
-    }
-    acc.expect("len >= 1 produced a range")
-}
-
+/// Prove one 128-epoch era off the master PCD: derive the trace, assemble the
+/// honest witness tuple, and fuse it through
+/// [`NullifierEraStep`](delegation::NullifierEraStep).
 fn build_partial_multi_epoch_unspent(
     rng: &mut (impl RngCore + CryptoRng),
     pool: &PoolSim,

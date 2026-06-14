@@ -1,6 +1,8 @@
 //! Proof-step tests: `StampLift`, `SpendBind` / `SpendStamp`, the MiMC
 //! derivation chain, `Unspent` composition, and the `Spendable*` lineage.
 
+#![allow(clippy::as_conversions, reason = "tests")]
+
 extern crate alloc;
 
 use alloc::{vec, vec::Vec};
@@ -14,15 +16,19 @@ use rand_core::{CryptoRng, RngCore};
 use super::{PROOF_SYSTEM, delegation, pool, spend, spendable, stamp};
 use crate::{
     ActionSetCommit, Note, TachygramSetCommit, TachygramSetPoly,
-    constants::{EPOCH_MAX, EPOCH_SIZE},
+    constants::{EPOCH_MAX, EPOCH_SIZE, ERA_EPOCHS},
     entropy::ActionEntropy,
     fixtures::{
         PoolSim, SyncSim, WalletSim, build_anchor_chain_pcd, build_output_stamp, build_unspent_pcd,
         build_unspent_seed_pcd, random_block, random_block_with, spend_witness,
         spendable_init_inputs,
     },
+    keys::NoteMasterKey,
     note::{self, Nullifier},
-    primitives::{Anchor, BlockHeight, EpochIndex, NfSeqCommit, NfSeqPoly, Tachygram, effect},
+    primitives::{
+        Anchor, BlockHeight, EpochIndex, NfSeqCommit, NfSeqPoly, NullifierEraTrace, Tachygram,
+        effect,
+    },
     value,
 };
 
@@ -1370,4 +1376,210 @@ fn nullifier_step_accepts_epoch_max() {
     );
     assert_eq!(start, epoch);
     assert_eq!(end, EpochIndex(EPOCH_MAX + 1));
+}
+
+/// Keystone: an era's header commitment is identical to the fused
+/// per-element range over the same span and to the native sequence
+/// commitment - one group element, three ways - at an unaligned start, so
+/// eras and per-element leaves are interchangeable behind the seam.
+#[test]
+fn era_header_is_commit_identical_to_the_per_element_range() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let user = WalletSim::random(rng);
+    let note = user.random_note(rng, 500);
+    let start = EpochIndex(5); // unaligned (not a multiple of ERA_EPOCHS)
+
+    let era = user.derived_era(rng, &note, start);
+
+    let range = user.derived_range(rng, &note, start, ERA_EPOCHS);
+
+    let native = NfSeqCommit::from(user.mk(&note).derive_era(start).nullifiers().as_slice());
+
+    let (era_commit, era_start, era_end, era_cm) = *era.data();
+    let (range_commit, ..) = *range.data();
+    assert_eq!(era_commit, range_commit, "era == fused per-element range");
+    assert_eq!(era_commit, native, "era == native sequence commitment");
+    assert_eq!(era_start, start);
+
+    assert_eq!(era_end, start.era());
+
+    assert_eq!(Fp::from(era_cm), Fp::from(note.commitment()));
+}
+
+/// The last era in the space derives; its half-open end is `EPOCH_MAX + 1`.
+#[test]
+fn era_accepts_last_start() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let user = WalletSim::random(rng);
+    let note = user.random_note(rng, 500);
+    let start = delegation::MAX_ERA_START;
+
+    let era = user.derived_era(rng, &note, start);
+    let (commit, era_start, era_end, _cm) = *era.data();
+    assert_eq!(
+        commit,
+        NfSeqCommit::from(user.mk(&note).derive_era(start).nullifiers().as_slice())
+    );
+    assert_eq!(era_start, start);
+    assert_eq!(era_end, EpochIndex(EPOCH_MAX));
+}
+
+/// Forged era witnesses are each rejected by the specific gate they violate.
+/// One shared note and master are built once and reused across the cases; each
+/// case forges a different witness off them.
+#[test]
+fn era_rejects_forged_witnesses() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let user = WalletSim::random(rng);
+    let note = user.random_note(rng, 500);
+    let other = user.random_note(rng, 500);
+    let master = user.note_master(rng, note);
+    let keyset = master.data().0;
+    let other_keyset = user.note_master(rng, other).data().0;
+
+    // Assemble a start-0 witness from a trace + range: the keyset computes the
+    // quotients/reduction, the rest the caller already holds.
+    let assemble = |mk: NoteMasterKey, trace: NullifierEraTrace, range: NfSeqPoly| {
+        let (round_quotient, boundary_quotient, sumcheck_quotient, reduction) =
+            mk.era_quotients(&trace, EpochIndex(0), &range);
+        (
+            EpochIndex(0),
+            trace,
+            round_quotient,
+            boundary_quotient,
+            sumcheck_quotient,
+            reduction,
+            range,
+        )
+    };
+
+    // The honest start-0 witness, built once: `beyond` and `wrong_start` differ
+    // from it only in the published start, so they reuse its trace and quotients
+    // rather than rebuilding them (several 2^16 FFTs each).
+    let honest = {
+        let era = keyset.derive_era(EpochIndex(0));
+        let range = NfSeqPoly::from(era.nullifiers().as_slice());
+        assemble(keyset, era.into_trace(), range)
+    };
+    // Honest-for-start-0 witness with its published start bumped past the space.
+    let beyond = {
+        let mut witness = honest.clone();
+        witness.0 = delegation::MAX_ERA_START.next();
+        witness
+    };
+    // Honest-for-start-0 witness with its published start bumped to a valid but
+    // wrong epoch, so `base = mk_s + start` no longer matches the trace.
+    let wrong_start = {
+        let mut witness = honest;
+        witness.0 = EpochIndex(1);
+        witness
+    };
+    // A consistent witness whose published sequence carries one real but wrong
+    // nullifier: every relation passes, only the constant-term conversion
+    // catches it.
+    let wrong_output = {
+        let era = keyset.derive_era(EpochIndex(0));
+        let mut nfs = *era.nullifiers();
+        nfs[7] = user.nf_at(&note, EpochIndex(1));
+        assemble(keyset, era.into_trace(), NfSeqPoly::from(nfs.as_slice()))
+    };
+    // A trace laid out under a different note's keyset has the wrong round-0
+    // outputs, so the first-column boundary (which binds `k_0` and `mk_s`)
+    // rejects it before the recurrence is reached.
+    let mismatched = {
+        let era = other_keyset.derive_era(EpochIndex(0));
+        let range = NfSeqPoly::from(era.nullifiers().as_slice());
+        assemble(other_keyset, era.into_trace(), range)
+    };
+    // A trace under a hybrid keyset that shares `mk_0` and `mk_s` with the note
+    // but uses a different `mk_1`. Round 0 (the first column) depends only on
+    // `mk_0` and `mk_s`, so it matches and the boundary passes; rounds 1.. use
+    // the wrong `mk_1`, so they diverge from the real schedule and the recurrence
+    // rejects it. Quotients are honest for the hybrid keyset, so the witness is
+    // well-formed, isolating the row-recurrence rejection.
+    let hybrid_rounds = {
+        let [mk_0, mk_1, mk_s] = keyset.0;
+        let hybrid = NoteMasterKey([mk_0, mk_1 + Fp::ONE, mk_s]);
+        let era = hybrid.derive_era(EpochIndex(0));
+        let range = NfSeqPoly::from(era.nullifiers().as_slice());
+        assemble(hybrid, era.into_trace(), range)
+    };
+
+    let cases = [
+        (
+            "start beyond space",
+            beyond,
+            "NullifierEraStep: era end exceeds epoch space",
+        ),
+        (
+            "wrong start",
+            wrong_start,
+            "first column values identity fails at challenge",
+        ),
+        (
+            "wrong output sequence",
+            wrong_output,
+            "NullifierEraStep: output conversion fails at the reduction parameter",
+        ),
+        (
+            "mismatched keyset",
+            mismatched,
+            "first column values identity fails at challenge",
+        ),
+        (
+            "hybrid keyset wrong mk_1",
+            hybrid_rounds,
+            "row recurrence identity fails at challenge",
+        ),
+    ];
+
+    for (label, witness, expected) in cases {
+        let err = PROOF_SYSTEM
+            .fuse(
+                rng,
+                delegation::NullifierEraStep,
+                witness,
+                master.clone(),
+                Proof::trivial().carry::<()>(()),
+            )
+            .err()
+            .unwrap_or_else(|| panic!("{label}: expected rejection"));
+        assert_eq!(err.0, expected, "{label}");
+    }
+}
+
+/// An era fuses with a per-element leaf for the next epoch via the ordinary
+/// concat, proving the two derivation paths interoperate behind the seam.
+#[test]
+fn era_then_per_element_tail_fuses() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let user = WalletSim::random(rng);
+    let note = user.random_note(rng, 500);
+    let start = EpochIndex(0);
+    let tail_epoch = start.era();
+
+    let era = user.derived_era(rng, &note, start);
+    let tail = user.nullifier_pcd(rng, note, tail_epoch);
+
+    let era_seq = *user.mk(&note).derive_era(start).nullifiers();
+    let tail_nf = user.nf_at(&note, tail_epoch);
+    let left_poly = NfSeqPoly::from(era_seq.as_slice());
+    let right_poly = NfSeqPoly::from([tail_nf].as_slice());
+    let mut merged_seq = era_seq.to_vec();
+    merged_seq.push(tail_nf);
+    let merged = NfSeqPoly::from(merged_seq.as_slice());
+
+    let (fused, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            delegation::NullifierFuse,
+            (left_poly, right_poly, merged),
+            era,
+            tail,
+        )
+        .expect("era ++ per-element tail");
+    let (commit, fused_start, fused_end, _cm) = *fused.data();
+    assert_eq!(commit, NfSeqCommit::from(merged_seq.as_slice()));
+    assert_eq!(fused_start, start);
+    assert_eq!(fused_end, EpochIndex(tail_epoch.0 + 1));
 }
