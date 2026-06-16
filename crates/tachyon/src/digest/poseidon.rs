@@ -113,3 +113,41 @@ pub(crate) fn anchor_epoch_step(anchor_prev: Fp, new_epoch: EpochIndex) -> Fp {
         Fp::from(new_epoch),
     ])
 }
+
+const ERA_REDUCTION_DOMAIN: &[u8; 16] = b"Tachyon-EraReduc";
+
+/// Derive the era reduction position from the trace and output-range
+/// commitments. Both commitments are absorbed by their affine coordinates to
+/// bind the reduction position to the witness polynomials.
+#[expect(clippy::similar_names, reason = "coordinate fields")]
+#[must_use]
+pub(crate) fn era_reduction(trace: Coordinates<EqAffine>, range: Coordinates<EqAffine>) -> Fp {
+    let tx = trace.x().to_repr();
+    let ty = trace.y().to_repr();
+    let rx = range.x().to_repr();
+    let ry = range.y().to_repr();
+
+    #[expect(clippy::expect_used, reason = "constant size decomposition")]
+    let (tx_lo, tx_hi, ty_lo, ty_hi, rx_lo, rx_hi, ry_lo, ry_hi) = (
+        Fp::from_u128(u128::from_le_bytes(tx[..16].try_into().expect("16 bytes"))),
+        Fp::from_u128(u128::from_le_bytes(tx[16..].try_into().expect("16 bytes"))),
+        Fp::from_u128(u128::from_le_bytes(ty[..16].try_into().expect("16 bytes"))),
+        Fp::from_u128(u128::from_le_bytes(ty[16..].try_into().expect("16 bytes"))),
+        Fp::from_u128(u128::from_le_bytes(rx[..16].try_into().expect("16 bytes"))),
+        Fp::from_u128(u128::from_le_bytes(rx[16..].try_into().expect("16 bytes"))),
+        Fp::from_u128(u128::from_le_bytes(ry[..16].try_into().expect("16 bytes"))),
+        Fp::from_u128(u128::from_le_bytes(ry[16..].try_into().expect("16 bytes"))),
+    );
+
+    hash::<9>([
+        Fp::from_u128(u128::from_le_bytes(*ERA_REDUCTION_DOMAIN)),
+        tx_lo,
+        tx_hi,
+        ty_lo,
+        ty_hi,
+        rx_lo,
+        rx_hi,
+        ry_lo,
+        ry_hi,
+    ])
+}

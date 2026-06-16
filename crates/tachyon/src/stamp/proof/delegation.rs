@@ -13,9 +13,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::array;
 
-use ff::{Field as _, FromUniformBytes as _, PrimeField as _};
-use group::GroupEncoding as _;
-use pasta_curves::Fp;
+use ff::{Field as _, PrimeField as _};
+use pasta_curves::{Fp, arithmetic::CurveAffine as _};
 use ragu::{Commitment, Header, Index, Polynomial, Step, Suffix, enforce_poly_concat, generators};
 use zcash_mimc::{Spec as _, tachyon::TachyonP5R64};
 
@@ -24,6 +23,7 @@ use super::relations::{
 };
 use crate::{
     constants::{EPOCH_MAX, ERA_EPOCHS},
+    digest::poseidon,
     keys::{NoteMasterKey, ProofAuthorizingKey},
     note::{self, Note},
     primitives::{EpochIndex, NfSeqCommit, NfSeqPoly, NullifierEraTrace},
@@ -220,10 +220,10 @@ impl Step for NullifierFuse {
 ///   fixing `start`.
 /// - `enforce_row_recurrence` pins the remaining cipher rounds 1.. of `T`.
 /// - `enforce_final_column_reduction` pins `G = T·w mod Z_D` for the converter
-///   weight `w` built from the reduction parameter `β`.
-/// - The constant-term check ties `N` to `T`'s output cells at `β`.
+///   weight `w` built from the reduction position.
+/// - The constant-term check ties `N` to `T`'s output cells at `pos`.
 ///
-/// `β` is the reduction parameter, derived identically here and in the
+/// `pos` is the reduction position, derived identically here and in the
 /// builder from `commit(T) + commit(N)`; see the inline `TODO(#139)`.
 #[derive(Debug)]
 pub struct NullifierEraStep;
@@ -296,14 +296,15 @@ impl Step for NullifierEraStep {
         let range_commit = range.commit();
         let reduction_commit = reduction.commit();
 
-        // TODO(#139): placeholder Eq->bytes->Fp reduction; swap for a principled
-        // commitment-bound derivation. Must stay bit-identical to the step's
-        // reduction in `keys/note.rs`.
-        let beta = {
-            let beta_eq = *trace_commit.inner() + *range_commit.inner();
-            let mut bytes = [0u8; 64];
-            bytes[..32].copy_from_slice(&beta_eq.to_bytes());
-            Fp::from_uniform_bytes(&bytes)
+        // The reduction position, from the two committed polynomials.
+        let reduction_pos = {
+            let trace_coords = (*trace_commit.inner())
+                .coordinates()
+                .expect("era trace commitment is not identity");
+            let range_coords = (*range_commit.inner())
+                .coordinates()
+                .expect("era range commitment is not identity");
+            poseidon::era_reduction(trace_coords, range_coords)
         };
 
         // Round 0, the salt step. The cipher input `mk_s + start + row` is
@@ -344,9 +345,9 @@ impl Step for NullifierEraStep {
         }
 
         // Output reduction: fold each row's final cell -- round 64's output,
-        // the nullifier before whitening -- into a single β-weighted sum, so
+        // the nullifier before whitening -- into a single pos-weighted sum, so
         // the constant-term conversion below can tie the whole output column
-        // to the published sequence `N` at β. `weights[r] = β^r` is the
+        // to the published sequence `N` at pos. `weights[r] = pos^r` is the
         // per-row weight the relation places on the output column; it pins
         // `reduction = T·w mod Z_D`, whose constant term `G(0)` is that sum.
         {
@@ -354,32 +355,32 @@ impl Step for NullifierEraStep {
             let mut power = Fp::ONE;
             for slot in &mut weights {
                 *slot = power;
-                power *= beta;
+                power *= reduction_pos;
             }
 
             enforce_final_column_reduction(ctx, &trace, &sumcheck_quotient, &reduction, &weights)?;
         }
 
-        // Constant-term conversion: `N(β) = |D|·G(0) + mk_w·(β^128−1)/(β−1)`.
-        let range_at_beta = range.eval(beta);
+        // Constant-term conversion: `N(pos) = |D|·G(0) + mk_w·(pos^128−1)/(pos−1)`.
+        let range_at_reduction = range.eval(reduction_pos);
         let reduction_at_zero = reduction.eval(Fp::ZERO);
-        let geometric_inverse = (beta - Fp::ONE)
+        let geometric_inverse = (reduction_pos - Fp::ONE)
             .invert()
-            .expect("beta should not equal reduction");
+            .expect("reduction position should not be zero");
 
         #[expect(clippy::as_conversions, reason = "safe conversion")]
         let correction = {
             keyset.round_key(TachyonP5R64::ROUNDS)
-                * (beta.pow_vartime([ERA_EPOCHS as u64]) - Fp::ONE)
+                * (reduction_pos.pow_vartime([ERA_EPOCHS as u64]) - Fp::ONE)
                 * geometric_inverse
         };
 
-        if range_at_beta != Fp::from(TRACE_SIZE) * reduction_at_zero + correction {
+        if range_at_reduction != Fp::from(TRACE_SIZE) * reduction_at_zero + correction {
             return Err(ragu::Error(
                 "NullifierEraStep: output conversion fails at the reduction parameter",
             ));
         }
-        ctx.enforce_poly_query(range_commit, beta, range_at_beta)?;
+        ctx.enforce_poly_query(range_commit, reduction_pos, range_at_reduction)?;
         ctx.enforce_poly_query(reduction_commit, Fp::ZERO, reduction_at_zero)?;
 
         Ok(((NfSeqCommit::from(range_commit), start, end, cm), ()))

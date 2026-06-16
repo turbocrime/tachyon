@@ -5,9 +5,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::{array, fmt, iter};
 
-use ff::{FromUniformBytes as _, PrimeField as _};
-use group::GroupEncoding as _;
-use pasta_curves::Fp;
+use ff::PrimeField as _;
+use pasta_curves::{Fp, arithmetic::CurveAffine as _};
 use ragu::Polynomial;
 
 use super::proof::SpendValidatingKey;
@@ -140,7 +139,7 @@ impl NoteMasterKey {
     /// reduction `G`, for the given `trace`, era `start`, and committed output
     /// `range`. The caller assembles the witness from these plus what it knows
     /// (`start`, `trace`, `range`). The round and boundary quotients are honest
-    /// for this keyset; `β`, `G`, and `Q_s` follow `range`, so a forgery test
+    /// for this keyset; `pos`, `G`, and `Q_s` follow `range`, so a forgery test
     /// can pass a tampered sequence to isolate the conversion check. The
     /// trace's coset evaluation is computed once and shared across the
     /// three builders.
@@ -167,21 +166,21 @@ impl NoteMasterKey {
             self.round_key(0),
         );
 
-        // The reduction parameter `beta`, from the two committed polynomials.
+        // The reduction position, from the two committed polynomials.
         let trace_commit: ragu::Commitment = trace.commit().into();
         let range_commit: ragu::Commitment = range.commit().into();
 
-        // TODO(#139): placeholder Eq->bytes->Fp reduction; swap for a principled
-        // commitment-bound derivation. Must stay bit-identical to the step's
-        // reduction in `proof/delegation.rs`.
-        let beta = {
-            let beta_eq = trace_commit.inner() + range_commit.inner();
-            let mut bytes = [0u8; 64];
-            bytes[..32].copy_from_slice(&beta_eq.to_bytes());
-            Fp::from_uniform_bytes(&bytes)
+        let reduction_pos = {
+            let trace_coords = (*trace_commit.inner())
+                .coordinates()
+                .expect("era trace commitment is not identity");
+            let range_coords = (*range_commit.inner())
+                .coordinates()
+                .expect("era range commitment is not identity");
+            poseidon::era_reduction(trace_coords, range_coords)
         };
         let (reduction, sumcheck_quotient) =
-            quotient_utils::era_reduction(&trace_ext, trace_coeffs, beta);
+            quotient_utils::era_reduction(&trace_ext, trace_coeffs, reduction_pos);
 
         (
             round_quotient,
@@ -523,13 +522,13 @@ mod quotient_utils {
     }
 
     /// The converter reduction `G = T·w mod Z_D` and its sumcheck-link quotient
-    /// `Q_s` (one split), built from the reduction parameter `beta`: `w`
-    /// interpolates `beta^r` at the row output cells, `G` is their pointwise
-    /// product reduced onto `D`, and `Q_s = (T·w − G)/Z_D`.
+    /// `Q_s` (one split), built from the reduction position: `w` interpolates
+    /// `pos^r` at the row output cells, `G` is their pointwise product reduced
+    /// onto `D`, and `Q_s = (T·w − G)/Z_D`.
     pub(super) fn era_reduction(
         trace_ext: &[Fp],
         trace_coeffs: &[Fp],
-        beta: Fp,
+        pos: Fp,
     ) -> (Polynomial, Polynomial) {
         let domain = Domain::new(NullifierEraTrace::TRACE_SIZE.ilog2());
         let mut trace_evals = trace_coeffs.to_vec();
@@ -541,7 +540,7 @@ mod quotient_utils {
             weight_evals
                 [row * NullifierEraTrace::TRACE_COLUMNS + (NullifierEraTrace::TRACE_COLUMNS - 1)] =
                 power;
-            power *= beta;
+            power *= pos;
         }
 
         let mut reduction_coeffs: Vec<Fp> = trace_evals
