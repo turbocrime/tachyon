@@ -20,11 +20,11 @@ fn value_sum_checked_arithmetic() {
     let va = note::Value::try_from(100u64).unwrap();
     let vb = note::Value::try_from(200u64).unwrap();
 
-    let sum = (ValueBalance::ZERO + va).unwrap();
+    let sum = (ValueBalance::default() + va.clone()).unwrap();
     let total = (sum + vb).unwrap();
     assert_eq!(i64::try_from(total).unwrap(), 300);
 
-    let diff = (ValueBalance::ZERO - va).unwrap();
+    let diff = (ValueBalance::default() - va).unwrap();
     assert_eq!(i64::try_from(diff).unwrap(), -100);
 }
 
@@ -112,7 +112,11 @@ fn payment_bundle_verifies() {
     let change_note = sender.random_note(rng, 300);
 
     let mut pool = PoolSim::genesis(rng);
-    pool.mine(random_block_with(rng, &[vec![input_note.commitment()]], 50));
+    pool.mine(random_block_with(
+        rng,
+        vec![vec![input_note.commitment()]],
+        50,
+    ));
     let height = pool.height();
     let spend_epoch = height.epoch();
     let spendable_pcd = sender.fresh_spend(rng, &pool, height, &input_note);
@@ -187,7 +191,7 @@ fn innocent_aggregate_from_two_autonomes() {
     let mut pool = PoolSim::genesis(rng);
     pool.mine(random_block_with(
         rng,
-        &[vec![spend_a.commitment()], vec![spend_b.commitment()]],
+        vec![vec![spend_a.commitment()], vec![spend_b.commitment()]],
         50,
     ));
     let cm_height = pool.height();
@@ -265,7 +269,7 @@ fn based_aggregate_with_two_adjuncts() {
     let mut pool = PoolSim::genesis(rng);
     pool.mine(random_block_with(
         rng,
-        &[
+        vec![
             vec![based_spend.commitment()],
             vec![a_spend.commitment()],
             vec![b_spend.commitment()],

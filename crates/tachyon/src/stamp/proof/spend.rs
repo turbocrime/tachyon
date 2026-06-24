@@ -5,7 +5,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use ff::PrimeField as _;
-use pasta_curves::Fp;
+use group::GroupEncoding as _;
+use pasta_curves::{EpAffine, Fp};
 use ragu::{
     Header, Index, Step, Suffix,
     constraint::{enforce_nonzero, enforce_zero},
@@ -15,8 +16,8 @@ use super::spendable::SpendableHeader;
 use crate::{
     constants::NOTE_VALUE_MAX,
     entropy::ActionRandomizer,
-    keys::{PaymentKey, ProofAuthorizingKey, public},
-    note::{self, CommitmentTrapdoor, Note, Nullifier, NullifierTrapdoor, Value},
+    keys::{ProofAuthorizingKey, public},
+    note::{self, Note, Nullifier},
     primitives::{Anchor, effect},
     value,
 };
@@ -45,13 +46,11 @@ impl Header for SpendHeader {
 
     fn encode(data: &Self::Data) -> Vec<u8> {
         let mut out = Vec::with_capacity(32 * 5);
-        let cv_bytes: [u8; 32] = data.0.into();
-        let rk_bytes: [u8; 32] = data.1.into();
-        out.extend_from_slice(&cv_bytes);
-        out.extend_from_slice(&rk_bytes);
-        out.extend_from_slice(&Fp::from(data.2).to_repr());
+        out.extend_from_slice(&EpAffine::from(data.0).to_bytes());
+        out.extend_from_slice(&EpAffine::from(data.1).to_bytes());
+        out.extend_from_slice(&data.2.as_ref().to_repr());
         out.extend_from_slice(&Fp::from(data.3).to_repr());
-        out.extend_from_slice(&Fp::from(data.4).to_repr());
+        out.extend_from_slice(&data.4.as_ref().to_repr());
         out
     }
 }
@@ -72,7 +71,7 @@ impl Step for SpendBind {
     type Output = SpendHeader;
     type Right = ();
     type Witness<'source> = (
-        (PaymentKey, Value, CommitmentTrapdoor, NullifierTrapdoor),
+        Note,
         value::CommitmentTrapdoor,
         ActionRandomizer<effect::Spend>,
         ProofAuthorizingKey,
@@ -83,34 +82,31 @@ impl Step for SpendBind {
     fn witness<'source>(
         &self,
         _ctx: &mut ragu::StepCtx<'_>,
-        ((pk, value, rcm, psi), rcv, alpha, pak): Self::Witness<'source>,
+        (note, rcv, alpha, pak): Self::Witness<'source>,
         (present_nf, anchor, spendable_cm): <Self::Left as Header>::Data,
         _right: <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
-        enforce_nonzero(Fp::from(u64::from(value)), "SpendBind: zero-value note")?;
-        if u64::from(value) > NOTE_VALUE_MAX {
+        enforce_nonzero(
+            Fp::from(u64::from(note.value.clone())),
+            "SpendBind: zero-value note",
+        )?;
+        if u64::from(note.value.clone()) > NOTE_VALUE_MAX {
             return Err(ragu::Error::InvalidWitness(
                 "SpendBind: note value exceeds maximum".into(),
             ));
         }
         enforce_zero(
-            pk.0 - pak.derive_payment_key().0,
+            note.pk.as_ref() - pak.derive_payment_key().as_ref(),
             "SpendBind: pak not related to note",
         )?;
-        let cm = Note {
-            pk,
-            value,
-            psi,
-            rcm,
-        }
-        .commitment();
+        let cm = note.commitment();
 
         enforce_zero(
-            Fp::from(spendable_cm) - Fp::from(cm),
+            spendable_cm.as_ref() - cm.as_ref(),
             "SpendBind: note does not match the spendable lineage",
         )?;
 
-        let cv = rcv.commit(i64::from(value));
+        let cv = rcv.commit(i64::from(note.value));
         let rk = pak.ak.derive_action_public(&alpha);
 
         Ok(((cv, rk, present_nf, anchor, cm), ()))

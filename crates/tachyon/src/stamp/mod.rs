@@ -214,15 +214,15 @@ impl Plan {
                 .fuse(
                     rng,
                     spend::SpendBind,
-                    ((note.pk, note.value, note.rcm, note.psi), rcv, alpha, *pak),
+                    (note, rcv, alpha, pak.clone()),
                     spendable_pcd,
                     ragu::Proof::trivial().carry::<()>(()),
                 )
                 .map_err(ProveError::ProofFailed)?;
 
             // SpendStamp: bind the live pair to the derived range and publish.
-            let tachygrams = alloc::vec![Tachygram::from(nf_now), Tachygram::from(nf_next)];
-            let stamp = Stamp::prove_spend(rng, bind_pcd, range_pcd, nf_next, tachygrams)
+            let tachygrams = alloc::vec![Tachygram::from(nf_now), Tachygram::from(&nf_next)];
+            let stamp = Stamp::prove_spend(rng, bind_pcd, range_pcd, &nf_next, tachygrams)
                 .map_err(ProveError::ProofFailed)?;
 
             entries.push((stamp, alloc::vec![action_digest]));
@@ -332,14 +332,14 @@ impl Stamp {
         rng: &mut RNG,
         spend_pcd: ragu::Pcd<spend::SpendHeader>,
         range_pcd: ragu::Pcd<delegation::NullifierHeader>,
-        nf_next: Nullifier,
+        nf_next: &Nullifier,
         tachygrams: Vec<Tachygram>,
     ) -> Result<Self, ragu::Error> {
         let app = &*PROOF_SYSTEM;
 
         let anchor = spend_pcd.data().3;
 
-        let (pcd, ()) = app.fuse(rng, SpendStamp, (nf_next,), spend_pcd, range_pcd)?;
+        let (pcd, ()) = app.fuse(rng, SpendStamp, (nf_next.clone(),), spend_pcd, range_pcd)?;
         let rerand = app.rerandomize(pcd, rng)?;
 
         Ok(Self {

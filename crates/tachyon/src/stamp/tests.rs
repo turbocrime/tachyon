@@ -68,7 +68,7 @@ fn plan_prove_rejects_invalid_inputs() {
     let note_b = user.random_note(rng, 700);
     pool.mine(random_block_with(
         rng,
-        &[vec![note_a.commitment()], vec![note_b.commitment()]],
+        vec![vec![note_a.commitment()], vec![note_b.commitment()]],
         50,
     ));
     let height = pool.height();
@@ -102,11 +102,11 @@ fn plan_prove_rejects_invalid_inputs() {
         alloc::vec![
             (
                 (plan_a.cv(), plan_a.rk),
-                (alpha_a, note_a.clone(), rcv_a.clone())
+                (alpha_a.clone(), note_a.clone(), rcv_a.clone())
             ),
             (
                 (plan_b.cv(), plan_b.rk),
-                (alpha_b, note_b.clone(), rcv_b.clone())
+                (alpha_b.clone(), note_b.clone(), rcv_b.clone())
             ),
         ]
     };
@@ -118,13 +118,13 @@ fn plan_prove_rejects_invalid_inputs() {
         assert!(matches!(err, ProveError::NoActions), "expected NoActions");
     }
 
-    let bundle_a = || (range_a.clone(), pair_a, sp_a.clone());
-    let bundle_b = || (range_b.clone(), pair_b, sp_b.clone());
+    let bundle_a = (range_a, pair_a, sp_a);
+    let bundle_b = (range_b, pair_b, sp_b);
 
     // Too few PCDs: 2 spends, 1 PCD.
     {
         let plan = Plan::new(two_spends(), alloc::vec![], anchor);
-        let pcds = alloc::vec![bundle_a()];
+        let pcds = alloc::vec![bundle_a.clone()];
         let err = plan.prove(rng, &user.pak, pcds).unwrap_err();
         assert!(
             matches!(err, ProveError::SpendableMismatch),
@@ -135,7 +135,7 @@ fn plan_prove_rejects_invalid_inputs() {
     // Too many PCDs: 2 spends, 3 PCDs.
     {
         let plan = Plan::new(two_spends(), alloc::vec![], anchor);
-        let pcds = alloc::vec![bundle_a(), bundle_b(), bundle_a()];
+        let pcds = alloc::vec![bundle_a.clone(), bundle_b.clone(), bundle_a.clone()];
         let err = plan.prove(rng, &user.pak, pcds).unwrap_err();
         assert!(
             matches!(err, ProveError::SpendableMismatch),
@@ -147,7 +147,7 @@ fn plan_prove_rejects_invalid_inputs() {
     // `spendable.cm == note.commitment()` check rejects the mismatched lineage.
     {
         let plan = Plan::new(two_spends(), alloc::vec![], anchor);
-        let pcds = alloc::vec![bundle_b(), bundle_a()];
+        let pcds = alloc::vec![bundle_b, bundle_a];
         let err = plan.prove(rng, &user.pak, pcds).unwrap_err();
         let ProveError::ProofFailed(ragu::Error::InvalidWitness(inner)) = err else {
             panic!("expected ProofFailed(InvalidWitness), got {err:?}");

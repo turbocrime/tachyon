@@ -1,12 +1,20 @@
 //! Proof-related keys: ProofAuthorizingKey.
 
-use derive_more::Debug;
+use derive_more::{AsRef, Debug};
+use group::GroupEncoding as _;
+use pasta_curves::EpAffine;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::{
     note::{NullifierKey, PaymentKey},
     public,
 };
-use crate::{entropy::ActionRandomizer, primitives::effect, reddsa};
+use crate::{
+    entropy::ActionRandomizer,
+    primitives::effect,
+    reddsa,
+    secret::{self, SecretEpAffine},
+};
 
 /// The proof authorizing key (`ak` + `nk`).
 ///
@@ -25,13 +33,11 @@ use crate::{entropy::ActionRandomizer, primitives::effect, reddsa};
 /// specified.
 // TODO: add proof-construction methods (e.g., create_action_proof, create_merge_proof)
 // once the Ragu circuit API is available.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Zeroize, ZeroizeOnDrop)]
 pub struct ProofAuthorizingKey {
     /// The spend validating key `ak = [ask] G`.
-    #[debug(skip)]
     pub ak: SpendValidatingKey,
     /// The nullifier deriving key.
-    #[debug(skip)]
     pub nk: NullifierKey,
 }
 
@@ -58,10 +64,8 @@ impl ProofAuthorizingKey {
 /// per-action `rk` for the proof witness. Component of
 /// [`ProofAuthorizingKey`](super::ProofAuthorizingKey) for proof authorization
 /// without spend authority.
-#[derive(Clone, Copy, Debug)]
-pub struct SpendValidatingKey(
-    #[debug(skip)] pub(crate) reddsa::VerificationKey<reddsa::ActionAuth>,
-);
+#[derive(AsRef, Clone, Debug, Zeroize, ZeroizeOnDrop)]
+pub struct SpendValidatingKey(#[as_ref(forward)] pub(crate) SecretEpAffine);
 
 impl SpendValidatingKey {
     /// Derive the per-action public (verification) key: $\mathsf{rk} =
@@ -83,6 +87,17 @@ impl SpendValidatingKey {
         &self,
         alpha: &ActionRandomizer<effect::Spend>,
     ) -> public::ActionVerificationKey {
-        public::ActionVerificationKey(self.0.randomize(&alpha.0))
+        // Reconstruct the reddsa verification key from the stored point to
+        // perform the randomization (the basepoint is sealed in reddsa).
+        // TODO: reddsa round-trip leaves unwiped transients
+        #[expect(clippy::expect_used, reason = "stored ak is a valid verification key")]
+        let mut ak =
+            reddsa::VerificationKey::<reddsa::ActionAuth>::try_from(self.as_ref().to_bytes())
+                .expect("ak point is a valid verification key");
+        let rk = ak.randomize(alpha.as_ref());
+        secret::wipe_reddsa_vk(&mut ak);
+        public::ActionVerificationKey::from(
+            EpAffine::from_bytes(&rk.into()).expect("verification key is a valid curve point"),
+        )
     }
 }

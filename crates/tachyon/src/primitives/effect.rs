@@ -7,7 +7,7 @@
 //! to enforce the spend/output distinction at compile time.
 
 use ff::{FromUniformBytes as _, PrimeField as _};
-use pasta_curves::{Fp, Fq};
+use pasta_curves::Fq;
 
 use crate::{digest::blake2b, entropy::ActionEntropy, note, value};
 
@@ -23,11 +23,11 @@ pub trait Effect: sealed::Sealed + 'static {
     /// commitment.
     ///
     /// TODO: finalize alpha derivation spec. poseidon, or other native Fq?
-    fn derive_alpha(theta: ActionEntropy, cm: note::Commitment) -> Fq;
+    fn derive_alpha(theta: &ActionEntropy, cm: &note::Commitment) -> Fq;
 
     /// Commit to this effect's signed value contribution using the given
     /// trapdoor.
-    fn commit_value(rcv: &value::CommitmentTrapdoor, value: note::Value) -> value::Commitment;
+    fn commit_value(rcv: &value::CommitmentTrapdoor, value: &note::Value) -> value::Commitment;
 }
 
 /// Spend effect marker.
@@ -39,23 +39,25 @@ pub struct Spend;
 pub struct Output;
 
 impl Effect for Spend {
-    fn derive_alpha(theta: ActionEntropy, cm: note::Commitment) -> Fq {
-        Fq::from_uniform_bytes(&blake2b::alpha_spend(&theta.0, &Fp::from(cm).to_repr()))
+    // TODO: private and zeroize
+    fn derive_alpha(theta: &ActionEntropy, cm: &note::Commitment) -> Fq {
+        Fq::from_uniform_bytes(&blake2b::alpha_spend(&theta.0, &cm.as_ref().to_repr()))
     }
 
-    fn commit_value(rcv: &value::CommitmentTrapdoor, value: note::Value) -> value::Commitment {
-        let raw: i64 = value.into();
+    fn commit_value(rcv: &value::CommitmentTrapdoor, value: &note::Value) -> value::Commitment {
+        let raw = i64::from(value.clone());
         rcv.commit(raw)
     }
 }
 
 impl Effect for Output {
-    fn derive_alpha(theta: ActionEntropy, cm: note::Commitment) -> Fq {
-        Fq::from_uniform_bytes(&blake2b::alpha_output(&theta.0, &Fp::from(cm).to_repr()))
+    // TODO: private and zeroize
+    fn derive_alpha(theta: &ActionEntropy, cm: &note::Commitment) -> Fq {
+        Fq::from_uniform_bytes(&blake2b::alpha_output(&theta.0, &cm.as_ref().to_repr()))
     }
 
-    fn commit_value(rcv: &value::CommitmentTrapdoor, value: note::Value) -> value::Commitment {
-        let raw: i64 = value.into();
+    fn commit_value(rcv: &value::CommitmentTrapdoor, value: &note::Value) -> value::Commitment {
+        let raw = i64::from(value.clone());
         rcv.commit(-raw)
     }
 }

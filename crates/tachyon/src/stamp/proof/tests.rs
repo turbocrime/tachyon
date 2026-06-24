@@ -24,7 +24,7 @@ use crate::{
         spendable_init_inputs,
     },
     note::{self, Nullifier},
-    primitives::{Anchor, BlockHeight, EpochIndex, NfSeqCommit, NfSeqPoly, Tachygram, effect},
+    primitives::{Anchor, BlockHeight, EpochIndex, NfSeqPoly, Tachygram, effect},
     value,
 };
 
@@ -33,20 +33,20 @@ fn tg<RNG: RngCore + CryptoRng>(rng: &mut RNG) -> Tachygram {
 }
 
 fn mine_cm_block(rng: &mut StdRng, pool: &mut PoolSim, cm: note::Commitment) -> BlockHeight {
-    pool.mine(random_block_with(rng, &[alloc::vec![cm]], 4));
+    pool.mine(random_block_with(rng, vec![vec![cm]], 4));
     pool.height()
 }
 
 fn mine_cm_in_epoch_one(
     rng: &mut (impl RngCore + CryptoRng),
     pool: &mut PoolSim,
-    cm: note::Commitment,
+    cm: &note::Commitment,
 ) -> BlockHeight {
     // Height EPOCH_SIZE is epoch 1's first block, carrying the real B_1 fold.
     while pool.height().0 < EPOCH_SIZE {
         pool.mine(random_block(rng, 1, 3));
     }
-    pool.mine(random_block_with(rng, &[alloc::vec![cm]], 4));
+    pool.mine(random_block_with(rng, vec![vec![cm.clone()]], 4));
     let cm_height = pool.height();
     assert_eq!(cm_height.epoch().0, 1, "cm-block is in epoch 1");
     cm_height
@@ -63,12 +63,7 @@ fn honest_spend_bind(
         .fuse(
             rng,
             spend::SpendBind,
-            (
-                (note.pk, note.value, note.rcm.clone(), note.psi.clone()),
-                rcv,
-                alpha,
-                user.pak,
-            ),
+            (note.clone(), rcv, alpha, user.pak.clone()),
             spendable,
             Proof::trivial().carry::<()>(()),
         )
@@ -97,7 +92,7 @@ fn same_epoch_honest_spend_accepted() {
     let user = WalletSim::random(rng);
     let mut pool = PoolSim::genesis(rng);
     let note = user.random_note(rng, 500);
-    let cm_height = mine_cm_in_epoch_one(rng, &mut pool, note.commitment());
+    let cm_height = mine_cm_in_epoch_one(rng, &mut pool, &note.commitment());
     let epoch = cm_height.epoch();
 
     let spendable = user.spendable_init(rng, &note, &pool, cm_height);
@@ -124,11 +119,11 @@ fn same_epoch_wrong_index_rejected_against_honest_chain() {
     let user = WalletSim::random(rng);
     let mut pool = PoolSim::genesis(rng);
     let note = user.random_note(rng, 500);
-    let cm_height = mine_cm_in_epoch_one(rng, &mut pool, note.commitment());
+    let cm_height = mine_cm_in_epoch_one(rng, &mut pool, &note.commitment());
     let wrong = EpochIndex(cm_height.epoch().0 + 2);
 
     let (pre_epoch_anchor, pre_cm_anchor, creation_set, chain) =
-        spendable_init_inputs(rng, &pool, note.commitment(), cm_height);
+        spendable_init_inputs(rng, &pool, &note.commitment(), cm_height);
     let present_nf = user.nf_at(&note, wrong);
     let nf_wrong = user.derived_range(rng, &note, wrong, 1);
     let err = PROOF_SYSTEM
@@ -157,7 +152,7 @@ fn spendable_init_accepts_forged_chain() {
     let mut pool = PoolSim::genesis(rng);
     let note = user.random_note(rng, 500);
     let cm = note.commitment();
-    let cm_height = mine_cm_in_epoch_one(rng, &mut pool, cm);
+    let cm_height = mine_cm_in_epoch_one(rng, &mut pool, &cm);
     let wrong = EpochIndex(cm_height.epoch().0 + 2);
 
     // Forge a boundary at the wrong epoch: `pre_epoch_anchor = x` (arbitrary), a
@@ -167,7 +162,7 @@ fn spendable_init_accepts_forged_chain() {
     let stamps = pool.tachygrams_at(cm_height);
     let cm_idx = stamps
         .iter()
-        .position(|tgs| tgs.contains(&cm.into()))
+        .position(|tgs| tgs.contains(&Tachygram::from(&cm)))
         .expect("cm present in cm-block");
     let x = Anchor::from(Fp::random(&mut *rng));
     let forged_start = x.next_epoch(wrong);
@@ -273,7 +268,7 @@ fn unspent_seed_rejects_tg_present() {
     let note = user.random_note(rng, 500);
     let nf = note.nullifier(&user.pak.nk, EpochIndex(0));
 
-    let containing_set = TachygramSetPoly::from([nf.into()].as_slice());
+    let containing_set = TachygramSetPoly::from([nf.clone().into()].as_slice());
     let start = Anchor::default();
 
     let err = PROOF_SYSTEM
@@ -302,8 +297,8 @@ fn unspent_fuse_rejects_invalid_compositions() {
     {
         let nf_a = Nullifier::from(Fp::random(&mut *rng));
         let nf_b = Nullifier::from(Fp::random(&mut *rng));
-        let shard_a = build_unspent_seed_pcd(rng, start, EpochIndex(0), &stamps_left, nf_a);
-        let shard_b = build_unspent_seed_pcd(rng, mid, EpochIndex(0), &stamps_right, nf_b);
+        let shard_a = build_unspent_seed_pcd(rng, start, EpochIndex(0), &stamps_left, &nf_a);
+        let shard_b = build_unspent_seed_pcd(rng, mid, EpochIndex(0), &stamps_right, &nf_b);
         let err = PROOF_SYSTEM
             .fuse(rng, pool::UnspentFuse, (), shard_a, shard_b)
             .err()
@@ -321,8 +316,8 @@ fn unspent_fuse_rejects_invalid_compositions() {
     // instead of `left.end`.
     {
         let nf = Nullifier::from(Fp::random(&mut *rng));
-        let shard_a = build_unspent_seed_pcd(rng, start, EpochIndex(0), &stamps_left, nf);
-        let shard_b = build_unspent_seed_pcd(rng, start, EpochIndex(0), &stamps_right, nf);
+        let shard_a = build_unspent_seed_pcd(rng, start, EpochIndex(0), &stamps_left, &nf);
+        let shard_b = build_unspent_seed_pcd(rng, start, EpochIndex(0), &stamps_right, &nf);
         let err = PROOF_SYSTEM
             .fuse(rng, pool::UnspentFuse, (), shard_a, shard_b)
             .err()
@@ -417,7 +412,7 @@ fn empty_block_unspent_lifts_spendable() {
     let cm = note.commitment();
 
     let mut pool = PoolSim::genesis(rng);
-    pool.mine(vec![vec![cm.into()]]);
+    pool.mine(vec![vec![Tachygram::from(&cm)]]);
     let cm_height = pool.height();
     let epoch = cm_height.epoch();
 
@@ -431,8 +426,8 @@ fn empty_block_unspent_lifts_spendable() {
 
     // Build an Unspent over the empty block via EmptyBlockUnspentSeed,
     // then lift the spendable.
-    let nf = spendable.data().0;
-    let unspent = build_unspent_pcd(rng, &pool, nf, empty_height..=empty_height);
+    let nf = spendable.data().0.clone();
+    let unspent = build_unspent_pcd(rng, &pool, &nf, empty_height..=empty_height);
     let lifted = user.lift(rng, spendable, unspent, &note, epoch, epoch);
 
     assert_eq!(lifted.data().1, spendable_anchor_before.next_empty());
@@ -445,14 +440,14 @@ fn spend_bind_honest() {
     let user = WalletSim::random(rng);
     let mut pool = PoolSim::genesis(rng);
     let note = user.random_note(rng, 500);
-    pool.mine(random_block_with(rng, &[vec![note.commitment()]], 4));
+    pool.mine(random_block_with(rng, vec![vec![note.commitment()]], 4));
     let height = pool.height();
     let spend_epoch = height.epoch();
     let spendable_pcd = user.fresh_spend(rng, &pool, height, &note);
 
     let spend_pcd = honest_spend_bind(rng, &user, &note, spendable_pcd);
-    let (_cv, _rk, present_nf, _anchor, _cm) = *spend_pcd.data();
-    assert_eq!(present_nf, user.nf_at(&note, spend_epoch));
+    let (_cv, _rk, present_nf, _anchor, _cm) = spend_pcd.data().clone();
+    assert_eq!(&present_nf, &user.nf_at(&note, spend_epoch));
 }
 
 #[test]
@@ -462,7 +457,7 @@ fn spend_bind_rejects_invalid_inputs() {
     let other = WalletSim::random(rng);
     let mut pool = PoolSim::genesis(rng);
     let note = user.random_note(rng, 500);
-    pool.mine(random_block_with(rng, &[vec![note.commitment()]], 4));
+    pool.mine(random_block_with(rng, vec![vec![note.commitment()]], 4));
     let height = pool.height();
     let spend_epoch = height.epoch();
 
@@ -471,11 +466,7 @@ fn spend_bind_rejects_invalid_inputs() {
         rcm: note::CommitmentTrapdoor::random(rng),
         ..note.clone()
     };
-    assert_eq!(
-        Fp::from(note.psi.clone()),
-        Fp::from(phantom.psi.clone()),
-        "shared psi"
-    );
+    assert_eq!(note.psi.as_ref(), phantom.psi.as_ref(), "shared psi");
     assert_ne!(note.commitment(), phantom.commitment(), "distinct cm");
     assert_eq!(
         user.nf_at(&note, spend_epoch),
@@ -484,24 +475,30 @@ fn spend_bind_rejects_invalid_inputs() {
     );
 
     let wrong_value = note::Value::try_from(999_999u64).expect("test value in range");
-    assert_ne!(u64::from(wrong_value), u64::from(note.value));
+    assert_ne!(
+        u64::from(wrong_value.clone()),
+        u64::from(note.value.clone())
+    );
 
     let cases = [
         (
             "value inflation",
-            (phantom.pk, phantom.value, phantom.rcm, phantom.psi),
-            user.pak,
+            phantom,
+            user.pak.clone(),
             "SpendBind: note does not match the spendable lineage",
         ),
         (
             "wrong value",
-            (note.pk, wrong_value, note.rcm.clone(), note.psi.clone()),
-            user.pak,
+            Note {
+                value: wrong_value,
+                ..note.clone()
+            },
+            user.pak.clone(),
             "SpendBind: note does not match the spendable lineage",
         ),
         (
             "unrelated pak",
-            (note.pk, note.value, note.rcm.clone(), note.psi.clone()),
+            note.clone(),
             other.pak,
             "SpendBind: pak not related to note",
         ),
@@ -533,7 +530,7 @@ fn spend_stamp_rejects_forged_next() {
     let user = WalletSim::random(rng);
     let mut pool = PoolSim::genesis(rng);
     let note = user.random_note(rng, 500);
-    pool.mine(random_block_with(rng, &[vec![note.commitment()]], 4));
+    pool.mine(random_block_with(rng, vec![vec![note.commitment()]], 4));
     let height = pool.height();
     let spend_epoch = height.epoch();
     let spendable_pcd = user.fresh_spend(rng, &pool, height, &note);
@@ -561,7 +558,7 @@ fn spend_stamp_rejects_zero_next_nullifier() {
     let user = WalletSim::random(rng);
     let mut pool = PoolSim::genesis(rng);
     let note = user.random_note(rng, 500);
-    pool.mine(random_block_with(rng, &[vec![note.commitment()]], 4));
+    pool.mine(random_block_with(rng, vec![vec![note.commitment()]], 4));
     let height = pool.height();
     let spend_epoch = height.epoch();
     let spendable_pcd = user.fresh_spend(rng, &pool, height, &note);
@@ -589,13 +586,13 @@ fn spend_stamp_rejects_identity_cv() {
     let user = WalletSim::random(rng);
     let mut pool = PoolSim::genesis(rng);
     let note = user.random_note(rng, 500);
-    pool.mine(random_block_with(rng, &[vec![note.commitment()]], 4));
+    pool.mine(random_block_with(rng, vec![vec![note.commitment()]], 4));
     let height = pool.height();
     let spend_epoch = height.epoch();
     let spendable_pcd = user.fresh_spend(rng, &pool, height, &note);
 
     let real_spend = honest_spend_bind(rng, &user, &note, spendable_pcd);
-    let (_real_cv, real_rk, present_nf, anchor, cm) = *real_spend.data();
+    let (_real_cv, real_rk, present_nf, anchor, cm) = real_spend.data().clone();
     let identity_cv = value::Commitment::balance(0);
     let forged_spend = real_spend.proof().clone().carry::<spend::SpendHeader>((
         identity_cv,
@@ -627,7 +624,7 @@ fn step_rejects_zero_value_note() {
 
     let zero_note = Note {
         pk: user.pak.derive_payment_key(),
-        value: note::Value::ZERO,
+        value: note::Value::default(),
         psi: note::NullifierTrapdoor::random(rng),
         rcm: note::CommitmentTrapdoor::random(rng),
     };
@@ -635,7 +632,7 @@ fn step_rejects_zero_value_note() {
     {
         let out_rcv = value::CommitmentTrapdoor::random(rng);
         let out_theta = ActionEntropy::random(rng);
-        let out_alpha = out_theta.randomizer::<effect::Output>(zero_note.commitment());
+        let out_alpha = out_theta.randomizer::<effect::Output>(&zero_note.commitment());
         let out_anchor = PoolSim::genesis(rng).anchor();
         let err = PROOF_SYSTEM
             .seed(
@@ -654,7 +651,7 @@ fn step_rejects_zero_value_note() {
     {
         let mut pool = PoolSim::genesis(rng);
         let note = user.random_note(rng, 500);
-        pool.mine(random_block_with(rng, &[vec![note.commitment()]], 4));
+        pool.mine(random_block_with(rng, vec![vec![note.commitment()]], 4));
         let height = pool.height();
         let spendable_pcd = user.fresh_spend(rng, &pool, height, &note);
 
@@ -665,7 +662,10 @@ fn step_rejects_zero_value_note() {
                 rng,
                 spend::SpendBind,
                 (
-                    (note.pk, note::Value::ZERO, note.rcm, note.psi),
+                    Note {
+                        value: note::Value::default(),
+                        ..note
+                    },
                     rcv,
                     alpha,
                     user.pak,
@@ -692,7 +692,7 @@ fn spend_after_lift_publishes_anchor_epoch_nullifiers() {
     let cm_idx = pool
         .tachygrams_at(cm_height)
         .iter()
-        .position(|tgs| tgs.contains(&note.commitment().into()))
+        .position(|tgs| tgs.contains(&Tachygram::from(&note.commitment())))
         .expect("cm in block");
     let target_height = BlockHeight(EPOCH_SIZE);
     while pool.height() < target_height {
@@ -717,7 +717,7 @@ fn spend_after_lift_publishes_anchor_epoch_nullifiers() {
     let lifted = user.lift(rng, spendable, unspent, &note, EpochIndex(0), EpochIndex(1));
 
     let spend_pcd = honest_spend_bind(rng, &user, &note, lifted);
-    let (_cv, _rk, present_nf, _anchor, _cm) = *spend_pcd.data();
+    let (_cv, _rk, present_nf, _anchor, _cm) = spend_pcd.data().clone();
     assert_eq!(
         present_nf,
         user.nf_at(&note, EpochIndex(1)),
@@ -732,8 +732,8 @@ fn spend_after_lift_publishes_anchor_epoch_nullifiers() {
     let stamp = honest_spend_stamp(rng, &user, &note, spend_pcd, EpochIndex(1));
     let expected = TachygramSetPoly::from(
         [
-            user.nf_at(&note, EpochIndex(1)).into(),
-            user.nf_at(&note, EpochIndex(2)).into(),
+            Tachygram::from(&user.nf_at(&note, EpochIndex(1))),
+            Tachygram::from(&user.nf_at(&note, EpochIndex(2))),
         ]
         .as_slice(),
     )
@@ -747,7 +747,7 @@ fn spend_stamp_assembles_tachygrams() {
     let user = WalletSim::random(rng);
     let mut pool = PoolSim::genesis(rng);
     let note = user.random_note(rng, 500);
-    pool.mine(random_block_with(rng, &[vec![note.commitment()]], 4));
+    pool.mine(random_block_with(rng, vec![vec![note.commitment()]], 4));
     let height = pool.height();
     let spend_epoch = height.epoch();
     let spendable_pcd = user.fresh_spend(rng, &pool, height, &note);
@@ -757,8 +757,8 @@ fn spend_stamp_assembles_tachygrams() {
     let (_actions, tg_commit, _anchor) = *stamp_pcd.data();
     let expected = TachygramSetPoly::from(
         [
-            Tachygram::from(user.nf_at(&note, spend_epoch)),
-            Tachygram::from(user.nf_at(&note, spend_epoch.next())),
+            Tachygram::from(&user.nf_at(&note, spend_epoch)),
+            Tachygram::from(&user.nf_at(&note, spend_epoch.next())),
         ]
         .as_slice(),
     )
@@ -776,11 +776,7 @@ fn notes_with_shared_psi_share_nullifiers() {
         rcm: note::CommitmentTrapdoor::random(rng),
         ..note_a.clone()
     };
-    assert_eq!(
-        Fp::from(note_a.psi.clone()),
-        Fp::from(note_b.psi.clone()),
-        "shared psi"
-    );
+    assert_eq!(note_a.psi.as_ref(), note_b.psi.as_ref(), "shared psi");
     assert_ne!(
         note_a.commitment(),
         note_b.commitment(),
@@ -809,19 +805,19 @@ fn unspent_epoch_fuse_concatenates_polynomials() {
     let left = build_unspent_pcd(
         rng,
         &pool,
-        nf_e0,
+        &nf_e0,
         BlockHeight(0)..=BlockHeight(EPOCH_SIZE - 1),
     );
     let right = build_unspent_pcd(
         rng,
         &pool,
-        nf_e1,
+        &nf_e1,
         BlockHeight(EPOCH_SIZE)..=BlockHeight(EPOCH_SIZE),
     );
 
-    let left_poly = NfSeqPoly::from(Vec::<Nullifier>::new().as_slice());
-    let right_poly = NfSeqPoly::from(Vec::<Nullifier>::new().as_slice());
-    let combined = NfSeqPoly::from([nf_e0].as_slice());
+    let left_poly = NfSeqPoly::from(Vec::<Nullifier>::new());
+    let right_poly = NfSeqPoly::from(Vec::<Nullifier>::new());
+    let combined = NfSeqPoly::from([nf_e0.clone()]);
     let (fused, ()) = PROOF_SYSTEM
         .fuse(
             rng,
@@ -832,10 +828,14 @@ fn unspent_epoch_fuse_concatenates_polynomials() {
         )
         .expect("UnspentEpochFuse");
 
-    let ((elapsed, present_epoch), _prev, _end, present_nf, start_epoch) = *fused.data();
-    assert_eq!(elapsed, NfSeqCommit::from([nf_e0].as_slice()));
+    let ((elapsed, present_epoch), _prev, _end, present_nf, start_epoch) = fused.data().clone();
+    assert_eq!(&elapsed, &NfSeqPoly::from([nf_e0.clone()]).commit());
+
     assert_eq!(present_epoch.0 - start_epoch.0, 1, "one crossing");
-    assert_eq!(present_nf, nf_e1, "new tip is the right half's present nf");
+    assert_eq!(
+        &present_nf, &nf_e1,
+        "new tip is the right half's present nf"
+    );
 }
 
 #[test]
@@ -848,7 +848,7 @@ fn sync_sim_builds_unspent_for_wallet_lift_across_epochs() {
     let cm_idx = pool
         .tachygrams_at(init_height)
         .iter()
-        .position(|tgs| tgs.contains(&note.commitment().into()))
+        .position(|tgs| tgs.contains(&Tachygram::from(&note.commitment())))
         .expect("cm in block");
 
     let spendable = user.spendable_init(rng, &note, &pool, init_height);
@@ -899,7 +899,7 @@ fn sync_unspent_spans_two_crossings() {
     let cm_idx = pool
         .tachygrams_at(init_height)
         .iter()
-        .position(|tgs| tgs.contains(&note.commitment().into()))
+        .position(|tgs| tgs.contains(&Tachygram::from(&note.commitment())))
         .expect("cm in block");
     let spendable = user.spendable_init(rng, &note, &pool, init_height);
     let start_anchor = spendable.data().1;
@@ -943,27 +943,27 @@ fn unspent_fuse_rejects_nonzero_forward_half() {
     let m_left = build_unspent_pcd(
         rng,
         &pool,
-        nf0,
+        &nf0,
         BlockHeight(0)..=BlockHeight(EPOCH_SIZE - 1),
     );
     let m_right = build_unspent_pcd(
         rng,
         &pool,
-        nf1,
+        &nf1,
         BlockHeight(EPOCH_SIZE)..=BlockHeight(EPOCH_SIZE),
     );
-    let empty = NfSeqPoly::from(Vec::<Nullifier>::new().as_slice());
+    let empty = NfSeqPoly::from(Vec::<Nullifier>::new());
     let (multi, ()) = PROOF_SYSTEM
         .fuse(
             rng,
             pool::UnspentEpochFuse,
-            (empty.clone(), empty, NfSeqPoly::from([nf0].as_slice())),
+            (empty.clone(), empty, NfSeqPoly::from([nf0.clone()])),
             m_left,
             m_right,
         )
         .expect("multi-epoch segment");
 
-    let left = build_unspent_pcd(rng, &pool, nf0, BlockHeight(0)..=BlockHeight(0));
+    let left = build_unspent_pcd(rng, &pool, &nf0, BlockHeight(0)..=BlockHeight(0));
     let err = PROOF_SYSTEM
         .fuse(rng, pool::UnspentFuse, (), left, multi)
         .err()
@@ -995,13 +995,13 @@ fn epoch_fuse_setup(
     let left = build_unspent_pcd(
         rng,
         &pool,
-        nf_e0,
+        &nf_e0,
         BlockHeight(0)..=BlockHeight(EPOCH_SIZE - 1),
     );
     let right = build_unspent_pcd(
         rng,
         &pool,
-        nf_e1,
+        &nf_e1,
         BlockHeight(EPOCH_SIZE)..=BlockHeight(EPOCH_SIZE),
     );
     (pool, nf_e0, nf_e1, left, right)
@@ -1016,9 +1016,9 @@ fn unspent_epoch_fuse_rejects_wrong_left_poly() {
             rng,
             pool::UnspentEpochFuse,
             (
-                NfSeqPoly::from([nf_e1].as_slice()),
-                NfSeqPoly::from(Vec::<Nullifier>::new().as_slice()),
-                NfSeqPoly::from([nf_e0].as_slice()),
+                NfSeqPoly::from([nf_e1]),
+                NfSeqPoly::from(Vec::<Nullifier>::new()),
+                NfSeqPoly::from([nf_e0]),
             ),
             left,
             right,
@@ -1043,9 +1043,9 @@ fn unspent_epoch_fuse_rejects_wrong_combined() {
             rng,
             pool::UnspentEpochFuse,
             (
-                NfSeqPoly::from(Vec::<Nullifier>::new().as_slice()),
-                NfSeqPoly::from(Vec::<Nullifier>::new().as_slice()),
-                NfSeqPoly::from([nf_e1].as_slice()),
+                NfSeqPoly::from(Vec::<Nullifier>::new()),
+                NfSeqPoly::from(Vec::<Nullifier>::new()),
+                NfSeqPoly::from([nf_e1]),
             ),
             left,
             right,
@@ -1073,13 +1073,13 @@ fn unspent_epoch_fuse_rejects_epoch_skip() {
     let left = build_unspent_pcd(
         rng,
         &pool,
-        nf_e0,
+        &nf_e0,
         BlockHeight(0)..=BlockHeight(EPOCH_SIZE - 1),
     );
     let right = build_unspent_pcd(
         rng,
         &pool,
-        nf_e2,
+        &nf_e2,
         BlockHeight(2 * EPOCH_SIZE)..=BlockHeight(2 * EPOCH_SIZE),
     );
     let err = PROOF_SYSTEM
@@ -1087,9 +1087,9 @@ fn unspent_epoch_fuse_rejects_epoch_skip() {
             rng,
             pool::UnspentEpochFuse,
             (
-                NfSeqPoly::from(Vec::<Nullifier>::new().as_slice()),
-                NfSeqPoly::from(Vec::<Nullifier>::new().as_slice()),
-                NfSeqPoly::from([nf_e0].as_slice()),
+                NfSeqPoly::from(Vec::<Nullifier>::new()),
+                NfSeqPoly::from(Vec::<Nullifier>::new()),
+                NfSeqPoly::from([nf_e0.clone()]),
             ),
             left,
             right,
@@ -1115,7 +1115,7 @@ fn verify_unspent_rejects_tip_mismatch() {
     let cm_idx = pool
         .tachygrams_at(init_height)
         .iter()
-        .position(|tgs| tgs.contains(&note.commitment().into()))
+        .position(|tgs| tgs.contains(&Tachygram::from(&note.commitment())))
         .expect("cm in block");
     let spendable = user.spendable_init(rng, &note, &pool, init_height);
     let start_anchor = spendable.data().1;
@@ -1136,15 +1136,12 @@ fn verify_unspent_rejects_tip_mismatch() {
     let unspent = sync.build_next_unspent(rng, 0, &pool, target_height);
 
     let range = user.derived_range(rng, &note, EpochIndex(0), 2);
-    let elapsed = NfSeqPoly::from([user.nf_at(&note, EpochIndex(0))].as_slice());
-    let tip = NfSeqPoly::from([user.nf_at(&note, EpochIndex(1))].as_slice());
-    let range_poly = NfSeqPoly::from(
-        [
-            user.nf_at(&note, EpochIndex(0)),
-            user.nf_at(&note, EpochIndex(1)),
-        ]
-        .as_slice(),
-    );
+    let elapsed = NfSeqPoly::from([user.nf_at(&note, EpochIndex(0))]);
+    let tip = NfSeqPoly::from([user.nf_at(&note, EpochIndex(1))]);
+    let range_poly = NfSeqPoly::from([
+        user.nf_at(&note, EpochIndex(0)),
+        user.nf_at(&note, EpochIndex(1)),
+    ]);
 
     let err = PROOF_SYSTEM
         .fuse(
@@ -1177,13 +1174,13 @@ fn verify_unspent_rejects_elapsed_mismatch() {
     let unspent = build_unspent_pcd(
         rng,
         &pool,
-        user.nf_at(&note, EpochIndex(0)),
+        &user.nf_at(&note, EpochIndex(0)),
         BlockHeight(init_height.0 + 1)..=BlockHeight(init_height.0 + 1),
     );
     let range = user.derived_range(rng, &note, EpochIndex(0), 1);
-    let bogus_elapsed = NfSeqPoly::from([Nullifier::from(Fp::random(&mut *rng))].as_slice());
-    let tip = NfSeqPoly::from([user.nf_at(&note, EpochIndex(0))].as_slice());
-    let range_poly = NfSeqPoly::from([user.nf_at(&note, EpochIndex(0))].as_slice());
+    let bogus_elapsed = NfSeqPoly::from([Nullifier::from(Fp::random(&mut *rng))]);
+    let tip = NfSeqPoly::from([user.nf_at(&note, EpochIndex(0))]);
+    let range_poly = NfSeqPoly::from([user.nf_at(&note, EpochIndex(0))]);
 
     let err = PROOF_SYSTEM
         .fuse(
@@ -1216,13 +1213,13 @@ fn verify_unspent_rejects_wrong_start_epoch() {
     let unspent = build_unspent_pcd(
         rng,
         &pool,
-        user.nf_at(&note, EpochIndex(0)),
+        &user.nf_at(&note, EpochIndex(0)),
         BlockHeight(init_height.0 + 1)..=BlockHeight(init_height.0 + 1),
     );
     let range = user.derived_range(rng, &note, EpochIndex(1), 1);
-    let elapsed = NfSeqPoly::from(Vec::<Nullifier>::new().as_slice());
-    let tip = NfSeqPoly::from([user.nf_at(&note, EpochIndex(1))].as_slice());
-    let range_poly = NfSeqPoly::from([user.nf_at(&note, EpochIndex(1))].as_slice());
+    let elapsed = NfSeqPoly::from(Vec::<Nullifier>::new());
+    let tip = NfSeqPoly::from([user.nf_at(&note, EpochIndex(1))]);
+    let range_poly = NfSeqPoly::from([user.nf_at(&note, EpochIndex(1))]);
 
     let err = PROOF_SYSTEM
         .fuse(
@@ -1258,7 +1255,7 @@ fn spendable_lift_rejects_wrong_cm() {
     let cm_idx = pool
         .tachygrams_at(init_height)
         .iter()
-        .position(|tgs| tgs.contains(&note.commitment().into()))
+        .position(|tgs| tgs.contains(&Tachygram::from(&note.commitment())))
         .expect("cm in block");
     let spendable = user.spendable_init(rng, &note, &pool, init_height);
     let start_anchor = spendable.data().1;
@@ -1307,7 +1304,7 @@ fn spendable_lift_rejects_non_adjacent_unspent() {
     let unspent = build_unspent_pcd(
         rng,
         &pool,
-        user.nf_at(&note, EpochIndex(0)),
+        &user.nf_at(&note, EpochIndex(0)),
         init_height..=init_height,
     );
     let verified = user.verify_unspent(rng, unspent, &note, EpochIndex(0), EpochIndex(0));
@@ -1333,15 +1330,12 @@ fn nullifier_fuse_rejects_non_contiguous() {
 
     let range_a = user.derived_range(rng, &note, EpochIndex(0), 1);
     let range_b = user.derived_range(rng, &note, EpochIndex(2), 1);
-    let left_poly = NfSeqPoly::from([user.nf_at(&note, EpochIndex(0))].as_slice());
-    let right_poly = NfSeqPoly::from([user.nf_at(&note, EpochIndex(2))].as_slice());
-    let merged = NfSeqPoly::from(
-        [
-            user.nf_at(&note, EpochIndex(0)),
-            user.nf_at(&note, EpochIndex(2)),
-        ]
-        .as_slice(),
-    );
+    let left_poly = NfSeqPoly::from([user.nf_at(&note, EpochIndex(0))]);
+    let right_poly = NfSeqPoly::from([user.nf_at(&note, EpochIndex(2))]);
+    let merged = NfSeqPoly::from([
+        user.nf_at(&note, EpochIndex(0)),
+        user.nf_at(&note, EpochIndex(2)),
+    ]);
 
     let err = PROOF_SYSTEM
         .fuse(
@@ -1368,15 +1362,12 @@ fn nullifier_fuse_rejects_wrong_cm() {
 
     let range_a = user.derived_range(rng, &note_a, EpochIndex(0), 1);
     let range_b = user.derived_range(rng, &note_b, EpochIndex(1), 1);
-    let left_poly = NfSeqPoly::from([user.nf_at(&note_a, EpochIndex(0))].as_slice());
-    let right_poly = NfSeqPoly::from([user.nf_at(&note_b, EpochIndex(1))].as_slice());
-    let merged = NfSeqPoly::from(
-        [
-            user.nf_at(&note_a, EpochIndex(0)),
-            user.nf_at(&note_b, EpochIndex(1)),
-        ]
-        .as_slice(),
-    );
+    let left_poly = NfSeqPoly::from([user.nf_at(&note_a, EpochIndex(0))]);
+    let right_poly = NfSeqPoly::from([user.nf_at(&note_b, EpochIndex(1))]);
+    let merged = NfSeqPoly::from([
+        user.nf_at(&note_a, EpochIndex(0)),
+        user.nf_at(&note_b, EpochIndex(1)),
+    ]);
 
     let err = PROOF_SYSTEM
         .fuse(

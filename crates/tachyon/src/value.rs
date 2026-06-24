@@ -3,19 +3,18 @@
 //! A value commitment hides the value transferred in an action:
 //! `cv = [v]V + [rcv]R` where `rcv` is the [`CommitmentTrapdoor`].
 
-use core::{iter, mem::size_of, ops, ops::Neg as _, ptr, slice};
+use core::{iter, ops, ops::Neg as _};
 
-use derive_more::{Debug, Eq as TotalEq, From, Into, PartialEq};
+use derive_more::{AsRef, Debug, Eq as TotalEq, From, Into, PartialEq};
 use ff::Field as _;
 use lazy_static::lazy_static;
 use pasta_curves::{
-    Ep, EpAffine, Fq,
-    arithmetic::CurveExt as _,
-    group::{GroupEncoding as _, prime::PrimeCurveAffine as _},
-    pallas,
+    Ep, EpAffine, Fq, arithmetic::CurveExt as _, group::prime::PrimeCurveAffine as _, pallas,
 };
 use rand_core::{CryptoRng, RngCore};
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+use crate::secret::SecretFq;
 
 /// Hash-to-curve domain for value commitment generators $\mathcal{V}$ and
 /// $\mathcal{R}$. Shared with Orchard to reuse `reddsa::orchard::Binding` —
@@ -47,18 +46,13 @@ lazy_static! {
 /// An $\mathbb{F}_q$ element (Pallas scalar field, 32 bytes). Lives
 /// in the scalar field because $\mathsf{rcv}$ is used as a scalar in
 /// point multiplication $[\mathsf{rcv}]\,\mathcal{R}$.
-#[derive(Clone, Debug, Into)]
-pub struct CommitmentTrapdoor(#[debug(skip)] Fq);
+#[derive(AsRef, Clone, Debug, Zeroize, ZeroizeOnDrop)]
+pub struct CommitmentTrapdoor(#[as_ref(forward)] pub(super) SecretFq);
 
 impl CommitmentTrapdoor {
     /// Generate a fresh random trapdoor.
     pub fn random<RNG: RngCore + CryptoRng>(rng: &mut RNG) -> Self {
-        Self(Fq::random(rng))
-    }
-
-    /// Returns the inner scalar for use in arithmetic (e.g. BSK summation).
-    pub(crate) const fn inner(&self) -> Fq {
-        self.0
+        Self(Fq::random(rng).into())
     }
 
     /// Commit to a value with this trapdoor.
@@ -69,7 +63,11 @@ impl CommitmentTrapdoor {
     /// outputs (balance exhausted).
     #[must_use]
     pub fn commit(&self, raw_value: i64) -> Commitment {
-        assert_ne!(self.0, Fq::ZERO, "commitment trapdoor should not be zero");
+        assert_ne!(
+            self.as_ref(),
+            &Fq::ZERO,
+            "commitment trapdoor should not be zero"
+        );
 
         let value_abs: Fq = Fq::from(raw_value.unsigned_abs());
         let value_fq = if raw_value >= 0 {
@@ -80,7 +78,7 @@ impl CommitmentTrapdoor {
 
         let committed: EpAffine = {
             let commit_value: Ep = *VALUE_COMMIT_V * value_fq;
-            let commit_trapdoor: Ep = *VALUE_COMMIT_R * self.0;
+            let commit_trapdoor: Ep = *VALUE_COMMIT_R * self.as_ref();
             (commit_value + commit_trapdoor).into()
         };
 
@@ -104,8 +102,8 @@ impl CommitmentTrapdoor {
 /// ## Type representation
 ///
 /// An EpAffine (Pallas affine curve point, 32 compressed bytes).
-#[derive(Clone, Copy, Debug, From, Into, PartialEq, TotalEq)]
-pub struct Commitment(#[debug(skip)] pub(super) EpAffine);
+#[derive(Clone, Copy, Debug, Default, From, Into, PartialEq, TotalEq)]
+pub struct Commitment(EpAffine);
 
 impl Commitment {
     /// Create the value balance commitment
@@ -128,12 +126,6 @@ impl Commitment {
             value_abs.neg()
         };
         Self((*VALUE_COMMIT_V * value_fq).into())
-    }
-}
-
-impl From<Commitment> for [u8; 32] {
-    fn from(cv: Commitment) -> Self {
-        cv.0.to_bytes()
     }
 }
 
@@ -161,27 +153,6 @@ impl iter::Sum for Commitment {
     }
 }
 
-impl Zeroize for CommitmentTrapdoor {
-    fn zeroize(&mut self) {
-        // Safety: pasta_curves::Fq is a plain field element with no heap
-        // allocations, internal pointers, or Drop implementation.
-        #[expect(unsafe_code, reason = "zeroize non-Zeroize pasta_curves::Fq")]
-        unsafe {
-            let ptr: *mut u8 = ptr::from_mut(&mut self.0).cast();
-            let len = size_of::<Fq>();
-            slice::from_raw_parts_mut(ptr, len).zeroize();
-        }
-    }
-}
-
-impl Drop for CommitmentTrapdoor {
-    fn drop(&mut self) {
-        self.zeroize();
-    }
-}
-
-impl ZeroizeOnDrop for CommitmentTrapdoor {}
-
 #[cfg(test)]
 mod tests {
     use rand::{SeedableRng as _, rngs::StdRng};
@@ -201,15 +172,15 @@ mod tests {
     fn commit_homomorphic_binding_property() {
         let rng = &mut StdRng::seed_from_u64(0);
         let rcv_a = CommitmentTrapdoor::random(rng);
-        let scalar_a = rcv_a.inner();
+        let scalar_a = rcv_a.as_ref();
         let cv_a = rcv_a.commit(100);
         let rcv_b = CommitmentTrapdoor::random(rng);
-        let scalar_b = rcv_b.inner();
+        let scalar_b = rcv_b.as_ref();
         let cv_b = rcv_b.commit(200);
 
         let remainder = cv_a + cv_b - Commitment::balance(300);
 
-        let rcv_sum: Fq = scalar_a + scalar_b;
+        let rcv_sum = scalar_a + scalar_b;
         let expected: EpAffine = (*VALUE_COMMIT_R * rcv_sum).into();
 
         assert_eq!(remainder, Commitment(expected));
@@ -217,17 +188,10 @@ mod tests {
 
     #[test]
     fn debug_value_trapdoor_redacts_scalar() {
-        let rcv = CommitmentTrapdoor(Fq::from(0xFACEu64));
-        let dbg = alloc::format!("{rcv:?}");
-        assert!(dbg.contains("CommitmentTrapdoor"), "must name the type");
-        assert!(!dbg.contains("FACE"), "must not leak scalar");
-        assert!(!dbg.contains("64206"), "must not leak decimal value");
-    }
-
-    #[test]
-    fn debug_value_commitment_redacts_point() {
-        let cv = Commitment::balance(100);
-        let dbg = alloc::format!("{cv:?}");
-        assert!(dbg.contains("Commitment"), "must name the type");
+        let rcv = CommitmentTrapdoor(Fq::from(0xFACEu64).into());
+        assert_eq!(
+            alloc::format!("{rcv:?}"),
+            "CommitmentTrapdoor(SecretFq(..))"
+        );
     }
 }

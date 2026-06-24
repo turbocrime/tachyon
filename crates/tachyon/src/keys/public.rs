@@ -1,8 +1,6 @@
 //! Public (verification) keys.
 
-use core::cmp::Eq as CoreTotalEq;
-
-use derive_more::{Debug, Display, PartialEq};
+use derive_more::{Debug, Display, Eq as TotalEq, From, Into, PartialEq};
 use pasta_curves::{EpAffine, group::GroupEncoding as _};
 
 use crate::{action, action::Action, bundle, reddsa, value};
@@ -23,38 +21,31 @@ use crate::{action, action::Action, bundle, reddsa, value};
 ///
 /// This unification lets consensus treat all actions identically while
 /// the type system enforces the authority boundary at construction time.
-#[derive(Clone, Copy, Debug, Display, PartialEq)]
-#[display("ActionVerificationKey({:?})", reddsa::VerificationKeyBytes::from(self.0))]
-pub struct ActionVerificationKey(pub(crate) reddsa::VerificationKey<reddsa::ActionAuth>);
-
-impl CoreTotalEq for ActionVerificationKey {}
+#[derive(Clone, Copy, Debug, Display, From, Into, PartialEq, TotalEq)]
+#[display("ActionVerificationKey({:x?})", self.0.to_bytes())]
+pub struct ActionVerificationKey(EpAffine);
 
 impl ActionVerificationKey {
     /// Verify an action signature against a transaction sighash.
     pub fn verify(&self, sighash: &[u8; 32], sig: &action::Signature) -> Result<(), reddsa::Error> {
-        self.0.verify(sighash, &sig.0)
+        reddsa::VerificationKey::<reddsa::ActionAuth>::try_from(self.0.to_bytes())?
+            .verify(sighash, &sig.0)
     }
 }
 
-impl From<ActionVerificationKey> for [u8; 32] {
-    fn from(avk: ActionVerificationKey) -> Self {
-        avk.0.into()
+#[expect(clippy::from_over_into, reason = "restrict conversion")]
+impl Into<reddsa::VerificationKey<reddsa::ActionAuth>> for ActionVerificationKey {
+    fn into(self) -> reddsa::VerificationKey<reddsa::ActionAuth> {
+        #[expect(clippy::expect_used, reason = "specified behavior")]
+        reddsa::VerificationKey::<reddsa::ActionAuth>::try_from(self.0.to_bytes())
+            .expect("curve point is a valid verification key")
     }
 }
 
-impl TryFrom<[u8; 32]> for ActionVerificationKey {
-    type Error = reddsa::Error;
-
-    fn try_from(bytes: [u8; 32]) -> Result<Self, Self::Error> {
-        reddsa::VerificationKey::<reddsa::ActionAuth>::try_from(bytes).map(Self)
-    }
-}
-
-/// Decompress the verification key to an affine curve point.
-impl From<ActionVerificationKey> for EpAffine {
-    fn from(key: ActionVerificationKey) -> Self {
-        let bytes: [u8; 32] = key.0.into();
-        Self::from_bytes(&bytes).expect("verification key is a valid curve point")
+#[expect(clippy::from_over_into, reason = "restrict conversion")]
+impl Into<reddsa::VerificationKeyBytes<reddsa::ActionAuth>> for ActionVerificationKey {
+    fn into(self) -> reddsa::VerificationKeyBytes<reddsa::ActionAuth> {
+        reddsa::VerificationKeyBytes::<reddsa::ActionAuth>::from(self.0.to_bytes())
     }
 }
 
@@ -102,11 +93,9 @@ pub fn derive_bvk(
 ///
 /// Wraps `reddsa::VerificationKey<reddsa::BindingAuth>`, which internally
 /// stores a Pallas curve point (EpAffine, encoded as 32 compressed bytes).
-#[derive(Clone, Copy, Debug, Display, PartialEq)]
-#[display("BindingVerificationKey({:?})", reddsa::VerificationKeyBytes::from(self.0))]
-pub struct BindingVerificationKey(pub(super) reddsa::VerificationKey<reddsa::BindingAuth>);
-
-impl CoreTotalEq for BindingVerificationKey {}
+#[derive(Clone, Copy, Debug, Display, From, Into, PartialEq, TotalEq)]
+#[display("BindingVerificationKey({:x?})", self.0.to_bytes())]
+pub struct BindingVerificationKey(EpAffine);
 
 impl BindingVerificationKey {
     /// Derive the binding verification key from public action data.
@@ -125,18 +114,23 @@ impl BindingVerificationKey {
 
     /// Verify a binding signature against a transaction sighash.
     pub fn verify(&self, sighash: &[u8; 32], sig: &bundle::Signature) -> Result<(), reddsa::Error> {
-        self.0.verify(sighash, &sig.0)
+        reddsa::VerificationKey::<reddsa::BindingAuth>::try_from(self.0.to_bytes())?
+            .verify(sighash, &sig.0)
     }
 }
 
-impl From<EpAffine> for BindingVerificationKey {
-    fn from(point: EpAffine) -> Self {
-        let bvk_bytes: [u8; 32] = point.to_bytes();
-
+#[expect(clippy::from_over_into, reason = "restrict conversion")]
+impl Into<reddsa::VerificationKey<reddsa::BindingAuth>> for BindingVerificationKey {
+    fn into(self) -> reddsa::VerificationKey<reddsa::BindingAuth> {
         #[expect(clippy::expect_used, reason = "specified behavior")]
-        Self(
-            reddsa::VerificationKey::<reddsa::BindingAuth>::try_from(bvk_bytes)
-                .expect("EpAffine point should be a valid RedPallas verification key"),
-        )
+        reddsa::VerificationKey::<reddsa::BindingAuth>::try_from(self.0.to_bytes())
+            .expect("curve point is a valid verification key")
+    }
+}
+
+#[expect(clippy::from_over_into, reason = "restrict conversion")]
+impl Into<reddsa::VerificationKeyBytes<reddsa::BindingAuth>> for BindingVerificationKey {
+    fn into(self) -> reddsa::VerificationKeyBytes<reddsa::BindingAuth> {
+        reddsa::VerificationKeyBytes::<reddsa::BindingAuth>::from(self.0.to_bytes())
     }
 }

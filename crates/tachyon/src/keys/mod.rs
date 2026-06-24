@@ -87,6 +87,7 @@ pub use proof::{ProofAuthorizingKey, SpendValidatingKey};
 #[cfg(test)]
 mod tests {
     use ff::{Field as _, PrimeField as _};
+    use group::GroupEncoding as _;
     use pasta_curves::Fp;
     use rand::{SeedableRng as _, rngs::StdRng};
 
@@ -106,12 +107,12 @@ mod tests {
         let nk = sk.derive_nullifier_private();
         let pk = sk.derive_payment_key();
 
-        let ak_bytes: [u8; 32] = ak.0.into();
-        assert_ne!(ak_bytes, nk.0.to_repr());
-        assert_ne!(nk.0.to_repr(), pk.0.to_repr());
+        let ak_bytes: [u8; 32] = ak.as_ref().to_bytes();
+        assert_ne!(ak_bytes, nk.as_ref().to_repr());
+        assert_ne!(nk.as_ref().to_repr(), pk.as_ref().to_repr());
 
         let pak = sk.derive_proof_private();
-        assert_eq!(pak.derive_payment_key().0, pk.0);
+        assert_eq!(pak.derive_payment_key().as_ref(), pk.as_ref());
     }
 
     /// pk must bind to nk: varying nk (with ak fixed) must produce a
@@ -125,9 +126,9 @@ mod tests {
         let nk = sk.derive_nullifier_private();
         let pk = PaymentKey::derive(&ak, &nk);
 
-        let nk_other = NullifierKey(nk.0 + Fp::ONE);
+        let nk_other = NullifierKey::from(*nk.as_ref() + Fp::ONE);
         let pk_other = PaymentKey::derive(&ak, &nk_other);
-        assert_ne!(pk.0, pk_other.0);
+        assert_ne!(pk.as_ref(), pk_other.as_ref());
     }
 
     /// rsk.derive_action_public() must equal ak.derive_action_public(alpha) for
@@ -146,30 +147,21 @@ mod tests {
             rcm: note::CommitmentTrapdoor::random(rng),
         };
         let theta = ActionEntropy::random(rng);
-        let alpha = theta.randomizer::<effect::Spend>(note.commitment());
+        let alpha = theta.randomizer::<effect::Spend>(&note.commitment());
         let rsk = ask.derive_action_private(&alpha);
 
-        let rk_from_signer: [u8; 32] = rsk.derive_action_public().0.into();
-        let rk_from_prover: [u8; 32] = ak.derive_action_public(&alpha).0.into();
-
-        assert_eq!(rk_from_signer, rk_from_prover);
+        assert_eq!(rsk.derive_action_public(), ak.derive_action_public(&alpha));
     }
 
     #[test]
     fn debug_spending_key_redacts_bytes() {
         let sk = private::SpendingKey::from([0xAB; 32]);
-        let dbg = alloc::format!("{sk:?}");
-        assert!(dbg.contains("SpendingKey"), "must name the type");
-        assert!(!dbg.contains("AB"), "must not leak key bytes");
-        assert!(!dbg.contains("171"), "must not leak decimal bytes");
+        assert_eq!(alloc::format!("{sk:?}"), "SpendingKey(..)");
     }
 
     #[test]
     fn debug_nullifier_key_redacts_value() {
-        let nk = NullifierKey(Fp::from(0xDEADu64));
-        let dbg = alloc::format!("{nk:?}");
-        assert!(dbg.contains("NullifierKey"), "must name the type");
-        assert!(!dbg.contains("DEAD"), "must not leak field element");
-        assert!(!dbg.contains("57005"), "must not leak decimal value");
+        let nk = NullifierKey::from(Fp::from(0xDEADu64));
+        assert_eq!(alloc::format!("{nk:?}"), "NullifierKey(SecretFp(..))");
     }
 }

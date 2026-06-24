@@ -105,29 +105,6 @@ pub(crate) fn write_ep_affine<W: Write>(mut writer: W, point: &EpAffine) -> io::
     writer.write_all(&point.to_bytes())
 }
 
-/// Read a RedPallas action verification key from 32 bytes.
-pub(crate) fn read_action_vk<R: Read>(
-    mut reader: R,
-) -> io::Result<reddsa::VerificationKey<reddsa::ActionAuth>> {
-    let mut bytes = [0u8; 32];
-    reader.read_exact(&mut bytes)?;
-    reddsa::VerificationKey::<reddsa::ActionAuth>::try_from(bytes).map_err(|_err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid action verification key",
-        )
-    })
-}
-
-/// Write a RedPallas action verification key as 32 bytes.
-pub(crate) fn write_action_vk<W: Write>(
-    mut writer: W,
-    key: &reddsa::VerificationKey<reddsa::ActionAuth>,
-) -> io::Result<()> {
-    let bytes: [u8; 32] = (*key).into();
-    writer.write_all(&bytes)
-}
-
 /// Read a RedPallas action signature from 64 bytes.
 pub(crate) fn read_action_sig<R: Read>(
     mut reader: R,

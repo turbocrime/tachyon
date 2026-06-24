@@ -1,11 +1,11 @@
 //! Note-related keys: NullifierKey, PaymentKey.
 
-use derive_more::Debug;
-use ff::PrimeField as _;
-use pasta_curves::Fp;
+use derive_more::{AsRef, Debug, From};
+use pasta_curves::{Fp, arithmetic::CurveAffine as _};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::{ggm::NoteMasterKey, proof::SpendValidatingKey};
-use crate::{digest::poseidon, note};
+use crate::{digest::poseidon, note, secret::SecretFp};
 
 /// A Tachyon nullifier deriving key.
 ///
@@ -31,14 +31,16 @@ use crate::{digest::poseidon, note};
 /// `nk` alone does NOT confer spend authority — combined with `ak` it
 /// forms the proof authorizing key `pak`, enabling proof construction
 /// and nullifier derivation without signing capability.
-#[derive(Clone, Copy, Debug)]
-pub struct NullifierKey(#[debug(skip)] pub(super) Fp);
+#[derive(AsRef, Clone, Debug, From, Zeroize, ZeroizeOnDrop)]
+#[from(Fp)]
+pub struct NullifierKey(#[as_ref(forward)] SecretFp);
 
 impl NullifierKey {
     /// Derive a note's GGM master root from its nullifier trapdoor `psi`.
     #[must_use]
     pub fn derive_note_private(&self, psi: &note::NullifierTrapdoor) -> NoteMasterKey {
-        NoteMasterKey(poseidon::nf_master(psi.0, self.0))
+        // TODO: deref'd copies unwiped; needs upstream pasta_curves Zeroize.
+        NoteMasterKey::from(poseidon::nf_master(*psi.as_ref(), *self.as_ref()))
     }
 }
 
@@ -75,9 +77,9 @@ impl NullifierKey {
 /// note commitment. It is NOT an on-chain address; payment coordination
 /// happens out-of-band via higher-level protocols (ZIP 321 payment
 /// requests, ZIP 324 URI encapsulated payments).
-#[derive(Clone, Copy, Debug)]
-#[expect(clippy::field_scoped_visibility_modifiers, reason = "for internal use")]
-pub struct PaymentKey(#[debug(skip)] pub(crate) Fp);
+#[derive(AsRef, Clone, Debug, From, Zeroize, ZeroizeOnDrop)]
+#[from(forward)]
+pub struct PaymentKey(#[as_ref(forward)] SecretFp);
 
 impl PaymentKey {
     /// Derive the payment key from `ak` and `nk`:
@@ -85,15 +87,23 @@ impl PaymentKey {
     /// \mathsf{nk})$.
     #[must_use]
     pub fn derive(ak: &SpendValidatingKey, nk: &NullifierKey) -> Self {
-        let ak_bytes: [u8; 32] = ak.0.into();
-        let ak_fp = Fp::from_repr(ak_bytes).expect("ak bytes should be a valid Fp");
-        Self(poseidon::payment_key(ak_fp, nk.0))
+        // TODO: deref'd copies unwiped; needs upstream pasta_curves Zeroize.
+        Self(
+            poseidon::payment_key(
+                ak.as_ref()
+                    .coordinates()
+                    .expect("valid curve point has coordinates"),
+                *nk.as_ref(),
+            )
+            .into(),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use ff::Field as _;
+    use pasta_curves::Fp;
     use rand::{SeedableRng as _, rngs::StdRng};
 
     use super::*;
@@ -102,7 +112,7 @@ mod tests {
     #[test]
     fn derive_note_private_deterministic() {
         let rng = &mut StdRng::seed_from_u64(0);
-        let nk = NullifierKey(Fp::random(&mut *rng));
+        let nk = NullifierKey(Fp::random(&mut *rng).into());
         let psi = note::NullifierTrapdoor::random(rng);
         let mk1 = nk.derive_note_private(&psi);
         let mk2 = nk.derive_note_private(&psi);
@@ -112,7 +122,7 @@ mod tests {
     #[test]
     fn different_psi_different_mk() {
         let rng = &mut StdRng::seed_from_u64(0);
-        let nk = NullifierKey(Fp::random(&mut *rng));
+        let nk = NullifierKey(Fp::random(&mut *rng).into());
         let psi1 = note::NullifierTrapdoor::random(rng);
         let psi2 = note::NullifierTrapdoor::random(rng);
         let mk1 = nk.derive_note_private(&psi1);
@@ -123,7 +133,7 @@ mod tests {
     #[test]
     fn different_epochs_different_nullifiers() {
         let rng = &mut StdRng::seed_from_u64(0);
-        let nk = NullifierKey(Fp::random(&mut *rng));
+        let nk = NullifierKey(Fp::random(&mut *rng).into());
         let psi = note::NullifierTrapdoor::random(rng);
         let mk = nk.derive_note_private(&psi);
         assert_ne!(
@@ -136,7 +146,7 @@ mod tests {
     #[test]
     fn delegate_matches_master() {
         let rng = &mut StdRng::seed_from_u64(0);
-        let nk = NullifierKey(Fp::random(&mut *rng));
+        let nk = NullifierKey(Fp::random(&mut *rng).into());
         let psi = note::NullifierTrapdoor::random(rng);
         let mk = nk.derive_note_private(&psi);
 
@@ -156,7 +166,7 @@ mod tests {
     #[should_panic(expected = "epoch out of range")]
     fn delegate_rejects_outside_range() {
         let rng = &mut StdRng::seed_from_u64(0);
-        let nk = NullifierKey(Fp::random(&mut *rng));
+        let nk = NullifierKey(Fp::random(&mut *rng).into());
         let psi = note::NullifierTrapdoor::random(rng);
         let mk = nk.derive_note_private(&psi);
 

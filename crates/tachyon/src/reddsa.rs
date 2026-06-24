@@ -5,7 +5,9 @@
 //! names so the rest of the crate avoids direct `reddsa::orchard` imports.
 
 use ::reddsa::orchard;
-pub(crate) use ::reddsa::{Error, Signature, SigningKey, VerificationKey, VerificationKeyBytes};
+pub(crate) use ::reddsa::{
+    Error, SigType, Signature, SigningKey, VerificationKey, VerificationKeyBytes,
+};
 
 /// RedPallas signature scheme for action authorization.
 ///

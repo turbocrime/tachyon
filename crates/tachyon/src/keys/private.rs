@@ -1,10 +1,11 @@
 //! Private (signing) keys.
 
-use core::{marker::PhantomData, mem::size_of, ptr, slice};
+use core::marker::PhantomData;
 
-use derive_more::{Debug, From};
+use derive_more::{AsRef, Debug, From};
 use ff::{Field as _, FromUniformBytes as _, PrimeField as _};
-use pasta_curves::{Fp, Fq};
+use group::GroupEncoding as _;
+use pasta_curves::{EpAffine, Fp, Fq};
 use rand_core::{CryptoRng, RngCore};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -17,7 +18,9 @@ use crate::{
     digest::blake2b,
     entropy::ActionRandomizer,
     primitives::{Effect, effect},
-    reddsa, value,
+    reddsa,
+    secret::{self, SecretFq},
+    value,
 };
 
 /// A Tachyon spending key — raw 32-byte entropy.
@@ -36,7 +39,7 @@ use crate::{
 /// - [`derive_payment_key`](Self::derive_payment_key) → [`PaymentKey`] (`pk`)
 /// - [`derive_proof_private`](Self::derive_proof_private) →
 ///   [`ProofAuthorizingKey`] (`ak` + `nk`)
-#[derive(Clone, Debug, From)]
+#[derive(Clone, Debug, From, Zeroize, ZeroizeOnDrop)]
 pub struct SpendingKey(#[debug(skip)] [u8; 32]);
 
 impl SpendingKey {
@@ -44,7 +47,9 @@ impl SpendingKey {
     pub fn random<RNG: RngCore + CryptoRng>(rng: &mut RNG) -> Self {
         let mut rand_bytes = [0u8; 32];
         rng.fill_bytes(&mut rand_bytes);
-        Self(rand_bytes)
+        let key = Self(rand_bytes);
+        rand_bytes.zeroize();
+        key
     }
 
     /// Derive $\mathsf{ask}$ from $\mathsf{sk}$ with RedPallas sign
@@ -73,10 +78,6 @@ impl SpendingKey {
     /// `SigningKey` (which internally computes $[\mathsf{ask}]\,\mathcal{G}$)
     /// to obtain $\mathsf{ak}$ and inspect its encoding.
     #[must_use]
-    #[expect(
-        clippy::expect_used,
-        reason = "PRF-derived scalars are valid signing keys"
-    )]
     pub fn derive_auth_private(&self) -> SpendAuthorizingKey {
         // Derive ask scalar from sk via PRF (Orchard §4.2.3).
         let mut ask = Fq::from_uniform_bytes(&blake2b::prf_expand_ask(&self.0));
@@ -84,20 +85,21 @@ impl SpendingKey {
         // Sign normalization (§5.4.7.1): ak must have tilde_y = 0.
         // Compute ak = [ask]G via reddsa (basepoint is sealed) and check
         // the y-sign bit (byte 31, bit 7 of the compressed encoding).
-        let ak: [u8; 32] = reddsa::VerificationKey::from(
-            &reddsa::SigningKey::<reddsa::ActionAuth>::try_from(ask.to_repr())
-                .expect("PRF-derived ask should be a valid RedPallas scalar"),
-        )
-        .into();
+        // TODO: reddsa round-trip leaves unwiped transients
+        #[expect(
+            clippy::expect_used,
+            reason = "PRF-derived scalars are valid signing keys"
+        )]
+        let mut sk = reddsa::SigningKey::<reddsa::ActionAuth>::try_from(ask.to_repr())
+            .expect("PRF-derived ask should be a valid RedPallas scalar");
+        let ak: [u8; 32] = reddsa::VerificationKey::from(&sk).into();
+        secret::wipe_reddsa_sk(&mut sk);
         if ak[31] >> 7u8 == 1u8 {
             ask = -ask;
         }
 
-        // Build the final key from the sign-normalized scalar.
-        SpendAuthorizingKey(
-            reddsa::SigningKey::<reddsa::ActionAuth>::try_from(ask.to_repr())
-                .expect("sign-normalized ask should be a valid RedPallas scalar"),
-        )
+        // Store the sign-normalized scalar.
+        SpendAuthorizingKey::from(ask)
     }
 
     /// Derive `nk` from `sk`.
@@ -105,7 +107,7 @@ impl SpendingKey {
     /// `nk = ToBase(PRF^expand_sk([0x22]))` — BLAKE2b-512 reduced to Fp.
     #[must_use]
     pub fn derive_nullifier_private(&self) -> NullifierKey {
-        NullifierKey(Fp::from_uniform_bytes(&blake2b::prf_expand_nk(&self.0)))
+        NullifierKey::from(Fp::from_uniform_bytes(&blake2b::prf_expand_nk(&self.0)))
     }
 
     /// Derive the payment key $\mathsf{pk}$ from $\mathsf{sk}$.
@@ -119,9 +121,10 @@ impl SpendingKey {
     /// authorizing key to the accumulator.
     #[must_use]
     pub fn derive_payment_key(&self) -> PaymentKey {
-        let ak = self.derive_auth_private().derive_auth_public();
-        let nk = self.derive_nullifier_private();
-        PaymentKey::derive(&ak, &nk)
+        PaymentKey::derive(
+            &self.derive_auth_private().derive_auth_public(),
+            &self.derive_nullifier_private(),
+        )
     }
 
     /// Derive the proof authorizing key (`ak` + `nk`) for delegated proof
@@ -132,9 +135,10 @@ impl SpendingKey {
     /// [`derive_nullifier_private`](Self::derive_nullifier_private).
     #[must_use]
     pub fn derive_proof_private(&self) -> proof::ProofAuthorizingKey {
-        let ak = self.derive_auth_private().derive_auth_public();
-        let nk = self.derive_nullifier_private();
-        proof::ProofAuthorizingKey { ak, nk }
+        proof::ProofAuthorizingKey {
+            ak: self.derive_auth_private().derive_auth_public(),
+            nk: self.derive_nullifier_private(),
+        }
     }
 }
 
@@ -154,16 +158,27 @@ impl SpendingKey {
 /// `ask` derives [`SpendValidatingKey`](super::proof::SpendValidatingKey)
 /// (`ak`) via [`derive_auth_public`](Self::derive_auth_public) — the
 /// circuit witness that validates spend authorization.
-#[derive(Clone, Debug)]
-pub struct SpendAuthorizingKey(#[debug(skip)] reddsa::SigningKey<reddsa::ActionAuth>);
+#[derive(Clone, Debug, From, Zeroize, ZeroizeOnDrop)]
+#[from(Fq)]
+pub struct SpendAuthorizingKey(SecretFq);
 
 impl SpendAuthorizingKey {
     /// Derive the spend validating (public) key: `ak = [ask]G`.
     #[must_use]
     pub fn derive_auth_public(&self) -> proof::SpendValidatingKey {
+        // TODO: reddsa round-trip leaves unwiped transients
+        #[expect(clippy::expect_used, reason = "specified behavior")]
+        let mut ask = reddsa::SigningKey::<reddsa::ActionAuth>::try_from(self.0.as_ref().to_repr())
+            .expect("scalar should be a valid key");
+
         // reddsa::VerificationKey::from(&signing_key) performs [sk]G
         // (scalar-times-basepoint), not a trivial type conversion.
-        proof::SpendValidatingKey(reddsa::VerificationKey::from(&self.0))
+        let ak = reddsa::VerificationKey::from(&ask);
+        secret::wipe_reddsa_sk(&mut ask);
+
+        let ak_point =
+            EpAffine::from_bytes(&ak.into()).expect("verification key is a valid curve point");
+        proof::SpendValidatingKey(ak_point.into())
     }
 
     /// Derive the per-action private (signing) key: $\mathsf{rsk} =
@@ -176,7 +191,21 @@ impl SpendAuthorizingKey {
         &self,
         alpha: &ActionRandomizer<effect::Spend>,
     ) -> ActionSigningKey<effect::Spend> {
-        ActionSigningKey(self.0.randomize(&alpha.0), PhantomData)
+        // TODO: reddsa round-trip leaves unwiped transients
+        #[expect(clippy::expect_used, reason = "specified behavior")]
+        let mut ask = reddsa::SigningKey::<reddsa::ActionAuth>::try_from(self.0.as_ref().to_repr())
+            .expect("scalar should be a valid key");
+
+        // reddsa performs the per-action randomization rsk = ask + alpha.
+        let mut rsk = ask.randomize(alpha.as_ref());
+        secret::wipe_reddsa_sk(&mut ask);
+
+        let rsk_scalar = SecretFq::from(
+            Fq::from_repr(rsk.into()).expect("randomized signing key has a canonical scalar"),
+        );
+        secret::wipe_reddsa_sk(&mut rsk);
+
+        ActionSigningKey(rsk_scalar, PhantomData)
     }
 }
 
@@ -189,11 +218,8 @@ impl SpendAuthorizingKey {
 ///
 /// Both variants sign via [`sign`](Self::sign) and derive `rk` via
 /// [`derive_action_public`](Self::derive_action_public).
-#[derive(Clone, Debug)]
-pub struct ActionSigningKey<E: Effect>(
-    #[debug(skip)] reddsa::SigningKey<reddsa::ActionAuth>,
-    PhantomData<E>,
-);
+#[derive(AsRef, Clone, Debug, Zeroize, ZeroizeOnDrop)]
+pub struct ActionSigningKey<E: Effect>(#[as_ref(forward)] SecretFq, PhantomData<E>);
 
 impl<E: Effect> ActionSigningKey<E> {
     /// Sign a transaction sighash with this action key.
@@ -202,29 +228,42 @@ impl<E: Effect> ActionSigningKey<E> {
         rng: &mut RNG,
         sighash: &[u8; 32],
     ) -> action::Signature {
-        action::Signature(self.0.sign(rng, sighash))
+        // TODO: reddsa round-trip leaves unwiped transients
+        #[expect(clippy::expect_used, reason = "specified behavior")]
+        let mut rsk = reddsa::SigningKey::<reddsa::ActionAuth>::try_from(self.0.as_ref().to_repr())
+            .expect("scalar should be a valid key");
+
+        let sig = rsk.sign(rng, sighash);
+        secret::wipe_reddsa_sk(&mut rsk);
+        action::Signature(sig)
     }
 
     /// Derive the per-action verification (public) key: `rk = [rsk]G`.
     #[must_use]
     pub fn derive_action_public(&self) -> public::ActionVerificationKey {
+        // TODO: reddsa round-trip leaves unwiped transients
+        #[expect(clippy::expect_used, reason = "specified behavior")]
+        let mut rsk = reddsa::SigningKey::<reddsa::ActionAuth>::try_from(self.0.as_ref().to_repr())
+            .expect("scalar should be a valid key");
+
         // reddsa::VerificationKey::from(&signing_key) performs [sk]G
         // (scalar-times-basepoint), not a trivial type conversion.
-        let vk = reddsa::VerificationKey::from(&self.0);
-        public::ActionVerificationKey(vk)
+        let vk = reddsa::VerificationKey::from(&rsk);
+        secret::wipe_reddsa_sk(&mut rsk);
+        let point =
+            EpAffine::from_bytes(&vk.into()).expect("verification key is a valid curve point");
+        public::ActionVerificationKey::from(point)
     }
 }
 
 impl ActionSigningKey<effect::Output> {
     /// Create a new output action signing key from an output randomizer.
+    ///
+    /// For output actions the randomizer is the signing key: $\mathsf{rsk} =
+    /// \alpha$.
     #[must_use]
     pub fn new(alpha: &ActionRandomizer<effect::Output>) -> Self {
-        #[expect(clippy::expect_used, reason = "specified behavior")]
-        Self(
-            reddsa::SigningKey::<reddsa::ActionAuth>::try_from(alpha.0.to_repr())
-                .expect("output randomizer should be a valid RedPallas signing key"),
-            PhantomData,
-        )
+        Self((*alpha.as_ref()).into(), PhantomData)
     }
 }
 
@@ -248,16 +287,8 @@ impl ActionSigningKey<effect::Output> {
 /// commitment (and commitments from other pools). The stamp is
 /// excluded from the bundle commitment because it is stripped during
 /// aggregation.
-#[derive(Clone, Debug)]
-pub struct BindingSigningKey(#[debug(skip)] reddsa::SigningKey<reddsa::BindingAuth>);
-
-impl TryFrom<[u8; 32]> for BindingSigningKey {
-    type Error = reddsa::Error;
-
-    fn try_from(bytes: [u8; 32]) -> Result<Self, Self::Error> {
-        reddsa::SigningKey::<reddsa::BindingAuth>::try_from(bytes).map(Self)
-    }
-}
+#[derive(AsRef, Clone, Debug, Zeroize, ZeroizeOnDrop)]
+pub struct BindingSigningKey(#[as_ref(forward)] SecretFq);
 
 impl BindingSigningKey {
     /// Sign a transaction sighash with this binding key.
@@ -266,41 +297,31 @@ impl BindingSigningKey {
         rng: &mut RNG,
         sighash: &[u8; 32],
     ) -> bundle::Signature {
-        bundle::Signature(self.0.sign(rng, sighash))
+        // TODO: reddsa round-trip leaves unwiped transients
+        #[expect(clippy::expect_used, reason = "specified behavior")]
+        let mut bsk = reddsa::SigningKey::<reddsa::BindingAuth>::try_from(self.as_ref().to_repr())
+            .expect("scalar should be a valid key");
+
+        let sig = bsk.sign(rng, sighash);
+        secret::wipe_reddsa_sk(&mut bsk);
+        bundle::Signature(sig)
     }
 
     /// Derive the binding verification (public) key:
     /// $\mathsf{bvk} = [\mathsf{bsk}]\,\mathcal{R}$.
     #[must_use]
     pub fn derive_binding_public(&self) -> public::BindingVerificationKey {
-        public::BindingVerificationKey(reddsa::VerificationKey::from(&self.0))
-    }
+        // TODO: reddsa round-trip leaves unwiped transients
+        #[expect(clippy::expect_used, reason = "specified behavior")]
+        let mut bsk = reddsa::SigningKey::<reddsa::BindingAuth>::try_from(self.as_ref().to_repr())
+            .expect("scalar should be a valid key");
 
-    /// Construct from the scalar sum of value commitment trapdoors.
-    ///
-    /// Every Pallas scalar field element, including zero, is a valid binding
-    /// signing key. See Zcash protocol §4.14.
-    #[expect(
-        clippy::expect_used,
-        reason = "all Fq are valid RedPallas signing keys"
-    )]
-    fn from_scalar_sum(mut sum: Fq) -> Self {
-        let mut repr = sum.to_repr();
-        let key = Self(
-            reddsa::SigningKey::<reddsa::BindingAuth>::try_from(repr)
-                .expect("all Fq are valid RedPallas signing keys"),
-        );
+        let vk = reddsa::VerificationKey::<reddsa::BindingAuth>::from(&bsk);
+        secret::wipe_reddsa_sk(&mut bsk);
+        let point =
+            EpAffine::from_bytes(&vk.into()).expect("verification key is a valid curve point");
 
-        repr.zeroize();
-        // Safety: Fq is a plain field element with no heap allocations,
-        // internal pointers, or Drop implementation.
-        #[expect(unsafe_code, reason = "zeroize non-Zeroize pasta_curves::Fq")]
-        unsafe {
-            let ptr: *mut u8 = ptr::from_mut(&mut sum).cast();
-            slice::from_raw_parts_mut(ptr, size_of::<Fq>()).zeroize();
-        }
-
-        key
+        public::BindingVerificationKey::from(point)
     }
 
     /// Construct from borrowed value commitment trapdoors without materializing
@@ -308,19 +329,11 @@ impl BindingSigningKey {
     pub(crate) fn from_trapdoors<'source>(
         trapdoors: impl IntoIterator<Item = &'source value::CommitmentTrapdoor>,
     ) -> Self {
-        let mut sum = Fq::ZERO;
+        let mut sum = SecretFq::from(Fq::ZERO);
         for trapdoor in trapdoors {
-            let mut scalar = trapdoor.inner();
-            sum += scalar;
-            // Safety: Fq is a plain field element with no heap allocations,
-            // internal pointers, or Drop implementation.
-            #[expect(unsafe_code, reason = "zeroize non-Zeroize pasta_curves::Fq")]
-            unsafe {
-                let ptr: *mut u8 = ptr::from_mut(&mut scalar).cast();
-                slice::from_raw_parts_mut(ptr, size_of::<Fq>()).zeroize();
-            }
+            sum += trapdoor.0.clone();
         }
-        Self::from_scalar_sum(sum)
+        Self(sum)
     }
 }
 
@@ -331,78 +344,3 @@ impl From<&[value::CommitmentTrapdoor]> for BindingSigningKey {
         Self::from_trapdoors(trapdoors)
     }
 }
-
-impl Zeroize for SpendingKey {
-    fn zeroize(&mut self) {
-        self.0.zeroize();
-    }
-}
-
-impl Drop for SpendingKey {
-    fn drop(&mut self) {
-        self.zeroize();
-    }
-}
-
-impl ZeroizeOnDrop for SpendingKey {}
-
-impl Zeroize for SpendAuthorizingKey {
-    fn zeroize(&mut self) {
-        // Safety: reddsa::SigningKey is a plain data struct (scalar + point),
-        // with no heap allocations or internal pointers.
-        #[expect(unsafe_code, reason = "zeroize non-Zeroize reddsa::SigningKey")]
-        unsafe {
-            let ptr: *mut u8 = ptr::from_mut(&mut self.0).cast();
-            slice::from_raw_parts_mut(ptr, size_of::<reddsa::SigningKey<reddsa::ActionAuth>>())
-                .zeroize();
-        }
-    }
-}
-
-impl Drop for SpendAuthorizingKey {
-    fn drop(&mut self) {
-        self.zeroize();
-    }
-}
-
-impl ZeroizeOnDrop for SpendAuthorizingKey {}
-
-impl<E: Effect> Zeroize for ActionSigningKey<E> {
-    fn zeroize(&mut self) {
-        // Safety: same as SpendAuthorizingKey — SigningKey is plain data.
-        #[expect(unsafe_code, reason = "zeroize non-Zeroize reddsa::SigningKey")]
-        unsafe {
-            let ptr: *mut u8 = ptr::from_mut(&mut self.0).cast();
-            slice::from_raw_parts_mut(ptr, size_of::<reddsa::SigningKey<reddsa::ActionAuth>>())
-                .zeroize();
-        }
-    }
-}
-
-impl<E: Effect> Drop for ActionSigningKey<E> {
-    fn drop(&mut self) {
-        self.zeroize();
-    }
-}
-
-impl<E: Effect> ZeroizeOnDrop for ActionSigningKey<E> {}
-
-impl Zeroize for BindingSigningKey {
-    fn zeroize(&mut self) {
-        // Safety: same as SpendAuthorizingKey — SigningKey is plain data.
-        #[expect(unsafe_code, reason = "zeroize non-Zeroize reddsa::SigningKey")]
-        unsafe {
-            let ptr: *mut u8 = ptr::from_mut(&mut self.0).cast();
-            slice::from_raw_parts_mut(ptr, size_of::<reddsa::SigningKey<reddsa::BindingAuth>>())
-                .zeroize();
-        }
-    }
-}
-
-impl Drop for BindingSigningKey {
-    fn drop(&mut self) {
-        self.zeroize();
-    }
-}
-
-impl ZeroizeOnDrop for BindingSigningKey {}

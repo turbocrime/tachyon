@@ -38,7 +38,7 @@ impl Header for NfPrefixHeader {
         out.extend_from_slice(&data.0.to_repr());
         out.extend_from_slice(&data.1.to_le_bytes());
         out.extend_from_slice(&data.2.0.to_le_bytes());
-        out.extend_from_slice(&Fp::from(data.3).to_repr());
+        out.extend_from_slice(&data.3.as_ref().to_repr());
         out
     }
 }
@@ -62,7 +62,7 @@ impl Header for NullifierHeader {
         out.extend_from_slice(&commit_bytes);
         out.extend_from_slice(&data.1.0.to_le_bytes());
         out.extend_from_slice(&data.2.0.to_le_bytes());
-        out.extend_from_slice(&Fp::from(data.3).to_repr());
+        out.extend_from_slice(&data.3.as_ref().to_repr());
         out
     }
 }
@@ -92,12 +92,13 @@ impl Step for NfMasterSeed {
         _right: <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
         enforce_zero(
-            note.pk.0 - pak.derive_payment_key().0,
+            note.pk.as_ref() - pak.derive_payment_key().as_ref(),
             "NfMasterSeed: pak not related to note",
         )?;
         let mk = pak.nk.derive_note_private(&note.psi);
         let cm = note.commitment();
-        Ok(((mk.0, 0, EpochIndex(0), cm), ()))
+
+        Ok(((*mk.as_ref(), 0, EpochIndex(0), cm), ()))
     }
 }
 
@@ -176,7 +177,7 @@ impl Step for NullifierStep {
         )?;
         let nf = Nullifier::from(poseidon::nullifier(node));
 
-        let range_commit = NfSeqCommit::from(g0 * Fp::from(nf));
+        let range_commit = NfSeqCommit::from(g0 * nf.as_ref());
         Ok(((range_commit, index, index.next(), cm), ()))
     }
 }
@@ -208,7 +209,7 @@ impl Step for NullifierFuse {
         (right_commit, right_start, right_end, right_cm): <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
         enforce_zero(
-            Fp::from(left_cm) - Fp::from(right_cm),
+            left_cm.as_ref() - right_cm.as_ref(),
             "NullifierFuse: note commitments differ",
         )?;
         enforce_zero(

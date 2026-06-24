@@ -108,7 +108,7 @@ impl Header for Unspent {
         out.extend_from_slice(&data.0.1.0.to_le_bytes());
         out.extend_from_slice(&Fp::from(data.1).to_repr());
         out.extend_from_slice(&Fp::from(data.2).to_repr());
-        out.extend_from_slice(&Fp::from(data.3).to_repr());
+        out.extend_from_slice(&data.3.as_ref().to_repr());
         out.extend_from_slice(&data.4.0.to_le_bytes());
         out
     }
@@ -135,10 +135,10 @@ impl Header for VerifiedUnspent {
     fn encode(data: &Self::Data) -> Vec<u8> {
         let mut out = Vec::with_capacity(32 + 32 + 32 + 32 + 32 + 4);
         out.extend_from_slice(&Fp::from(data.0).to_repr());
-        out.extend_from_slice(&Fp::from(data.1).to_repr());
+        out.extend_from_slice(&(*data.1.as_ref()).to_repr());
         out.extend_from_slice(&Fp::from(data.2).to_repr());
-        out.extend_from_slice(&Fp::from(data.3).to_repr());
-        out.extend_from_slice(&Fp::from(data.4).to_repr());
+        out.extend_from_slice(&(*data.3.as_ref()).to_repr());
+        out.extend_from_slice(&(*data.4.as_ref()).to_repr());
         out.extend_from_slice(&data.5.0.to_le_bytes());
         out
     }
@@ -255,7 +255,7 @@ impl Step for UnspentSeed {
         _right: <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
         // Exclusion: nf ∉ set ⇔ the set polynomial is nonzero at nf.
-        let nf_point = Fp::from(nf);
+        let nf_point = *nf.as_ref();
         let eval = stamp_tg_set.eval(nf_point);
         ctx.enforce_poly_query(stamp_tg_set.commit().into(), nf_point, eval)?;
         enforce_nonzero(eval, "UnspentSeed: found nullifier in set")?;
@@ -337,7 +337,7 @@ impl Step for UnspentFuse {
             "UnspentFuse: zero-crossing forwards half must have empty elapsed",
         )?;
         enforce_zero(
-            Fp::from(left_pnf) - Fp::from(right_pnf),
+            left_pnf.as_ref() - right_pnf.as_ref(),
             "UnspentFuse: left and right must share the same nf",
         )?;
         enforce_zero(
@@ -413,7 +413,7 @@ impl Step for UnspentEpochFuse {
         enforce_poly_splice(
             ctx,
             &Polynomial::from(left_poly),
-            Fp::from(left_pnf),
+            *left_pnf.as_ref(),
             &Polynomial::from(right_poly),
             offset,
             &Polynomial::from(combined),
@@ -481,7 +481,7 @@ impl Step for VerifyUnspent {
             "VerifyUnspent: elapsed polynomial does not match header",
         )?;
 
-        let present_commit = NfSeqCommit::from(g0 * Fp::from(present_nf));
+        let present_commit = NfSeqCommit::from(g0 * present_nf.as_ref());
         enforce_equal_point(
             Eq::from(tip_poly.commit()),
             Eq::from(present_commit),

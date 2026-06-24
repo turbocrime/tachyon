@@ -56,6 +56,7 @@ pub mod value;
 mod digest;
 mod primitives;
 mod relations;
+mod secret;
 mod serialization;
 
 #[cfg(test)]

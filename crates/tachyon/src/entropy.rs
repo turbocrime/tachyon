@@ -4,13 +4,13 @@
 //! Combined with a note commitment it deterministically derives an
 //! [`ActionRandomizer`].
 
-use core::{any::type_name, marker::PhantomData};
+use core::marker::PhantomData;
 
-use derive_more::Debug;
-use pasta_curves::Fq;
+use derive_more::{AsRef, Debug};
 use rand_core::{CryptoRng, RngCore};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{note, primitives::Effect};
+use crate::{note, primitives::Effect, secret::SecretFq};
 
 /// Per-action entropy $\theta$ chosen by the signer (e.g. hardware wallet).
 ///
@@ -26,7 +26,7 @@ use crate::{note, primitives::Effect};
 /// (possibly untrusted) device constructs the proof later using $\theta$
 /// and $\mathsf{cm}$ to recover $\alpha$
 /// ("Tachyaction at a Distance", Bowe 2025).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Zeroize, ZeroizeOnDrop)]
 #[expect(clippy::module_name_repetitions, reason = "intentional name")]
 pub struct ActionEntropy(#[debug(skip)] pub(crate) [u8; 32]);
 
@@ -41,7 +41,9 @@ impl ActionEntropy {
     pub fn random<RNG: RngCore + CryptoRng>(rng: &mut RNG) -> Self {
         let mut bytes = [0u8; 32];
         rng.fill_bytes(&mut bytes);
-        Self(bytes)
+        let entropy = Self(bytes);
+        bytes.zeroize();
+        entropy
     }
 
     /// Derive the action randomizer $\alpha$ for effect `E`.
@@ -49,8 +51,8 @@ impl ActionEntropy {
     /// Uses distinct BLAKE2b personalizations for spend vs output to
     /// ensure the two randomizers are independent.
     #[must_use]
-    pub fn randomizer<E: Effect>(&self, cm: note::Commitment) -> ActionRandomizer<E> {
-        ActionRandomizer(E::derive_alpha(*self, cm), PhantomData)
+    pub fn randomizer<E: Effect>(&self, cm: &note::Commitment) -> ActionRandomizer<E> {
+        ActionRandomizer(E::derive_alpha(self, cm).into(), PhantomData)
     }
 }
 
@@ -66,20 +68,16 @@ mod sealed {
 /// - [`ActionRandomizer<Spend>`]: $\mathsf{rsk} = \mathsf{ask} + \alpha$,
 ///   $\mathsf{rk} = \mathsf{ak} + [\alpha]\,\mathcal{G}$.
 /// - [`ActionRandomizer<Output>`]: $\mathsf{rsk} = \alpha$.
-#[derive(Clone, Copy, Debug)]
-#[debug("ActionRandomizer<{}>", type_name::<S>())]
-pub struct ActionRandomizer<S: sealed::RandomizerState>(pub(crate) Fq, pub(crate) PhantomData<S>);
-
-impl<S: sealed::RandomizerState> From<ActionRandomizer<S>> for Fq {
-    fn from(randomizer: ActionRandomizer<S>) -> Self {
-        randomizer.0
-    }
-}
+#[derive(AsRef, Clone, Debug, Zeroize, ZeroizeOnDrop)]
+pub struct ActionRandomizer<S: sealed::RandomizerState>(
+    #[as_ref(forward)] SecretFq,
+    PhantomData<S>,
+);
 
 #[cfg(test)]
 mod tests {
     use ff::Field as _;
-    use pasta_curves::{Fp, Fq};
+    use pasta_curves::Fp;
     use rand::{SeedableRng as _, rngs::StdRng};
 
     use super::*;
@@ -93,10 +91,10 @@ mod tests {
         let theta = ActionEntropy::random(&mut rng);
         let cm = note::Commitment::from(Fp::random(&mut rng));
 
-        let spend_alpha: Fq = theta.randomizer::<effect::Spend>(cm).into();
-        let output_alpha: Fq = theta.randomizer::<effect::Output>(cm).into();
+        let spend_alpha = theta.randomizer::<effect::Spend>(&cm);
+        let output_alpha = theta.randomizer::<effect::Output>(&cm);
 
-        assert_ne!(spend_alpha, output_alpha);
+        assert_ne!(spend_alpha.as_ref(), output_alpha.as_ref());
     }
 
     #[test]
@@ -107,22 +105,19 @@ mod tests {
         let cm = note::Commitment::from(Fp::random(&mut rng));
 
         // Deterministic: same theta twice
-        let first: Fq = theta_a.randomizer::<effect::Spend>(cm).into();
-        let second: Fq = theta_a.randomizer::<effect::Spend>(cm).into();
-        assert_eq!(first, second);
+        let first = theta_a.randomizer::<effect::Spend>(&cm);
+        let second = theta_a.randomizer::<effect::Spend>(&cm);
+        assert_eq!(first.as_ref(), second.as_ref());
 
         // Sensitive: different theta
-        let other: Fq = theta_b.randomizer::<effect::Spend>(cm).into();
-        assert_ne!(first, other);
+        let other = theta_b.randomizer::<effect::Spend>(&cm);
+        assert_ne!(first.as_ref(), other.as_ref());
     }
 
     #[test]
     fn debug_entropy_redacts_bytes() {
         let theta = ActionEntropy::from_bytes([0xAB; 32]);
-        let dbg = alloc::format!("{theta:?}");
-        assert!(dbg.contains("ActionEntropy"), "must name the type");
-        assert!(!dbg.contains("AB"), "must not leak entropy bytes");
-        assert!(!dbg.contains("171"), "must not leak entropy bytes");
+        assert_eq!(alloc::format!("{theta:?}"), "ActionEntropy(..)");
     }
 
     #[test]
@@ -130,10 +125,10 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(200);
         let theta = ActionEntropy::random(&mut rng);
         let cm = note::Commitment::from(Fp::random(&mut rng));
-        let alpha = theta.randomizer::<effect::Spend>(cm);
-        let dbg = alloc::format!("{alpha:?}");
-        assert!(dbg.contains("ActionRandomizer"), "must name the type");
-        // The scalar value must not appear; the state type name should.
-        assert!(dbg.contains("Spend"), "must show type parameter");
+        let alpha = theta.randomizer::<effect::Spend>(&cm);
+        assert_eq!(
+            alloc::format!("{alpha:?}"),
+            "ActionRandomizer(SecretFq(..), PhantomData<zcash_tachyon::primitives::effect::Spend>)"
+        );
     }
 }

@@ -278,12 +278,12 @@ impl Plan {
     /// Returns `Err` if the intermediate sum overflows or the result
     /// does not fit in `i64`.
     pub fn value_balance(&self) -> Result<i64, BalanceError> {
-        let mut sum = ValueBalance::ZERO;
+        let mut sum = ValueBalance::default();
         for plan in &self.spends {
-            sum = (sum + plan.note.value)?;
+            sum = (sum + plan.note.value.clone())?;
         }
         for plan in &self.outputs {
-            sum = (sum - plan.note.value)?;
+            sum = (sum - plan.note.value.clone())?;
         }
         i64::try_from(sum)
     }
@@ -326,7 +326,7 @@ impl Plan {
             .spends
             .iter()
             .map(|plan| {
-                let alpha = plan.theta.randomizer(plan.note.commitment());
+                let alpha = plan.theta.randomizer(&plan.note.commitment());
                 (
                     (plan.cv(), plan.rk),
                     (alpha, plan.note.clone(), plan.rcv.clone()),
@@ -338,7 +338,7 @@ impl Plan {
             .outputs
             .iter()
             .map(|plan| {
-                let alpha = plan.theta.randomizer(plan.note.commitment());
+                let alpha = plan.theta.randomizer(&plan.note.commitment());
                 (
                     (plan.cv(), plan.rk),
                     (alpha, plan.note.clone(), plan.rcv.clone()),
@@ -380,10 +380,10 @@ impl Plan {
 
         for plan in &self.spends {
             let cm = plan.note.commitment();
-            let alpha = plan.theta.randomizer::<effect::Spend>(cm);
+            let alpha = plan.theta.randomizer::<effect::Spend>(&cm);
             let rsk = ask.derive_action_private(&alpha);
             if rsk.derive_action_public() != plan.rk {
-                return Err(SignError::RkMismatch(plan.rk.0.into()));
+                return Err(SignError::RkMismatch(plan.rk.into()));
             }
             authorized.push(Action {
                 cv: plan.cv(),
@@ -394,10 +394,10 @@ impl Plan {
 
         for plan in &self.outputs {
             let cm = plan.note.commitment();
-            let alpha = plan.theta.randomizer::<effect::Output>(cm);
+            let alpha = plan.theta.randomizer::<effect::Output>(&cm);
             let rsk = private::ActionSigningKey::new(&alpha);
             if rsk.derive_action_public() != plan.rk {
-                return Err(SignError::RkMismatch(plan.rk.0.into()));
+                return Err(SignError::RkMismatch(plan.rk.into()));
             }
             authorized.push(Action {
                 cv: plan.cv(),
@@ -771,7 +771,7 @@ impl<S: StampState> Bundle<S> {
 /// wire-format `i64` fails if the final balance is out of range.
 ///
 /// Use `i64::try_from(sum)` to narrow to the wire-format `i64`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, TotalEq)]
 pub struct ValueBalance(i128);
 
 /// Error returned when a [`ValueBalance`] operation overflows the
@@ -779,11 +779,6 @@ pub struct ValueBalance(i128);
 #[derive(Clone, Copy, Debug, Display, Error)]
 #[display("value balance overflow")]
 pub struct BalanceError;
-
-impl ValueBalance {
-    /// The zero sum (identity for addition).
-    pub const ZERO: Self = Self(0);
-}
 
 impl TryFrom<ValueBalance> for i64 {
     type Error = BalanceError;
@@ -861,8 +856,8 @@ fn read_bundle_body<R: Read>(mut reader: R) -> io::Result<(Vec<Action>, i64, Sig
 
     let mut descriptors = Vec::with_capacity(n_actions);
     for _ in 0..n_actions {
-        let cv = value::Commitment(serialization::read_ep_affine(&mut reader)?);
-        let rk = public::ActionVerificationKey(serialization::read_action_vk(&mut reader)?);
+        let cv = value::Commitment::from(serialization::read_ep_affine(&mut reader)?);
+        let rk = public::ActionVerificationKey::from(serialization::read_ep_affine(&mut reader)?);
         descriptors.push((cv, rk));
     }
 
@@ -903,8 +898,8 @@ fn write_bundle_body<W: Write>(
         })?,
     )?;
     for action in actions {
-        serialization::write_ep_affine(&mut writer, &action.cv.0)?;
-        serialization::write_action_vk(&mut writer, &action.rk.0)?;
+        serialization::write_ep_affine(&mut writer, &action.cv.into())?;
+        serialization::write_ep_affine(&mut writer, &action.rk.into())?;
     }
     for action in actions {
         serialization::write_action_sig(&mut writer, &action.sig.0)?;

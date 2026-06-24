@@ -43,9 +43,9 @@ impl Header for SpendableHeader {
 
     fn encode(data: &Self::Data) -> Vec<u8> {
         let mut out = Vec::with_capacity(32 + 32 + 32);
-        out.extend_from_slice(&Fp::from(data.0).to_repr());
+        out.extend_from_slice(&data.0.as_ref().to_repr());
         out.extend_from_slice(&Fp::from(data.1).to_repr());
-        out.extend_from_slice(&Fp::from(data.2).to_repr());
+        out.extend_from_slice(&data.2.as_ref().to_repr());
         out
     }
 }
@@ -90,7 +90,7 @@ impl Step for SpendableInit {
             "SpendableInit: starting range must span one epoch",
         )?;
 
-        let present_commit = NfSeqCommit::from(g0 * Fp::from(present_nf));
+        let present_commit = NfSeqCommit::from(g0 * present_nf.as_ref());
         enforce_equal_point(
             Eq::from(range_commit),
             Eq::from(present_commit),
@@ -99,7 +99,7 @@ impl Step for SpendableInit {
         let epoch = range_start;
 
         // Inclusion: cm ∈ set ⇔ the set polynomial vanishes at cm.
-        let cm_point = Fp::from(cm);
+        let cm_point = *cm.as_ref();
         let eval = creation_set.eval(cm_point);
         ctx.enforce_poly_query(creation_set.commit().into(), cm_point, eval)?;
         enforce_zero(eval, "SpendableInit: commitment not in set")?;
@@ -154,11 +154,11 @@ impl Step for SpendableLift {
         (start_anchor, start_nf, end_anchor, end_nf, verified_cm, _epoch): <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
         enforce_zero(
-            Fp::from(verified_cm) - Fp::from(cm),
+            verified_cm.as_ref() - cm.as_ref(),
             "SpendableLift: verified unspent cm does not match spendable",
         )?;
         enforce_zero(
-            Fp::from(start_nf) - Fp::from(present_nf),
+            start_nf.as_ref() - present_nf.as_ref(),
             "SpendableLift: segment does not start at the lineage nullifier",
         )?;
         enforce_zero(

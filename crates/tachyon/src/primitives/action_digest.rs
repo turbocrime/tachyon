@@ -49,6 +49,8 @@ impl From<ActionDigest> for [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+    use group::prime::PrimeCurveAffine as _;
+    use pasta_curves::EpAffine;
     use rand::{CryptoRng, RngCore, SeedableRng as _, rngs::StdRng};
 
     use super::*;
@@ -72,9 +74,9 @@ mod tests {
             rcm: note::CommitmentTrapdoor::random(rng),
         };
         let rcv = value::CommitmentTrapdoor::random(rng);
-        let cv = rcv.commit(i64::from(note.value));
+        let cv = rcv.commit(i64::from(note.value.clone()));
         let theta = ActionEntropy::random(rng);
-        let alpha = theta.randomizer::<effect::Output>(note.commitment());
+        let alpha = theta.randomizer::<effect::Output>(&note.commitment());
         let rk = private::ActionSigningKey::new(&alpha).derive_action_public();
         (cv, rk)
     }
@@ -95,11 +97,9 @@ mod tests {
     /// Identity cv is rejected.
     #[test]
     fn digest_rejects_identity_cv() {
-        use pasta_curves::group::prime::PrimeCurveAffine as _;
-
         let rng = &mut StdRng::seed_from_u64(0);
         let (_, rk) = make_action_parts(rng, 500);
-        let cv = value::Commitment::from(EpAffine::identity());
+        let cv = value::Commitment::default();
         assert!(matches!(
             ActionDigest::new(cv, rk),
             Err(ActionDigestError::IdentityCv)
@@ -111,8 +111,7 @@ mod tests {
     fn digest_rejects_identity_rk() {
         let rng = &mut StdRng::seed_from_u64(0);
         let (cv, _) = make_action_parts(rng, 500);
-        let rk =
-            public::ActionVerificationKey(reddsa::VerificationKey::try_from([0u8; 32]).unwrap());
+        let rk = public::ActionVerificationKey::from(EpAffine::identity());
         assert!(matches!(
             ActionDigest::new(cv, rk),
             Err(ActionDigestError::IdentityRk)

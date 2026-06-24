@@ -94,15 +94,15 @@ impl Step for OutputStamp {
             .0;
 
         enforce_nonzero(
-            Fp::from(u64::from(note.value)),
+            Fp::from(u64::from(note.value.clone())),
             "OutputStamp: zero-value note",
         )?;
-        if u64::from(note.value) > NOTE_VALUE_MAX {
+        if u64::from(note.value.clone()) > NOTE_VALUE_MAX {
             return Err(ragu::Error::InvalidWitness(
                 "OutputStamp: note value exceeds maximum".into(),
             ));
         }
-        let cv = rcv.commit(-i64::from(note.value));
+        let cv = rcv.commit(-i64::from(note.value.clone()));
         let rk = private::ActionSigningKey::new(&alpha).derive_action_public();
         let action_digest = ActionDigest::new(cv, rk).map_err(|_err| {
             ragu::Error::InvalidWitness("OutputStamp: action digest construction failed".into())
@@ -116,7 +116,7 @@ impl Step for OutputStamp {
 
         // Set commitment to one note commitment.
         let tachygram_commit = {
-            let t0 = Fp::from(note.commitment());
+            let t0 = *note.commitment().as_ref();
             TachygramSetCommit::from(g0 * (-t0) + g1)
         };
 
@@ -163,12 +163,12 @@ impl Step for SpendStamp {
             "SpendStamp: live range must span two epochs",
         )?;
         enforce_zero(
-            Fp::from(range_cm) - Fp::from(cm),
+            range_cm.as_ref() - cm.as_ref(),
             "SpendStamp: derived range does not match note",
         )?;
 
         // Bind the published pair to the genuine GGM leaf pair.
-        let nf_pair_ref: Eq = g0 * Fp::from(present_nf) + g1 * Fp::from(nf_next);
+        let nf_pair_ref: Eq = g0 * present_nf.as_ref() + g1 * nf_next.as_ref();
         enforce_equal_point(
             Eq::from(range_commit),
             nf_pair_ref,
@@ -177,11 +177,11 @@ impl Step for SpendStamp {
 
         // A zero nullifier would collide with the note's own cm tachygram.
         enforce_nonzero(
-            Fp::from(present_nf),
+            *present_nf.as_ref(),
             "SpendStamp: present-epoch nullifier is zero",
         )?;
         enforce_nonzero(
-            Fp::from(nf_next),
+            *nf_next.as_ref(),
             "SpendStamp: next-epoch nullifier is zero",
         )?;
 
@@ -197,8 +197,8 @@ impl Step for SpendStamp {
 
         // Set commitment to two nullifiers.
         let tachygram_commit = {
-            let t0 = Fp::from(present_nf);
-            let t1 = Fp::from(nf_next);
+            let t0 = present_nf.as_ref();
+            let t1 = nf_next.as_ref();
 
             TachygramSetCommit::from(g0 * (t0 * t1) + g1 * (-(t0 + t1)) + g2)
         };

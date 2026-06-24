@@ -39,7 +39,7 @@ impl Plan<effect::Spend> {
         derive_rk: impl FnOnce(ActionRandomizer<effect::Spend>) -> public::ActionVerificationKey,
     ) -> Self {
         let cm = note.commitment();
-        let alpha = theta.randomizer::<effect::Spend>(cm);
+        let alpha = theta.randomizer::<effect::Spend>(&cm);
 
         Self {
             rk: derive_rk(alpha),
@@ -58,7 +58,7 @@ impl Plan<effect::Output> {
     #[must_use]
     pub fn output(note: Note, theta: ActionEntropy, rcv: value::CommitmentTrapdoor) -> Self {
         let cm = note.commitment();
-        let alpha = theta.randomizer::<effect::Output>(cm);
+        let alpha = theta.randomizer::<effect::Output>(&cm);
         let rsk = private::ActionSigningKey::new(&alpha);
 
         Self {
@@ -77,7 +77,7 @@ impl<E: Effect> Plan<E> {
     /// $$\mathsf{cv} = [\pm v]\,\mathcal{V} + [\mathsf{rcv}]\,\mathcal{R}$$
     #[must_use]
     pub fn cv(&self) -> value::Commitment {
-        E::commit_value(&self.rcv, self.note.value)
+        E::commit_value(&self.rcv, &self.note.value)
     }
 
     /// Derive the action digest.
