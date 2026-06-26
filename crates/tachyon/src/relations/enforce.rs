@@ -155,16 +155,23 @@ pub(crate) fn enforce_row_recurrence<const COLUMNS: usize, const SPLITS: usize>(
 
 /// Prove the flat keyed-cipher recurrence `T(ωz) = (T(z) + O(z))^e` over the
 /// whole order-`POLY_LEN_MAX` domain, with the per-step offset carried as a
-/// *committed* constant polynomial plus a single opening of a *committed* key
-/// polynomial rather than `POLY_LEN_MAX` public offsets. The offset is
-/// `O(z) = C(z) + K(ζ·z^{|D|/κ})`: `constants` is the committed `C` (the public
-/// constant schedule, opened at `z`), and `key_poly` is the eval-form key
-/// polynomial `K` (`K(ζ^r) = k_r` over the order-`SUB_ORDER` subgroup `⟨ζ⟩`,
-/// `κ = SUB_ORDER`). Since the cyclic schedule `k_{(j+1) mod κ}` interpolated
-/// over the order-`|D|` domain equals `K(ζ·z^{|D|/κ})` (both degree-`<|D|`
-/// polynomials agreeing on every node), the whole key half is one opening of
-/// `K`. As an identity at the Fiat-Shamir point `z` (`|D|` = `POLY_LEN_MAX`,
-/// single-wrap mask $m(z) = z - ω^{-1}$):
+/// *committed* constant polynomial plus the `FULL`-wide cyclic key schedule
+/// reconstructed inline from two *committed* half-key polynomials rather than
+/// `POLY_LEN_MAX` public offsets. The offset is `O(z) = C(z) + K(ζ·z^{|D|/κ})`,
+/// `κ = FULL`: `constants` is the committed `C` (the public constant schedule,
+/// opened at `z`), and the order-`κ` key interpolant `K` is the two half
+/// schedules interleaved on the even/odd cosets of `⟨ζ⟩`,
+///
+/// $$ K(x) = s_e(x)\,A(x) + s_o(x)\,B(x\,ζ^{-1}),\quad
+///    s_e = \tfrac{x^{κ/2}+1}{2},\ s_o = \tfrac{1-x^{κ/2}}{2}, $$
+///
+/// with `A`, `B` the eval-form half-key polys over the order-`κ/2` subgroup
+/// (`A(ζ^{2r}) = k_{2r}`, `B(ζ^{2r}) = k_{2r+1}`). This is an exact degree-`<κ`
+/// polynomial identity, so reconstructing `K(ζ·z^{|D|/κ})` needs only one
+/// opening of `A` (at `key_point`) and one of `B` (at `key_point·ζ^{-1}`) plus
+/// the public selectors — no merged key commitment and no quotient. As an
+/// identity at the Fiat-Shamir point `z` (`|D|` = `POLY_LEN_MAX`, single-wrap
+/// mask $m(z) = z - ω^{-1}$):
 ///
 /// $$
 ///     m(z) \bigl( T(gz) - (T(z) + O(z))^{\,e} \bigr) = Q(z) \, (z^{|D|} - 1).
@@ -172,33 +179,36 @@ pub(crate) fn enforce_row_recurrence<const COLUMNS: usize, const SPLITS: usize>(
 ///
 /// The quotient `Q` is carried as `SPLITS` capacity-wide splits. The offset
 /// needs no per-node inversion and is independent of `κ`, so a full-length key
-/// schedule (`κ = SUB_ORDER`) stays in budget.
+/// schedule stays in budget.
 ///
 /// # Caller obligations (soundness)
 ///
-/// - **Binding.** `matrix`, `constants`, `key_poly`, and every split must be
-///   commitment-bound to a statement-fixed value; all feed `z`. In particular
-///   `constants` must be pinned (by commit-equality) to the public constant
-///   schedule and `key_poly` to the certified keyset commitment, or the offset
-///   is a free witness and the relation is vacuous.
+/// - **Binding.** `matrix`, `constants`, `key_a`, `key_b`, and every split must
+///   be commitment-bound to a statement-fixed value; all feed `z`. In
+///   particular `constants` must be pinned (by commit-equality) to the public
+///   constant schedule and `key_a`/`key_b` to the certified half-keyset
+///   commitments, or the offset is a free witness and the relation is vacuous.
 /// - **Public structure.** `exponent` is fixed and not witness-chosen after
-///   `z`.
-pub(crate) fn enforce_committed_offset_recurrence<const SPLITS: usize, const SUB_ORDER: usize>(
+///   `z`. `B` must be opened at `key_point·ζ^{-1}` (the odd-coset realignment),
+///   not at `key_point`, or the reconstructed key is wrong.
+pub(crate) fn enforce_committed_offset_recurrence<const SPLITS: usize, const FULL: usize>(
     ctx: &mut ragu::StepCtx<'_>,
     matrix: &Polynomial,
     quotient: &[Polynomial; SPLITS],
     constants: &Polynomial,
-    key_poly: &Polynomial,
+    key_a: &Polynomial,
+    key_b: &Polynomial,
     exponent: u64,
 ) -> ragu::Result<()> {
     let matrix_commit = matrix.commit();
     let constants_commit = constants.commit();
-    let key_commit = key_poly.commit();
+    let key_a_commit = key_a.commit();
+    let key_b_commit = key_b.commit();
     let quotient_commits: [Eq; SPLITS] = quotient.each_ref().map(Polynomial::commit);
 
     let z = ctx.derive_challenge(
         &[
-            [matrix_commit, constants_commit, key_commit].as_slice(),
+            [matrix_commit, constants_commit, key_a_commit, key_b_commit].as_slice(),
             quotient_commits.as_slice(),
         ]
         .concat(),
@@ -228,14 +238,23 @@ pub(crate) fn enforce_committed_offset_recurrence<const SPLITS: usize, const SUB
     let matrix_at_znext = matrix.eval(znext);
     ctx.enforce_poly_query(matrix_commit, znext, matrix_at_znext)?;
 
-    // O(z) = C(z) + K(ζ·z^{|D|/κ}): committed constant schedule plus the key
-    // half read as a single opening of the committed eval-form key poly. `K`
-    // interpolates the `κ = SUB_ORDER` keys over `⟨ζ⟩`, so `K(ζ·z^{|D|/κ})` is
-    // the order-`|D|` interpolant of the cyclic schedule `k_{(j+1) mod κ}`.
-    let zeta = subgroup_generator::<SUB_ORDER>();
-    let key_point = zeta * z.pow_vartime([(POLY_LEN_MAX / SUB_ORDER) as u64]);
-    let key_at = key_poly.eval(key_point);
-    ctx.enforce_poly_query(key_commit, key_point, key_at)?;
+    // O(z) = C(z) + K(ζ·z^{|D|/κ}): committed constant schedule plus the cyclic
+    // key value, reconstructed inline from the two half-key polys by the
+    // interleaved-coset identity `K = s_e·A + s_o·B(·ζ^{-1})`. `A`, `B`
+    // interpolate the even/odd halves over `⟨ζ^2⟩`, so `K(ζ·z^{|D|/κ})` is the
+    // order-`|D|` interpolant of the cyclic schedule `k_{(j+1) mod κ}`.
+    let zeta = subgroup_generator::<FULL>();
+    let key_point = zeta * z.pow_vartime([(POLY_LEN_MAX / FULL) as u64]);
+    let a_at = key_a.eval(key_point);
+    ctx.enforce_poly_query(key_a_commit, key_point, a_at)?;
+    let b_point = key_point * zeta.invert().expect("a root of unity is nonzero");
+    let b_at = key_b.eval(b_point);
+    ctx.enforce_poly_query(key_b_commit, b_point, b_at)?;
+    let half_pow = key_point.pow_vartime([(FULL / 2) as u64]);
+    let two_inv = Fp::from(2u64).invert().expect("two is invertible in Fp");
+    let selector_even = (half_pow + Fp::ONE) * two_inv;
+    let selector_odd = (Fp::ONE - half_pow) * two_inv;
+    let key_at = selector_even * a_at + selector_odd * b_at;
     let offset = constants_at_z + key_at;
 
     // Single-wrap mask z − ω^{-1} (= z − ω^{|D|-1}).

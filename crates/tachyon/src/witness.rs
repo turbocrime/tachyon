@@ -13,15 +13,15 @@
 //! and [`NoteMasterKey::derive_expanded_trace`](crate::keys::NoteMasterKey::derive_expanded_trace)
 //! should be called once by the wallet and the results reused across steps.
 
-use core::array;
-
 use alloc::vec::Vec;
+use core::array;
 
 use ff::Field as _;
 use pasta_curves::Fp;
 use ragu::{Polynomial, Step};
 
 use crate::{
+    ExpandedKeyPoly,
     constants::NF_EMITTERS,
     digest::poseidon,
     keys::{ExpandedKey, NoteMasterKey},
@@ -40,64 +40,79 @@ use crate::{
     },
 };
 
-/// Prepare the witness for [`NfMasterExpand`]:
-/// `(trace T, round/boundary quotients, key poly K, decimation quotient)`.
+/// Prepare the witness for [`NfMasterExpand`] for one half:
+/// `(trace T, round/boundary quotients, half-key poly, decimation quotient,
+/// half)`.
 ///
-/// The caller supplies the expansion products — `spectrum` (the trace `T`) and
-/// `keyset` (the expanded key schedule) — produced once by
-/// [`NoteMasterKey::derive_expanded_trace`](crate::keys::NoteMasterKey::derive_expanded_trace).
-/// `mk` is passed in for the round-key lookups the quotient builders use. This
-/// function only builds the quotients the in-circuit relations open against;
-/// it does not re-run the expansion cipher or any FFT.
+/// The caller supplies this half's expansion products — `spectrum` (the trace
+/// `T`) and `half_keys` (the half's `EK_HALF` keys) — produced by
+/// [`NoteMasterKey::derive_expanded_trace`](crate::keys::NoteMasterKey::derive_expanded_trace)
+/// with the matching `half`. `mk` is passed in for the round-key lookups the
+/// quotient builders use. `base = half · EK_HALF` is the cipher-input window
+/// origin. This function only builds the quotients the in-circuit relations
+/// open against; it does not re-run the expansion cipher or any FFT.
 #[must_use]
 pub fn nf_master_expand<'key>(
     mk: &'key NoteMasterKey,
     spectrum: &'key ExpKeySpectrumPoly,
-    keyset: &'key ExpandedKey,
+    half_keys: &'key [Fp; ExpandedKey::EK_HALF],
+    half: usize,
 ) -> <NfMasterExpand as Step>::Witness<'key> {
-    let key_poly = keyset.key_poly();
-    let (round, boundary, decimation_quotient) =
-        quotient::expansion_quotients(spectrum.0.coefficients(), *mk, key_poly.0.coefficients());
+    let key_poly = ExpandedKey::half_key_poly(half_keys);
+    #[expect(clippy::as_conversions, reason = "constant size")]
+    let base = Fp::from((half * ExpandedKey::EK_HALF) as u64);
+    let (round, boundary, decimation_quotient) = quotient::expansion_quotients(
+        spectrum.0.coefficients(),
+        *mk,
+        key_poly.0.coefficients(),
+        base,
+    );
+    #[expect(clippy::as_conversions, reason = "half is 0 or 1")]
     (
         spectrum.clone(),
         RoundBoundaryQuotients { round, boundary },
         key_poly,
         decimation_quotient,
+        Fp::from(half as u64),
     )
 }
 
 /// Prepare the witness for [`NullifierDerivationStep`]:
-/// `(K, T_j, quotients_j, E_0)`.
+/// `(A, B, T_j, quotients_j, E_0)`.
 ///
-/// The key poly `K` is interpolated from `keyset` (the FFT); `polys` are the
-/// caller-supplied derivation polynomials `T_j` (the per-emitter IFFTs,
-/// produced once by
-/// [`ExpandedKey::derivation_polys`](crate::keys::ExpandedKey::derivation_polys)
-/// and reused across steps); `mk` supplies the per-poly salts (a cheap
-/// sponge) the boundary quotients bind against. `creation_epoch` (`E_0`) is
-/// the caller-supplied offset origin (later pinned by `SpendableInit`).
+/// `key_a`/`key_b` are the even/odd half-key polys (from
+/// [`ExpandedKey::half_key_poly`](crate::keys::ExpandedKey::half_key_poly));
+/// the full interleaved `keyset` supplies the 256-key schedule the round
+/// quotients are built against. `polys` are the caller-supplied derivation
+/// polynomials `T_j` (the per-emitter IFFTs, produced once and reused across
+/// steps); `mk` supplies the per-poly salts (a cheap sponge) the boundary
+/// quotients bind against. `creation_epoch` (`E_0`) is the offset origin (later
+/// pinned by `SpendableInit`).
 #[must_use]
 pub fn nullifier_derivation<'key>(
     keyset: &'key ExpandedKey,
+    key_a: ExpandedKeyPoly,
+    key_b: ExpandedKeyPoly,
     mk: &'key NoteMasterKey,
     polys: &'key [NfEmitterPoly; NF_EMITTERS],
     creation_epoch: EpochIndex,
 ) -> <NullifierDerivationStep as Step>::Witness<'key> {
-    let key_poly = keyset.key_poly();
     let salts = mk.query_salts();
-    let first_key = key_poly.0.eval(Fp::ONE);
+    // k_0 = K(1) = A(1) = the even-position-0 key.
+    let first_key = keyset.round_key(0);
 
     #[expect(clippy::indexing_slicing, reason = "todo")]
-    let quotients: [RoundBoundaryQuotients<_>; NF_EMITTERS] =
-        array::from_fn(|i| RoundBoundaryQuotients {
+    let quotients: [RoundBoundaryQuotients<_>; NF_EMITTERS] = array::from_fn(|i| {
+        RoundBoundaryQuotients {
             round: quotient::nf_emitter_round_quotient(polys[i].0.coefficients(), &keyset.0),
             boundary: quotient::nf_emitter_boundary_quotient(
                 polys[i].0.coefficients(),
                 salts.0[i],
                 first_key,
             ),
-        });
-    (key_poly, polys.clone(), quotients, creation_epoch)
+        }
+    });
+    (key_a, key_b, polys.clone(), quotients, creation_epoch)
 }
 
 /// Prepare the witness for [`SpendableInit`]:

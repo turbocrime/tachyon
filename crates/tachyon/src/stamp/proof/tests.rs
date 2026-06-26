@@ -1450,31 +1450,32 @@ fn nf_master_expand_rejects_forged_witnesses() {
     // Build the expansion-step witness from `builder_mk`'s trace, with quotients
     // honest for `builder_mk` (so the witness is well-formed; only the threaded
     // note `mk` disagrees in the mismatched/hybrid cases).
-    let assemble = |builder_mk: NoteMasterKey| {
-        let (spectrum, keyset) = builder_mk.derive_expanded_trace();
-        witness::nf_master_expand(&builder_mk, &spectrum, &keyset)
+    let assemble = |builder_mk: NoteMasterKey, half: usize| {
+        let (spectrum, half_keys) = builder_mk.derive_expanded_trace(half);
+        witness::nf_master_expand(&builder_mk, &spectrum, &half_keys, half)
     };
 
     // Trace under a foreign keyset: round 0 (the first column) binds k_0, so the
     // boundary rejects it before the recurrence is reached.
-    let mismatched = assemble(other_mk);
+    let mismatched = assemble(other_mk, 0);
 
     // Hybrid keyset sharing the round-0 key but a different mk_1: round 0 matches
     // (the boundary passes), rounds 1.. diverge (the row recurrence rejects).
     let hybrid_rounds = {
         let mut hybrid = mk;
         hybrid.0[1] += Fp::ONE;
-        assemble(hybrid)
+        assemble(hybrid, 0)
     };
 
-    // Honest trace and quotients but a tampered key poly: the decimation
-    // identity binding `K` to the trace's final column fails.
+    // Honest trace and quotients but a tampered half-key poly: the decimation
+    // identity binding `A` to the trace's final column fails.
     let forged_key = {
-        let (trace, quotients, _honest_key, decimation_quotient) = assemble(mk);
-        let mut tampered = mk.derive_expanded().0;
+        let (trace, quotients, _honest_key, decimation_quotient, half) = assemble(mk, 0);
+        let (_, even_keys) = mk.derive_expanded_trace(0);
+        let mut tampered = even_keys;
         tampered[0] += Fp::ONE;
-        let bad_key = ExpandedKey::from(tampered).key_poly();
-        (trace, quotients, bad_key, decimation_quotient)
+        let bad_key = ExpandedKey::half_key_poly(&tampered);
+        (trace, quotients, bad_key, decimation_quotient, half)
     };
 
     let cases = [
@@ -1523,36 +1524,58 @@ fn derivation_rejects_mismatched_key_poly() {
     let creation_epoch = EpochIndex(7);
 
     let mk = user.master_key(&note);
-    let left = user.note_master_half(rng, note, [0, 1, 2]);
-    let right = user.note_master_half(rng, note, [3, 4, 5]);
 
-    let (spectrum, keyset) = mk.derive_expanded_trace();
-    let (keyset_pcd, ()) = PROOF_SYSTEM
+    let even_left = user.note_master_half(rng, note, [0, 1, 2]);
+    let even_right = user.note_master_half(rng, note, [3, 4, 5]);
+    let (even_spectrum, even_keys) = mk.derive_expanded_trace(0);
+    let (keyset_even_pcd, ()) = PROOF_SYSTEM
         .fuse(
             rng,
             delegation::NfMasterExpand,
-            witness::nf_master_expand(&mk, &spectrum, &keyset),
-            left,
-            right,
+            witness::nf_master_expand(&mk, &even_spectrum, &even_keys, 0),
+            even_left,
+            even_right,
+        )
+        .unwrap();
+    let odd_left = user.note_master_half(rng, note, [0, 1, 2]);
+    let odd_right = user.note_master_half(rng, note, [3, 4, 5]);
+    let (odd_spectrum, odd_keys) = mk.derive_expanded_trace(1);
+    let (keyset_odd_pcd, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            delegation::NfMasterExpand,
+            witness::nf_master_expand(&mk, &odd_spectrum, &odd_keys, 1),
+            odd_left,
+            odd_right,
         )
         .unwrap();
 
-    // A key poly with a tampered output no longer matches the committed keyset.
+    // A half-key poly with a tampered output no longer matches its committed
+    // half-keyset, so the consumer's commit-equality check rejects it.
+    let keyset = ExpandedKey::from_halves(&even_keys, &odd_keys);
     let salts = mk.query_salts();
     let polys = keyset.derivation_polys(&salts);
-    let (_, _same_polys, quotients, _) =
-        witness::nullifier_derivation(&keyset, &mk, &polys, creation_epoch);
-    let mut tampered = keyset.0;
+    let key_a = ExpandedKey::half_key_poly(&even_keys);
+    let key_b = ExpandedKey::half_key_poly(&odd_keys);
+    let (_orig_a, good_b, good_polys, good_quotients, _) =
+        witness::nullifier_derivation(&keyset, key_a, key_b, &mk, &polys, creation_epoch);
+    let mut tampered = even_keys;
     tampered[0] += Fp::ONE;
-    let bad_key = ExpandedKey::from(tampered).key_poly();
+    let bad_key_a = ExpandedKey::half_key_poly(&tampered);
 
     let err = PROOF_SYSTEM
         .fuse(
             rng,
             delegation::NullifierDerivationStep,
-            (bad_key, polys, quotients, creation_epoch),
-            keyset_pcd,
-            Proof::trivial().carry::<()>(()),
+            (
+                bad_key_a,
+                good_b,
+                good_polys,
+                good_quotients,
+                creation_epoch,
+            ),
+            keyset_even_pcd,
+            keyset_odd_pcd,
         )
         .err()
         .unwrap_or_else(|| panic!("expected rejection"));
@@ -1561,6 +1584,6 @@ fn derivation_rejects_mismatched_key_poly() {
     };
     assert_eq!(
         inner.to_string(),
-        "NullifierDerivationStep: key poly does not match the committed keyset"
+        "NullifierDerivationStep: even half-key poly does not match its commitment"
     );
 }

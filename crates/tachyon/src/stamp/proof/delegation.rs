@@ -151,12 +151,14 @@ impl Step for NfMasterExpand {
     type Left = NfMasterHeader;
     type Output = NfExpandedKeyset;
     type Right = NfMasterHeader;
-    /// `(trace T, round/boundary quotients, key poly K, decimation quotient)`.
+    /// `(trace T, round/boundary quotients, half-key poly A/B, decimation
+    /// quotient, half)`. `half ∈ {0,1}` selects this invocation's window.
     type Witness<'source> = (
         ExpKeySpectrumPoly,
         RoundBoundaryQuotients<EXPANSION_ROUND_SPLITS>,
         ExpandedKeyPoly,
         Polynomial, // decimation quotient binding K to T's final column
+        Fp,         // half ∈ {0,1}
     );
 
     const INDEX: Index = Index::new(1);
@@ -164,10 +166,21 @@ impl Step for NfMasterExpand {
     fn witness<'source>(
         &self,
         ctx: &mut ragu::StepCtx<'_>,
-        (expansion_trace, quotients, key_poly, decimation_quotient): Self::Witness<'source>,
+        (expansion_trace, quotients, key_poly, decimation_quotient, half): Self::Witness<'source>,
         left: <Self::Left as Header>::Data,
         right: <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
+        // This invocation computes one half of the schedule. `half ∈ {0,1}` is
+        // range-checked and fixes the cipher-input window origin
+        // `base = half · EK_HALF`, so half 0 runs inputs 0..EK_HALF (the even
+        // schedule positions) and half 1 runs EK_HALF..2·EK_HALF (odd). The
+        // header carries `half` so the derivation step pins one of each.
+        enforce_zero(
+            half * (half - Fp::ONE),
+            "NfMasterExpand: half must be 0 or 1",
+        )?;
+        #[expect(clippy::as_conversions, reason = "constant size")]
+        let base = half * Fp::from(ExpandedKey::EK_HALF as u64);
         let (cm, mk) = {
             let (left_cm, left_parts) = left;
             let (right_cm, right_parts) = right;
@@ -205,9 +218,8 @@ impl Step for NfMasterExpand {
         // so the relation stays a generic first-column pinning; the prover's
         // boundary quotient pins the same values.
         {
-            let base = Fp::ZERO; // no salt; base = Fp::ZERO
             let first_key = mk.round_key(0);
-            let boundary: [Fp; ExpandedKey::EK_LENGTH] = array::from_fn(|row| {
+            let boundary: [Fp; ExpandedKey::EK_HALF] = array::from_fn(|row| {
                 #[expect(clippy::as_conversions, reason = "row index conversion")]
                 let cipher_in = base + Fp::from(row as u64) + first_key;
                 cipher_in.square().square() * cipher_in
@@ -254,7 +266,7 @@ impl Step for NfMasterExpand {
         let stride =
             subgroup_generator::<POLY_LEN_MAX>().pow_vartime([(TachyonP5R64::ROUNDS - 1) as u64]);
         let whitening = mk.round_key(TachyonP5R64::ROUNDS);
-        enforce_strided_column::<{ ExpandedKey::EK_LENGTH }>(
+        enforce_strided_column::<{ ExpandedKey::EK_HALF }>(
             ctx,
             &expansion_trace.0,
             &key_poly.0,
@@ -263,7 +275,7 @@ impl Step for NfMasterExpand {
             whitening,
         )?;
 
-        Ok(((ExpandedKeyCommit(key_poly.0.commit()), mk, cm), ()))
+        Ok(((ExpandedKeyCommit(key_poly.0.commit()), mk, cm, half), ()))
     }
 }
 
@@ -272,27 +284,28 @@ impl Step for NfMasterExpand {
 ///
 /// Carries the [`ExpandedKeyCommit`] to the eval-form key polynomial `K` (the
 /// `ExpandedKey::EK_LENGTH` keyed-cipher expansion outputs), proven by
-/// [`NfMasterExpand`], plus the raw `mk` forwarded for [`NullifierDerivationStep`]
-/// to derive its query parameters (per-poly salts, weight bases `ρ_j`, and
-/// shift `c`). The header is private to the wallet's own proof tree and is
-/// never published.
+/// [`NfMasterExpand`], plus the raw `mk` forwarded for
+/// [`NullifierDerivationStep`] to derive its query parameters (per-poly salts,
+/// weight bases `ρ_j`, and shift `c`). The header is private to the wallet's
+/// own proof tree and is never published.
 #[derive(Clone, Debug)]
 pub struct NfExpandedKeyset;
 
 impl Header for NfExpandedKeyset {
-    type Data = (ExpandedKeyCommit, NoteMasterKey, NoteCommitment);
+    type Data = (ExpandedKeyCommit, NoteMasterKey, NoteCommitment, Fp);
 
     const SUFFIX: Suffix = Suffix::new(12);
 
     fn encode(data: &Self::Data) -> Vec<u8> {
-        let (keyset_commit, mk, cm) = *data;
-        let mut out = Vec::with_capacity(32 + (NoteMasterKey::MK_LENGTH * 32) + 32);
+        let (keyset_commit, mk, cm, half) = *data;
+        let mut out = Vec::with_capacity(32 + (NoteMasterKey::MK_LENGTH * 32) + 32 + 32);
         let commit_bytes: [u8; 32] = keyset_commit.0.to_affine().to_bytes();
         out.extend_from_slice(&commit_bytes);
         for part in mk.0 {
             out.extend_from_slice(&part.to_repr());
         }
         out.extend_from_slice(&Fp::from(cm).to_repr());
+        out.extend_from_slice(&half.to_repr());
         out
     }
 }
@@ -367,9 +380,11 @@ impl Step for NullifierDerivationStep {
     type Aux<'source> = ();
     type Left = NfExpandedKeyset;
     type Output = NullifierDerivation;
-    type Right = ();
-    /// `(K, T_j, quotients_j, E_0)`.
+    type Right = NfExpandedKeyset;
+    /// `(A, B, T_j, quotients_j, E_0)`: the even/odd half-key polys, the `N`
+    /// derivation polys, their quotients, and the creation epoch.
     type Witness<'source> = (
+        ExpandedKeyPoly,
         ExpandedKeyPoly,
         [NfEmitterPoly; NF_EMITTERS],
         [RoundBoundaryQuotients<EMITTER_ROUND_SPLITS>; NF_EMITTERS],
@@ -381,17 +396,41 @@ impl Step for NullifierDerivationStep {
     fn witness<'source>(
         &self,
         ctx: &mut ragu::StepCtx<'_>,
-        (key_poly, polys, quotients, creation_epoch): Self::Witness<'source>,
-        (keyset_commit, mk, cm): <Self::Left as Header>::Data,
-        _right: <Self::Right as Header>::Data,
+        (key_a, key_b, polys, quotients, creation_epoch): Self::Witness<'source>,
+        (keyset_commit_even, mk, cm, half_even): <Self::Left as Header>::Data,
+        (keyset_commit_odd, mk_odd, cm_odd, half_odd): <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
-        // Bind the witnessed key poly `K` to the threaded keyset commitment, so
-        // every key read below is the proven 128-key schedule.
-        let keyset_commitment = keyset_commit.0;
+        // Seam: both halves belong to the same note and share one master key,
+        // and they are complementary (left is the even half `0`, right the odd
+        // half `1`). Without the half pins a prover could supply the same half
+        // twice and forge the schedule.
+        enforce_zero(
+            Fp::from(cm) - Fp::from(cm_odd),
+            "NullifierDerivationStep: half commitments do not match",
+        )?;
+        for (left_part, right_part) in mk.0.iter().zip(mk_odd.0.iter()) {
+            enforce_zero(
+                *left_part - *right_part,
+                "NullifierDerivationStep: half master keys do not match",
+            )?;
+        }
+        enforce_zero(half_even, "NullifierDerivationStep: left half must be 0")?;
+        enforce_zero(
+            half_odd - Fp::ONE,
+            "NullifierDerivationStep: right half must be 1",
+        )?;
+
+        // Bind the witnessed half-key polys to the threaded half commitments, so
+        // every key read below is the proven 256-key interleaved schedule.
         enforce_equal_point(
-            key_poly.0.commit(),
-            keyset_commitment,
-            "NullifierDerivationStep: key poly does not match the committed keyset",
+            key_a.0.commit(),
+            keyset_commit_even.0,
+            "NullifierDerivationStep: even half-key poly does not match its commitment",
+        )?;
+        enforce_equal_point(
+            key_b.0.commit(),
+            keyset_commit_odd.0,
+            "NullifierDerivationStep: odd half-key poly does not match its commitment",
         )?;
 
         // Query parameters derived from `mk` forwarded on the keyset header.
@@ -400,9 +439,10 @@ impl Step for NullifierDerivationStep {
         let salts = mk.query_salts();
         let (ratios, shift) = mk.query_weights();
 
-        // Round-0 boundary key `k_0 = K(1)`, shared across all polys.
-        let first_key = key_poly.0.eval(Fp::ONE);
-        ctx.enforce_poly_query(keyset_commitment, Fp::ONE, first_key)?;
+        // Round-0 boundary key `k_0 = K(1) = A(1)` (the even-coset selector is 1
+        // and the odd-coset selector is 0 at `x = 1`), shared across all polys.
+        let first_key = key_a.0.eval(Fp::ONE);
+        ctx.enforce_poly_query(keyset_commit_even.0, Fp::ONE, first_key)?;
 
         for (poly_index, (poly, poly_quotients)) in polys.iter().zip(&quotients).enumerate() {
             // Boundary: round 0 from the salt, `T_j(1) = (mk_s^{(j)} + k_0)^5`.
@@ -417,7 +457,8 @@ impl Step for NullifierDerivationStep {
             )?;
 
             // Rounds 1..: the committed-offset quintic recurrence (x^5 S-box),
-            // the full 128-key schedule read through one opening of `K`.
+            // the full 256-key interleaved schedule reconstructed inline from
+            // the two committed half-key polys.
             enforce_committed_offset_recurrence::<
                 { EMITTER_ROUND_SPLITS },
                 { ExpandedKey::EK_LENGTH },
@@ -426,7 +467,8 @@ impl Step for NullifierDerivationStep {
                 &poly.0,
                 &poly_quotients.round,
                 &CONSTANT_SCHEDULE,
-                &key_poly.0,
+                &key_a.0,
+                &key_b.0,
                 5,
             )?;
         }
