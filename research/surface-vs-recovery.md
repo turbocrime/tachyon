@@ -1,24 +1,23 @@
 # Queryable Surface vs Recovery: The Governing Bound
 
-## Scope
+## What this analyzes
 
-The companion documents analyze whether a given expansion primitive resists recovery once
-nullifiers are public. That is the right question for a fixed nullifier interface, but it is not
-the question that drives the spectrum design. The spectrum exists to maximize the **queryable
-nullifier surface**: the number of distinct offsets $S$ that one note can expose, confirmable in a
-single proof step over a contiguous range.
+The companion documents ask whether a given expansion resists recovery once nullifiers are public.
+That is the right question for a fixed interface, but it is not what drives the spectrum design. The
+spectrum exists to maximize the **queryable nullifier surface**: the number of distinct offsets $S$
+one note can expose, confirmable in a single proof step over a contiguous range.
 
-This document states the bound that actually governs that goal, separates it from per-offset
-recovery hardness, and re-frames each previously analyzed variant against it. It should be read
-before the product and pullback discussions, because those analyze strengthenings that do not move
-the bound established here.
+This document establishes the bound that governs surface, shows it is the same bound that governs
+recovery and delegation unlinkability, separates it from the sweep cost, and reads off the one lever
+that actually grows surface in the present implementation. It is the lens through which the other
+documents should be read.
 
 ## Protocol objects in play
 
 The current scheme publishes
 
 $$
-nf_d=\sum_{j=0}^{N-1}\rho_j^d\,T_j(c\gamma^d)
+nf_d=\sum_{j=0}^{N-1}\rho_j^d\,T_j(c\gamma^d),
 $$
 
 with $N=4$ emitters, spectra $T_j$ of degree $<L=8192$, secret query shift $c$, secret geometric
@@ -36,172 +35,130 @@ with $A(c\gamma^d)=\sum_{k<d}\beta^k nf_k$ and $w_j(c\gamma^d)=(\rho_j\beta)^d$.
 Write the published sequence as an exponential sum in the offset $d$:
 
 $$
-nf_d=\sum_{j=0}^{N-1}\sum_{e=0}^{L-1}\big(t_{j,e}c^e\big)\,(\rho_j\gamma^e)^d
+nf_d=\sum_{j=0}^{N-1}\sum_{e=0}^{L-1}\big(t_{j,e}c^e\big)\,(\rho_j\gamma^e)^d.
 $$
 
-A sequence that is a sum of $t$ geometric progressions with distinct ratios satisfies a linear
-recurrence of order $t$. Berlekamp-Massey, equivalently Ben-Or-Tiwari sparse interpolation, recovers
-that recurrence, and hence every frequency and amplitude, from $2t$ consecutive samples over any
-field. This holds **whether or not the frequencies are secret**.
-
-Therefore the quantity that bounds the safe surface is the mode count
+A sum of $t$ geometric progressions with distinct ratios satisfies a linear recurrence of order $t$,
+and Berlekamp-Massey, equivalently Ben-Or-Tiwari sparse interpolation, recovers that recurrence, and
+hence every frequency and amplitude, from $2t$ consecutive samples over any field. This holds whether
+or not the frequencies are secret. The quantity that bounds safe exposure is therefore the mode count
 
 $$
-t=\#\{(j,e):t_{j,e}\neq 0,\ \text{frequencies } \rho_j\gamma^e \text{ distinct}\}\le N\cdot L
+t=\#\{(j,e):t_{j,e}\neq 0,\ \rho_j\gamma^e \text{ distinct}\}\le N\cdot L,
 $$
 
-A note is safe only while
+and a note is safe only while $S<t$ with margin. The current sizing $S=16384<NL=32768$ is exactly
+this bound, not a generic count of apparent amplitudes.
 
-$$
-S<t
-$$
+Two consequences follow.
 
-with margin, since an attacker who collects $2t$ samples can predict the whole sequence. The current
-sizing $S=16384<NL=32768$ is exactly this bound, not a generic count of "apparent amplitudes."
+**Mode count is degree.** Each emitter of degree $<L$ contributes at most $L$ frequencies $\gamma^e$,
+so higher degree means more modes means larger safe surface. Degree is the surface lever in
+principle.
 
-Two consequences follow immediately.
+**Only independent coefficients count.** A high-degree polynomial whose coefficients are a known image
+of a few secrets does not raise $t$ in any way the attacker respects: if the frequencies are
+structured and the amplitudes are a known linear function of $K$ unknowns, the attacker solves a
+linear system in $K$ and $t$ collapses to $K$. Degree buys surface only when the coefficients carry
+independent entropy. This is the single fact that separates the candidate primitives.
 
-### Mode count is degree
+## Frequency-hiding is surface-neutral
 
-Each emitter of degree $<L$ contributes at most $L$ frequencies $\gamma^e$. Higher emitter degree
-means more modes, means larger safe surface. Degree is the surface lever.
+Secret weights $\rho_j$, the secret shift $c$, and a hidden affine coset $\phi(Y)=\delta+cY$ do not
+change $t$. Berlekamp-Massey recovers the characteristic polynomial regardless of whether its roots
+are secret, so these only reparametrize frequencies and amplitudes by maps invertible given the
+recovered recurrence. A fixed pullback of degree $q$ inflates the argument degree to $qL$, but the
+$qL+1$ resulting coefficients are a fixed linear image of the original $L$, leaving the independent
+count, and hence $t$, unchanged. For surface, all of these are neutral.
 
-### Only independent coefficients count
-
-A high-degree polynomial whose coefficients are a known image of a few secrets does not raise $t$ in
-any way the attacker respects. If the frequencies are structured and the amplitudes are a known
-linear function of $K$ free unknowns, the attacker solves a known linear system in $K$ unknowns and
-$t$ collapses to $K$. Degree only buys surface when the coefficients carry independent entropy.
-
-This is the single fact that separates the candidate primitives.
-
-## Why secret weights, shifts, and affine cosets do not move the bound
-
-The surface bound is set by the count of *independent* modes, meaning modes not reducible to fewer
-unknowns by a structured attack. The distinction matters for the affine-coset discussion in the
-companion document, so it must be drawn carefully.
-
-For a spectrum whose coefficients are already independent (the pow5 case), $t$ is saturated at $NL$.
-Berlekamp-Massey recovers the characteristic polynomial of the sequence regardless of whether its
-roots $\rho_j\gamma^e$ are public, so secret weights $\rho_j$, the secret shift $c$, and a hidden
-affine coset $\phi(Y)=\delta+cY$ only reparametrize frequencies and amplitudes by maps that are
-invertible given the recovered recurrence. A higher-degree fixed pullback $\phi$ of degree $q$
-inflates the argument degree to $qL$, but the $qL+1$ resulting coefficients are a fixed linear image
-of the original $L$, so the independent count is unchanged and $t$ does not grow. Against the surface
-goal these are all neutral.
-
-This is consistent with, not contrary to, the companion claim that the affine map "breaks the clean
-$\gamma^{2^id}$ factorization." That claim is about a *compact-family* primitive such as Alex's
-product, where the multiplicative query yields a sequence with few independent modes and a small
-structured recovery system. There an affine input genuinely raises the *nominal* mode count and
-complicates the easiest factorization attack. But the effective independent dimension stays near
-$W(m+q+2)$, because the underlying generator still has only that many free parameters. So the
-pullback is a recovery-hardness knob: useful for a compact-family primitive on a *fixed* interface,
-and irrelevant to an already-independent spectrum. In neither case is it a surface knob.
+They are not pointless, and the companion claim that the affine map "breaks the clean
+$\gamma^{2^id}$ factorization" is correct in its own scope: against a compact-family primitive like
+Alex's product, whose sequence has few independent modes, an affine input raises the nominal mode
+count and complicates the easiest factorization attack. That is a recovery-hardness gain on a fixed
+interface, against a primitive whose effective dimension stays small either way. It is a different
+axis from surface, and on an already-independent spectrum it adds nothing. Frequency-hiding earns its
+place in the design for a different reason, given under delegation below.
 
 ## Surface cost is separable from sweep cost
 
-The accumulator recurrence is order one in the coset variable, and the advance term reads each
-spectrum out of its commitment at the challenge point. The degree of $T_j$ never enters the
-recurrence order of the sweep. The price of degree is paid once, in the spectrum's own quotient
-certification (more capacity-wide splits), not per offset.
+The accumulator recurrence is order one in the coset variable, and its advance term reads each
+spectrum out of its commitment at the challenge point. The degree of $T_j$ never enters the recurrence
+order of the sweep. The price of degree is paid once, in the spectrum's own quotient certification,
+not per offset. Surface scales with committed degree while the per-range sweep stays flat.
 
-This separation is what makes "maximize degree" a real strategy rather than a proving-cost
-explosion. Surface scales with committed degree; the per-range sweep stays flat.
+## Delegation unifies surface with unlinkability
 
-## The degree-maximizing construction
+Delegation sets the adversary model and shows why this one bound governs everything. A sync service is
+handed an arbitrary sequence of nullifier *values* $nf_d$ for a window of offsets, confirms their
+exclusion from the chain, and proves it; the wallet later folds that proof into its spendable proof.
+The service observes $(d,nf_d)$ pairs directly, which is the recovery model exactly, and colluding
+services span many windows of one note.
 
-Because the sweep is degree-agnostic, the surface-optimal layout is **few emitters of very high
-degree** rather than many emitters at the rank cap. Concretely, collapse the $N$ degree-$L$ traces
-into one degree-$D$ pow5 trace with $D=NL$, every coefficient independent because the recurrence ran
-$D$ rounds. Query on a coset of order $S<D$, certify the long trace with the same masked quintic
-recurrence identity over the order-$D$ domain at $D/L$ quotient splits, and sweep with the existing
-order-one accumulator.
+The required property is that non-overlapping windows cannot be correlated, which is the recovery
+bound restated as a distinguishing attack. Every window is a segment of the same exponential sum with
+note-fixed frequencies $\rho_j\gamma^e$ and amplitudes $t_{j,e}c^e$. Deciding whether two windows
+share a note asks whether a single $t$-mode model fits their union, and such a model always exists
+while the combined sample count stays below the unique-fit threshold $\approx 2t$, and exists only for
+same-note windows above it. So the total lifetime exposure across all windows must stay below
+threshold, which is the same invariant $S<t$. Surface budget and delegation-exposure budget are one
+budget.
 
-Against the current four-emitter layout this gives the same amplitude budget $t=D=NL$, the same
-split count, but one boundary identity and one recurrence identity instead of $N$ of each, and a
-single committed object the lift path can sweep. Surface scales with committed degree at order-one
-sweep cost.
+This is what frequency-hiding is for. By making the frequencies ($\rho_j$, $c$) and amplitudes (the
+per-emitter salts) note-secret and unstructured, the salt-and-shift machinery removes any
+sub-threshold shortcut, forcing the adversary into the full structured attack that needs the whole
+$\approx 2t$ samples the invariant denies. A public or structured frequency ladder could otherwise
+admit a cheaper distinguisher well below threshold. Any alternative scheme must keep this machinery or
+an equivalent.
 
-## Delegation makes the budget concrete, and unifies it with unlinkability
+## The lever in the present implementation
 
-Delegation sets the adversary model. A sync service is handed an arbitrary sequence of nullifier
-*values* $nf_d$ for a window of offsets, confirms their exclusion from the chain, and proves it; the
-wallet later folds that proof into its spendable proof. The sync service therefore observes
-$(d, nf_d)$ pairs directly. This is the recovery model exactly, not the weaker on-chain-presence
-model, and possibly colluding services span many windows of one note.
+Degree is the surface lever in principle, but the commitment cannot hold a polynomial longer than the
+present spectrum: each emitter is capped at $L=8192$ coefficients. Per-emitter degree-maximization is
+therefore off the table. The only available lever is the emitter count $N$.
 
-The required property is that delegation windows which do not overlap cannot be correlated. That is
-the recovery bound restated as a distinguishing attack:
-
-- every window of a note is a segment of the *same* exponential sum, with note-fixed frequencies
-  $\rho_j\gamma^e$ and amplitudes $t_{j,e}c^e$;
-- deciding whether two windows share a note asks whether a single $t$-mode model fits their union;
-- a single model always fits while the combined sample count stays below the unique-fit threshold
-  $\approx 2t$, and fits only for same-note windows above it.
-
-So the **total lifetime exposure across all delegation windows** must stay below threshold, which is
-exactly the surface invariant $S<t$. Surface budget and delegation-exposure budget are the same
-budget. The salt-and-shift machinery is what guarantees no sub-threshold shortcut exists: by making
-the frequencies ($\rho_j$, $c$) and amplitudes (per-emitter salts) note-secret and unstructured, it
-forces the adversary into the full structured-system attack that needs the whole $\approx 2t$ sample
-budget the invariant denies. A public or structured frequency ladder could otherwise admit a cheaper
-distinguisher well below threshold. Any alternative scheme must keep this machinery or an equivalent.
-
-This qualifies the degree-maximizing construction. Collapsing $N$ emitters into one degree-$D$ trace
-preserves the threshold ($t=D$ either way) and the secret shift $c$, but it discards the $N$
-independent secret weight-ladders $\rho_j$ and per-emitter salts. Those do not raise $t$; they widen
-the *margin* against sub-threshold statistical and structural distinguishers, since a sum of ladders
-is more mixed than a single ladder $\rho^d T(c\gamma^d)$. The genuine trade is therefore fewer
-identities (proving cost) against more mixing (unlinkability robustness). A defensible middle is to
-keep several secret weight-ladders and salts while still raising per-emitter degree above $L$, rather
-than collapsing all the way to one emitter.
+Adding an emitter adds one more degree-$L$ spectrum with its own salt and weight, so $t=NL$ grows
+linearly, at a linear proving cost: one more boundary identity, recurrence identity, commitment, and
+opening per emitter. The accumulator sweep stays order one regardless of $N$. This lever is doubly
+aligned, because more independent weight-ladders also widen the unlinkability margin against
+sub-threshold distinguishers, a sum of ladders being harder to separate than a single one.
 
 ## The hard ceiling
 
 No range-confirmable scheme beats
 
 $$
-S<t=\#\{\text{independent committed coefficients}\}
+S<t=\#\{\text{independent committed coefficients}\}.
 $$
 
-The reason is structural. A one-step range sweep requires $d\mapsto nf_d$ to be a low-order linear
-recurrence to certify, but the mode count *is* the recurrence order. The design escapes the apparent
-contradiction by paying the high recurrence order once, inside the committed spectrum (degree $L$,
-certified once), while keeping the sweep order one. Any attempt to win superlinear surface from
-degree requires $nf_d$ to be a nonlinear, non-exponential-sum function of $d$, which is exactly what
-breaks the linear accumulator. A per-offset extractor (hash after evaluation) is the same dead end:
-it defeats recovery but destroys the polynomial prefix-sum, so the range can no longer be confirmed
-in one step.
+The reason is structural. A one-step range sweep requires $d\mapsto nf_d$ to satisfy a low-order
+linear recurrence to certify, yet the mode count is itself the recurrence order. The design escapes
+the apparent contradiction by paying the high order once, inside the committed spectrum, while keeping
+the sweep order one. Winning superlinear surface from degree would require $nf_d$ to be a nonlinear,
+non-exponential-sum function of $d$, which is exactly what breaks the linear accumulator. A per-offset
+extractor (hashing after evaluation) is the same dead end: it defeats recovery but destroys the
+polynomial prefix-sum, so the range can no longer be confirmed in one step.
 
 ## Verdict on each variant against the surface goal
 
-- **Hidden affine coset / higher fixed pullback:** surface-neutral. It is a recovery-hardness knob
-  for a fixed interface, valuable for a compact-family primitive (where it raises nominal modes and
-  breaks the easy factorization) but irrelevant to an already-independent spectrum, whose $t$ is
-  saturated. Against an independent pow5 spectrum it is not worth the added $\delta$ binding and the
-  $-\delta$ shift in every recurrence identity.
-- **Alex's binary product as a spectrum:** anti-aligned. It maximizes degree ($2^m-1$) while filling
-  $2^m$ coefficients from $m+1$ secrets, so $t$ collapses to roughly $m$ and the safe surface
-  collapses with it. It pays for almost no entropy.
-- **Per-offset extractor (App A, hash after evaluation):** strong against recovery, but destroys the
-  linear accumulator and therefore single-step range confirmation. Suited to small fixed-output
-  nullifier designs, not to the surface goal.
-- **Degree-maximized pow5 trace:** the correct lever for surface. Independent coefficients make
-  degree real surface, and the degree-agnostic sweep keeps the per-range cost flat. The qualification
-  is unlinkability: the secret shift and the secret weight-ladders must survive, so the right form is
-  raising per-emitter degree above $L$ while keeping several emitters and their salts, not collapsing
-  to a single ladder. Surface is then bounded by the split budget and the $S<t$ margin.
+- **Hidden affine coset / higher fixed pullback:** surface-neutral. A recovery-hardness knob for a
+  compact-family primitive on a fixed interface, irrelevant to an already-independent spectrum, and
+  not worth the added $\delta$ binding and the $-\delta$ shift in every recurrence identity.
+- **Alex's binary product as a spectrum:** anti-aligned. It maximizes degree while filling $2^m$
+  coefficients from $m+1$ secrets, so $t$ collapses to roughly $m$ and the surface collapses with it.
+- **Per-offset extractor:** strong against recovery, but it destroys the linear accumulator and so
+  single-step range confirmation. Suited to small fixed-output nullifiers, not to surface.
+- **More pow5 emitters:** the correct lever in the present implementation. Each emitter is independent
+  degree-$L$ entropy, $t=NL$ grows linearly, the sweep stays flat, and unlinkability margin improves.
 
 ## Bottom line
 
-For the surface goal the relevant security parameter is the count of independent committed
-coefficients, recovered against by Berlekamp-Massey rather than by any frequency-hiding trick. The
-same count, through the $S<t$ invariant, is what keeps non-overlapping delegation windows
-uncorrelatable, since a sync service observes nullifier values directly and the safe lifetime
-exposure is exactly this budget. The spectrum should therefore maximize independent coefficients via
-long pow5 traces, raise per-emitter degree above $L$ while retaining several secret weight-ladders
-and salts for unlinkability margin, and rely on the order-one accumulator to keep range confirmation
-cheap. The product and pullback analyses in the companion documents remain correct about
-per-interface recovery, but they address a different question and do not bear on how large the
-queryable surface can be made or on whether windows correlate.
+The security parameter for surface is the count of independent committed coefficients, recovered
+against by Berlekamp-Massey rather than by any frequency-hiding trick, and the same count through
+$S<t$ is what keeps non-overlapping delegation windows uncorrelatable. Two practical consequences
+follow. First, grow surface by adding pow5 emitters, not by enlarging or restructuring the spectrum
+polynomial, which the commitment cannot hold and which the alternatives cannot improve. Second, since
+nothing enforces the $S<t$ margin today, bound the offset in-circuit below threshold (for example
+$d<t/2$) so a note that exhausts its budget is cleanly retired rather than wrapping into correlatable
+reuse. The product and pullback analyses in the companion documents remain correct about per-interface
+recovery; they simply address a different question and do not bear on how large the surface can be
+made or on whether windows correlate.

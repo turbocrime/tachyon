@@ -102,6 +102,16 @@ $$
 so the base and singleton-bit coefficients determine all the rest. The construction is a compact
 factorized family, not an expansion into independent-looking amplitudes.
 
+This is the same subset-product skeleton as the Naor-Reingold PRF,
+$f_{\vec a}(x)=g^{\prod_i a_i^{x_i}}$, where the input bits select which secret values enter the
+product. The coefficient $C_e=B\prod_{i\in S(e)}r_i$ is exactly that subset product, selected by the
+bits $S(e)$, and an evaluation $T_A(\gamma^d)=B\prod_i(1+r_i\gamma^{2^id})$ is a multilinear form over
+the same product structure. The contrast is where hardness lives: Naor-Reingold wraps the subset
+product in a one-way group exponentiation, so the multiplicative structure cannot be inverted from
+outputs, whereas Alex's product exposes it directly in the field, where it is a solvable system in the
+$r_i$. The product is Naor-Reingold without the one-way map. Restoring a one-way layer is exactly what
+the interface analysis ends up needing.
+
 The same compactness shows up under direct evaluation, which is why repeated raw evaluations are
 the cautionary interface: a single evaluation reduces to
 
