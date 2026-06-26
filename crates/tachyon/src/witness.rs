@@ -16,7 +16,6 @@
 use alloc::vec::Vec;
 use core::array;
 
-use ff::Field as _;
 use pasta_curves::Fp;
 use ragu::{Polynomial, Step};
 

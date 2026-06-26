@@ -1,11 +1,12 @@
 //! MiMC key expansion and nullifier derivation. Wallet-only; every header
 //! carries `cm` for its consumers.
 //!
-//! [`NfMasterExpand`] proves a note's keyset expansion -- the
-//! `ExpandedKey::EK_LENGTH` keyed-cipher outputs `E_mk(mk_s + i)` -- in a
-//! single trace-based step, committing them on the [`NfExpandedKeyset`] header.
+//! [`NfMasterExpand`] proves one half of a note's keyset expansion -- the
+//! `ExpandedKey::EK_HALF` keyed-cipher outputs of that half -- in a single
+//! trace-based step, committing them on the [`NfExpandedKeyset`] header. Two
+//! invocations (even/odd halves) make the full 256-key interleaved schedule.
 //! [`NullifierDerivationStep`] then certifies the note's derivation polynomials
-//! against that keyset.
+//! against the two halves, reconstructing the schedule inline.
 
 #![allow(
     clippy::as_conversions,
@@ -124,18 +125,19 @@ impl Step for NfMasterSeed {
     }
 }
 
-/// Prove a note's keyset expansion in one trace-based step.
+/// Prove one half of a note's keyset expansion in one trace-based step.
 ///
-/// The `ExpandedKey::EK_LENGTH` keyed-cipher outputs `E_mk(mk_s + i)`, `i =
-/// 0..ExpandedKey::EK_LENGTH`, committed as the eval-form key polynomial `K`
-/// (`K(ζ^r) = E_mk(mk_s + r)` over the order-`ExpandedKey::EK_LENGTH` subgroup
-/// `⟨ζ⟩`) on the [`NfExpandedKeyset`] header.
+/// The `ExpandedKey::EK_HALF` keyed-cipher outputs of this half, committed as
+/// the eval-form half-key polynomial `A` (`A(ζ^r) = E_mk(base + r)` over the
+/// order-`ExpandedKey::EK_HALF` subgroup `⟨ζ⟩`) on the [`NfExpandedKeyset`]
+/// header, tagged with `half ∈ {0,1}`. `base = half · EK_HALF` selects the
+/// cipher-input window; the two halves interleave (even/odd cosets) into the
+/// full 256-key schedule, reconstructed at [`NullifierDerivationStep`].
 ///
 /// The witness is the prover-built trace `T`, the round quotient
-/// ([`EXPANSION_ROUND_SPLITS`] splits), the boundary quotient, the key poly
-/// `K`, and the decimation quotient `Q`. The expansion runs from index `0`, so
-/// the cipher input for row `i` is `mk_s + i`; the body is pure orchestration
-/// over three generic vanishing relations.
+/// ([`EXPANSION_ROUND_SPLITS`] splits), the boundary quotient, the half-key
+/// poly `A`, the decimation quotient `Q`, and `half`; the body is pure
+/// orchestration over three generic vanishing relations plus a boolean check.
 ///
 /// - `enforce_first_column_values` applies round 0 (the salt step) outside the
 ///   trace, pinning each row-start cell to `(mk_s + row + k_0)^5`.
@@ -257,10 +259,10 @@ impl Step for NfMasterExpand {
             )?;
         }
 
-        // Bind the eval-form key poly `K` to the trace's final column. On the
-        // order-`ExpandedKey::EK_LENGTH` subgroup `⟨ζ⟩` (`ζ = ω^{TRACE_COLUMNS}`),
-        // `K(ζ^r) = (row-r final cell) + whitening = E_mk(mk_s + r)`, so `K`
-        // commits the `ExpandedKey::EK_LENGTH` expansion outputs. `σ =
+        // Bind the eval-form half-key poly `A` to the trace's final column. On
+        // the order-`ExpandedKey::EK_HALF` subgroup `⟨ζ⟩` (`ζ = ω^{TRACE_COLUMNS}`),
+        // `A(ζ^r) = (row-r final cell) + whitening = E_mk(base + r)`, so `A`
+        // commits this half's `ExpandedKey::EK_HALF` expansion outputs. `σ =
         // ω^{TRACE_COLUMNS-1}` is the final-column stride within a row.
         #[expect(clippy::as_conversions, reason = "constant column index")]
         let stride =
@@ -279,14 +281,15 @@ impl Step for NfMasterExpand {
     }
 }
 
-/// The note's derivation keyset commitment, master key, and note commitment
-/// `(keyset_commit, mk, cm)`. Wallet-only.
+/// One expansion half's keyset commitment, master key, note commitment, and
+/// half tag `(keyset_commit, mk, cm, half)`. Wallet-only.
 ///
-/// Carries the [`ExpandedKeyCommit`] to the eval-form key polynomial `K` (the
-/// `ExpandedKey::EK_LENGTH` keyed-cipher expansion outputs), proven by
+/// Carries the [`ExpandedKeyCommit`] to the eval-form half-key polynomial (this
+/// half's `ExpandedKey::EK_HALF` keyed-cipher expansion outputs), proven by
 /// [`NfMasterExpand`], plus the raw `mk` forwarded for
 /// [`NullifierDerivationStep`] to derive its query parameters (per-poly salts,
-/// weight bases `ρ_j`, and shift `c`). The header is private to the wallet's
+/// weight bases `ρ_j`, and shift `c`), and `half ∈ {0,1}` so the derivation
+/// step pins one even and one odd half. The header is private to the wallet's
 /// own proof tree and is never published.
 #[derive(Clone, Debug)]
 pub struct NfExpandedKeyset;
@@ -355,21 +358,23 @@ impl Header for NullifierDerivation {
 
 /// Certify the note's `N` derivation polynomials in one step.
 ///
-/// Witnesses the note's key polynomial `K`, the `N` polynomials `T_j`, their
-/// round- and boundary-quotients, the public constant schedule `C`, and the
-/// creation epoch `E_0`. It first binds `K` to the threaded
-/// [`ExpandedKeyCommit`] by commit-equality, so every key it reads is the
-/// proven 128-key schedule; the per-poly salts, weight bases `ρ_j`, and shift
-/// `c` arrive on the keyset header, derived from the bound `mk` by
-/// [`NfMasterExpand`].
+/// Witnesses the note's two half-key polynomials `A`/`B`, the `N` polynomials
+/// `T_j`, their round- and boundary-quotients, the public constant schedule
+/// `C`, and the creation epoch `E_0`. It first checks the seam (both halves
+/// carry one `mk`/`cm`, and they are the even half `0` and odd half `1`), then
+/// binds `A`/`B` to the threaded [`ExpandedKeyCommit`]s by commit-equality, so
+/// every key it reads is the proven 256-key interleaved schedule; the per-poly
+/// salts, weight bases `ρ_j`, and shift `c` arrive on the keyset header,
+/// derived from the bound `mk` by [`NfMasterExpand`].
 ///
 /// Per poly, two relations certify `T_j` is the genuine keyed-cipher
 /// interpolant: [`enforce_first_column_values`] pins
-/// `T_j(1) = (mk_s^{(j)} + k_0)^5` (round 0 from the salt, `k_0 = K(1)`), and
+/// `T_j(1) = (mk_s^{(j)} + k_0)^5` (round 0 from the salt, `k_0 = A(1)`), and
 /// [`enforce_committed_offset_recurrence`] pins the remaining rounds against
-/// the committed `K` (offset key term `K(ζ·z^{|D|/κ})`) and the committed `C`.
-/// Then it binds the commitments into one transcript challenge and emits the
-/// derivation, forwarding `c`/`ρ_j` for the downstream query and lift.
+/// the schedule reconstructed inline from `A`/`B` (the interleaved-coset offset
+/// key term) and the committed `C`. Then it binds the commitments into one
+/// transcript challenge and emits the derivation, forwarding `c`/`ρ_j` for the
+/// downstream query and lift.
 ///
 /// `E_0` is a free witness here, carrying no claim until `SpendableInit` (its
 /// sole gatekeeper) binds it to the creation anchor.

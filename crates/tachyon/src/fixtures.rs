@@ -13,7 +13,7 @@ use core::{array, cell::RefCell, cmp, iter, ops::RangeInclusive};
 
 use ff::Field as _;
 use pasta_curves::Fp;
-use ragu::{Pcd, Polynomial, Proof};
+use ragu::{Pcd, Polynomial};
 use rand_core::{CryptoRng, RngCore};
 
 use crate::{

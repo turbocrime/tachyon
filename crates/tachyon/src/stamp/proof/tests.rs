@@ -1588,14 +1588,17 @@ fn derivation_rejects_mismatched_key_poly() {
     );
 }
 
-/// Certify one expansion half (the `NfExpandedKeyset` PCD) for a note, returning
-/// it with that half's keys.
+/// Certify one expansion half (the `NfExpandedKeyset` PCD) for a note,
+/// returning it with that half's keys.
 fn keyset_half_pcd(
     user: &WalletSim,
     rng: &mut StdRng,
     note: Note,
     half: usize,
-) -> (Pcd<delegation::NfExpandedKeyset>, [Fp; ExpandedKey::EK_HALF]) {
+) -> (
+    Pcd<delegation::NfExpandedKeyset>,
+    [Fp; ExpandedKey::EK_HALF],
+) {
     let mk = user.master_key(&note);
     let (spectrum, keys) = mk.derive_expanded_trace(half);
     let left = user.note_master_half(rng, note, [0, 1, 2]);
@@ -1623,6 +1626,7 @@ fn assert_invalid(err: ragu::Error, expected: &str) {
 /// (the right-half pin), and halves from different notes (the cm seam). The
 /// honest witness is never reached -- the seam checks fire before binding.
 #[test]
+#[expect(clippy::similar_names, reason = "note A vs note B half-key bindings")]
 fn derivation_rejects_seam_violations() {
     let rng = &mut StdRng::seed_from_u64(0);
     let user = WalletSim::random(rng);
@@ -1651,7 +1655,7 @@ fn derivation_rejects_seam_violations() {
     // Case 1: the even half (half = 0) supplied as both Left and Right; the
     // right-half pin rejects it.
     let dup_witness = make_witness(&even_a_keys);
-    let err = PROOF_SYSTEM
+    let dup_err = PROOF_SYSTEM
         .fuse(
             rng,
             delegation::NullifierDerivationStep,
@@ -1661,11 +1665,11 @@ fn derivation_rejects_seam_violations() {
         )
         .err()
         .unwrap_or_else(|| panic!("expected rejection: duplicated half"));
-    assert_invalid(err, "NullifierDerivationStep: right half must be 1");
+    assert_invalid(dup_err, "NullifierDerivationStep: right half must be 1");
 
     // Case 2: even from note A, odd from note B; the cm seam rejects it.
     let cross_witness = make_witness(&odd_b_keys);
-    let err = PROOF_SYSTEM
+    let cross_err = PROOF_SYSTEM
         .fuse(
             rng,
             delegation::NullifierDerivationStep,
@@ -1675,5 +1679,8 @@ fn derivation_rejects_seam_violations() {
         )
         .err()
         .unwrap_or_else(|| panic!("expected rejection: mismatched note"));
-    assert_invalid(err, "NullifierDerivationStep: half commitments do not match");
+    assert_invalid(
+        cross_err,
+        "NullifierDerivationStep: half commitments do not match",
+    );
 }

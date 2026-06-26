@@ -92,7 +92,12 @@ impl NoteMasterKey {
     #[must_use]
     pub fn derive_expanded(&self) -> ExpandedKey {
         ExpandedKey(array::from_fn(|index| {
-            #[expect(clippy::as_conversions, reason = "constant expansion size")]
+            #[expect(
+                clippy::as_conversions,
+                clippy::integer_division,
+                clippy::integer_division_remainder_used,
+                reason = "constant expansion size; index < EK_LENGTH"
+            )]
             let cipher_index = ((index % 2) * ExpandedKey::EK_HALF + index / 2) as u64;
             mimc::mk_dk_expand(Fp::ZERO, self.0, Fp::from(cipher_index))
         }))
@@ -183,11 +188,18 @@ impl ExpandedKey {
     #[must_use]
     pub fn from_halves(half_even: &[Fp; Self::EK_HALF], half_odd: &[Fp; Self::EK_HALF]) -> Self {
         Self(array::from_fn(|index| {
-            if index % 2 == 0 {
+            #[expect(
+                clippy::indexing_slicing,
+                clippy::integer_division,
+                clippy::integer_division_remainder_used,
+                reason = "index < EK_LENGTH = 2*EK_HALF, so index/2 < EK_HALF"
+            )]
+            let key = if index % 2 == 0 {
                 half_even[index / 2]
             } else {
                 half_odd[index / 2]
-            }
+            };
+            key
         }))
     }
 
@@ -203,9 +215,10 @@ impl ExpandedKey {
     }
 
     /// One derivation polynomial: the 8192-round keyed cipher on input `salt`
-    /// under this full 128-key schedule, interpolated over `⟨ω⟩` (so `T(ω^i)`
-    /// is the `i`-th cipher state). The query reads it by evaluation, so it
-    /// is always the interpolant, never raw cipher states as coefficients.
+    /// under this full 256-key interleaved schedule (cycled 32 times),
+    /// interpolated over `⟨ω⟩` (so `T(ω^i)` is the `i`-th cipher state). The
+    /// query reads it by evaluation, so it is always the interpolant, never raw
+    /// cipher states as coefficients.
     #[must_use]
     pub fn derivation_poly(&self, salt: Fp) -> NfEmitterPoly {
         let mut coeffs = zcash_mimc::state_sequence::<

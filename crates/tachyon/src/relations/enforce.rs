@@ -191,6 +191,10 @@ pub(crate) fn enforce_row_recurrence<const COLUMNS: usize, const SPLITS: usize>(
 /// - **Public structure.** `exponent` is fixed and not witness-chosen after
 ///   `z`. `B` must be opened at `key_point·ζ^{-1}` (the odd-coset realignment),
 ///   not at `key_point`, or the reconstructed key is wrong.
+#[expect(
+    clippy::similar_names,
+    reason = "key_a_commit / key_b_commit name the two interleaved halves"
+)]
 pub(crate) fn enforce_committed_offset_recurrence<const SPLITS: usize, const FULL: usize>(
     ctx: &mut ragu::StepCtx<'_>,
     matrix: &Polynomial,
@@ -834,35 +838,42 @@ mod tests {
     extern crate alloc;
 
     use alloc::vec::Vec;
-    use core::iter::repeat_with;
+    use core::{array, iter::repeat_with};
 
     use ff::Field as _;
-    use rand::{SeedableRng as _, rngs::StdRng};
     use ragu::Domain;
+    use rand::{SeedableRng as _, rngs::StdRng};
 
     use super::*;
 
-    /// The interleaved-coset key reconstruction the offset recurrence relies on:
-    /// `K(x) = s_e(x)·A(x) + s_o(x)·B(x·ζ⁻¹)` (with `s_e = (x^HALF+1)/2`,
-    /// `s_o = (1−x^HALF)/2`, `ζ` the order-`FULL` root) equals the direct
-    /// order-`FULL` interpolant of the interleaved schedule (even half on the
-    /// even coset, odd half on the odd coset) at any `x`. The reference `K` is
-    /// interpolated directly, so the check is not impl-frozen.
+    /// The interleaved-coset key reconstruction the offset recurrence relies
+    /// on: `K(x) = s_e(x)·A(x) + s_o(x)·B(x·ζ⁻¹)` (with `s_e =
+    /// (x^HALF+1)/2`, `s_o = (1−x^HALF)/2`, `ζ` the order-`FULL` root)
+    /// equals the direct order-`FULL` interpolant of the interleaved
+    /// schedule (even half on the even coset, odd half on the odd coset) at
+    /// any `x`. The reference `K` is interpolated directly, so the check is
+    /// not impl-frozen.
     fn check_interleave_identity<const HALF: usize, const FULL: usize>(
         even: &[Fp; HALF],
         odd: &[Fp; HALF],
-        x: Fp,
+        point: Fp,
     ) {
         let mut a_coeffs = even.to_vec();
         Domain::new(HALF.ilog2()).ifft(&mut a_coeffs);
-        let a = Polynomial::from_coeffs(&a_coeffs);
+        let a_poly = Polynomial::from_coeffs(&a_coeffs);
         let mut b_coeffs = odd.to_vec();
         Domain::new(HALF.ilog2()).ifft(&mut b_coeffs);
-        let b = Polynomial::from_coeffs(&b_coeffs);
+        let b_poly = Polynomial::from_coeffs(&b_coeffs);
 
         // Independent reference: interpolate the interleaved schedule directly.
         let interleaved: Vec<Fp> = (0..FULL)
-            .map(|m| if m % 2 == 0 { even[m / 2] } else { odd[m / 2] })
+            .map(|position| {
+                if position % 2 == 0 {
+                    even[position / 2]
+                } else {
+                    odd[position / 2]
+                }
+            })
             .collect();
         let mut k_coeffs = interleaved;
         Domain::new(FULL.ilog2()).ifft(&mut k_coeffs);
@@ -870,14 +881,15 @@ mod tests {
 
         let zeta = subgroup_generator::<FULL>();
         let two_inv = Fp::from(2u64).invert().expect("two is invertible");
-        let half_pow = x.pow_vartime([HALF as u64]);
+        let half_pow = point.pow_vartime([HALF as u64]);
         let selector_even = (half_pow + Fp::ONE) * two_inv;
         let selector_odd = (Fp::ONE - half_pow) * two_inv;
-        let recon = selector_even * a.eval(x)
-            + selector_odd * b.eval(x * zeta.invert().expect("a root of unity is nonzero"));
+        let recon = selector_even * a_poly.eval(point)
+            + selector_odd
+                * b_poly.eval(point * zeta.invert().expect("a root of unity is nonzero"));
 
         assert_eq!(
-            k_direct.eval(x),
+            k_direct.eval(point),
             recon,
             "interleave identity must match the direct interpolant",
         );
@@ -891,12 +903,12 @@ mod tests {
     fn interleave_identity_reconstructs_the_full_schedule() {
         let rng = &mut StdRng::seed_from_u64(7);
         for _ in 0..8 {
-            let even: [Fp; 2] = core::array::from_fn(|_| Fp::random(&mut *rng));
-            let odd: [Fp; 2] = core::array::from_fn(|_| Fp::random(&mut *rng));
+            let even: [Fp; 2] = array::from_fn(|_| Fp::random(&mut *rng));
+            let odd: [Fp; 2] = array::from_fn(|_| Fp::random(&mut *rng));
             check_interleave_identity::<2, 4>(&even, &odd, Fp::random(&mut *rng));
         }
-        let even: [Fp; 128] = core::array::from_fn(|_| Fp::random(&mut *rng));
-        let odd: [Fp; 128] = core::array::from_fn(|_| Fp::random(&mut *rng));
+        let even: [Fp; 128] = array::from_fn(|_| Fp::random(&mut *rng));
+        let odd: [Fp; 128] = array::from_fn(|_| Fp::random(&mut *rng));
         for _ in 0..8 {
             check_interleave_identity::<128, 256>(&even, &odd, Fp::random(&mut *rng));
         }
