@@ -838,8 +838,69 @@ mod tests {
 
     use ff::Field as _;
     use rand::{SeedableRng as _, rngs::StdRng};
+    use ragu::Domain;
 
     use super::*;
+
+    /// The interleaved-coset key reconstruction the offset recurrence relies on:
+    /// `K(x) = s_e(x)·A(x) + s_o(x)·B(x·ζ⁻¹)` (with `s_e = (x^HALF+1)/2`,
+    /// `s_o = (1−x^HALF)/2`, `ζ` the order-`FULL` root) equals the direct
+    /// order-`FULL` interpolant of the interleaved schedule (even half on the
+    /// even coset, odd half on the odd coset) at any `x`. The reference `K` is
+    /// interpolated directly, so the check is not impl-frozen.
+    fn check_interleave_identity<const HALF: usize, const FULL: usize>(
+        even: &[Fp; HALF],
+        odd: &[Fp; HALF],
+        x: Fp,
+    ) {
+        let mut a_coeffs = even.to_vec();
+        Domain::new(HALF.ilog2()).ifft(&mut a_coeffs);
+        let a = Polynomial::from_coeffs(&a_coeffs);
+        let mut b_coeffs = odd.to_vec();
+        Domain::new(HALF.ilog2()).ifft(&mut b_coeffs);
+        let b = Polynomial::from_coeffs(&b_coeffs);
+
+        // Independent reference: interpolate the interleaved schedule directly.
+        let interleaved: Vec<Fp> = (0..FULL)
+            .map(|m| if m % 2 == 0 { even[m / 2] } else { odd[m / 2] })
+            .collect();
+        let mut k_coeffs = interleaved;
+        Domain::new(FULL.ilog2()).ifft(&mut k_coeffs);
+        let k_direct = Polynomial::from_coeffs(&k_coeffs);
+
+        let zeta = subgroup_generator::<FULL>();
+        let two_inv = Fp::from(2u64).invert().expect("two is invertible");
+        let half_pow = x.pow_vartime([HALF as u64]);
+        let selector_even = (half_pow + Fp::ONE) * two_inv;
+        let selector_odd = (Fp::ONE - half_pow) * two_inv;
+        let recon = selector_even * a.eval(x)
+            + selector_odd * b.eval(x * zeta.invert().expect("a root of unity is nonzero"));
+
+        assert_eq!(
+            k_direct.eval(x),
+            recon,
+            "interleave identity must match the direct interpolant",
+        );
+    }
+
+    /// The offset recurrence reconstructs the full key schedule from the two
+    /// committed halves by the interleaved-coset identity. Checked on the tiny
+    /// order-4 case (two order-2 halves) per the L=2 habit, then at the
+    /// production order-256 (two order-128 halves), at random points.
+    #[test]
+    fn interleave_identity_reconstructs_the_full_schedule() {
+        let rng = &mut StdRng::seed_from_u64(7);
+        for _ in 0..8 {
+            let even: [Fp; 2] = core::array::from_fn(|_| Fp::random(&mut *rng));
+            let odd: [Fp; 2] = core::array::from_fn(|_| Fp::random(&mut *rng));
+            check_interleave_identity::<2, 4>(&even, &odd, Fp::random(&mut *rng));
+        }
+        let even: [Fp; 128] = core::array::from_fn(|_| Fp::random(&mut *rng));
+        let odd: [Fp; 128] = core::array::from_fn(|_| Fp::random(&mut *rng));
+        for _ in 0..8 {
+            check_interleave_identity::<128, 256>(&even, &odd, Fp::random(&mut *rng));
+        }
+    }
 
     /// Constant-term lemma: over the domain `D`, any polynomial `g` of degree
     /// below `|D|` has power sums that vanish except at exponent zero, so

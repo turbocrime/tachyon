@@ -1587,3 +1587,93 @@ fn derivation_rejects_mismatched_key_poly() {
         "NullifierDerivationStep: even half-key poly does not match its commitment"
     );
 }
+
+/// Certify one expansion half (the `NfExpandedKeyset` PCD) for a note, returning
+/// it with that half's keys.
+fn keyset_half_pcd(
+    user: &WalletSim,
+    rng: &mut StdRng,
+    note: Note,
+    half: usize,
+) -> (Pcd<delegation::NfExpandedKeyset>, [Fp; ExpandedKey::EK_HALF]) {
+    let mk = user.master_key(&note);
+    let (spectrum, keys) = mk.derive_expanded_trace(half);
+    let left = user.note_master_half(rng, note, [0, 1, 2]);
+    let right = user.note_master_half(rng, note, [3, 4, 5]);
+    let (pcd, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            delegation::NfMasterExpand,
+            witness::nf_master_expand(&mk, &spectrum, &keys, half),
+            left,
+            right,
+        )
+        .expect("NfMasterExpand half");
+    (pcd, keys)
+}
+
+fn assert_invalid(err: ragu::Error, expected: &str) {
+    let ragu::Error::InvalidWitness(inner) = err else {
+        panic!("expected InvalidWitness, got {err:?}");
+    };
+    assert_eq!(inner.to_string(), expected);
+}
+
+/// The derivation step's seam rejects malformed half pairs: the same half twice
+/// (the right-half pin), and halves from different notes (the cm seam). The
+/// honest witness is never reached -- the seam checks fire before binding.
+#[test]
+fn derivation_rejects_seam_violations() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let user = WalletSim::random(rng);
+    let note_a = user.random_note(rng, 500);
+    let note_b = user.random_note(rng, 500);
+    let creation_epoch = EpochIndex(7);
+    let mk_a = user.master_key(&note_a);
+
+    let (even_a_pcd, even_a_keys) = keyset_half_pcd(&user, rng, note_a, 0);
+    let (_odd_a_pcd, odd_a_keys) = keyset_half_pcd(&user, rng, note_a, 1);
+    let (odd_b_pcd, odd_b_keys) = keyset_half_pcd(&user, rng, note_b, 1);
+
+    let keyset_a = ExpandedKey::from_halves(&even_a_keys, &odd_a_keys);
+    let polys = keyset_a.derivation_polys(&mk_a.query_salts());
+    let make_witness = |key_b_keys: &[Fp; ExpandedKey::EK_HALF]| {
+        witness::nullifier_derivation(
+            &keyset_a,
+            ExpandedKey::half_key_poly(&even_a_keys),
+            ExpandedKey::half_key_poly(key_b_keys),
+            &mk_a,
+            &polys,
+            creation_epoch,
+        )
+    };
+
+    // Case 1: the even half (half = 0) supplied as both Left and Right; the
+    // right-half pin rejects it.
+    let dup_witness = make_witness(&even_a_keys);
+    let err = PROOF_SYSTEM
+        .fuse(
+            rng,
+            delegation::NullifierDerivationStep,
+            dup_witness,
+            even_a_pcd.clone(),
+            even_a_pcd.clone(),
+        )
+        .err()
+        .unwrap_or_else(|| panic!("expected rejection: duplicated half"));
+    assert_invalid(err, "NullifierDerivationStep: right half must be 1");
+
+    // Case 2: even from note A, odd from note B; the cm seam rejects it.
+    let cross_witness = make_witness(&odd_b_keys);
+    let err = PROOF_SYSTEM
+        .fuse(
+            rng,
+            delegation::NullifierDerivationStep,
+            cross_witness,
+            even_a_pcd,
+            odd_b_pcd,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("expected rejection: mismatched note"));
+    assert_invalid(err, "NullifierDerivationStep: half commitments do not match");
+}

@@ -397,4 +397,28 @@ mod tests {
             "distinct first and last keys"
         );
     }
+
+    #[test]
+    fn derive_expanded_matches_interleaved_halves() {
+        // The native full-schedule path (derive_expanded) and the proof path
+        // (two half traces assembled by from_halves) must produce the identical
+        // interleaved 256-key schedule, or the certified nullifier would diverge
+        // from the wallet's native one.
+        let rng = &mut StdRng::seed_from_u64(4);
+        let nk = NullifierKey(Fp::random(&mut *rng));
+        let psi = note::NullifierTrapdoor::random(rng);
+        let mk = master_key(&nk, &psi);
+
+        let full = mk.derive_expanded();
+        let (_, even) = mk.derive_expanded_trace(0);
+        let (_, odd) = mk.derive_expanded_trace(1);
+
+        assert_eq!(
+            full,
+            ExpandedKey::from_halves(&even, &odd),
+            "derive_expanded equals the interleaved expansion halves"
+        );
+        // Domain separation: the two halves run disjoint cipher-input windows.
+        assert_ne!(even[0], odd[0], "halves use distinct cipher inputs");
+    }
 }
