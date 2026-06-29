@@ -9,6 +9,11 @@ and asks the interface question: when a nullifier is *built* from the product an
 does it leak, and can any proof-feasible construction make a long-lived nullifier sequence resist
 recovery?
 
+Alex's stated proposal is the simpler direct evaluation $nf_e=f(e)$, whose first question is binding
+rather than query design; that is treated in `nullifier-binding-alex.md`. This document considers the
+stronger interface, where the published value is a hidden query of the committed product, to test the
+primitive against the surface goal at its most favorable.
+
 The governing budget, that safe exposure requires staying below the recovery threshold set by the
 number of independent parameters, is developed in `surface-vs-recovery.md`. The job here is to find
 where the product's parameter count lands relative to that budget under each candidate interface.
