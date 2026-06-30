@@ -16,10 +16,7 @@ nf_e = f(e),    f(X) = prod_{i=0}^{n-1} (a_i * X^(2^i) + b_i)
 - `n` = number of factors. Target instances: **`n = 13` (lifetime `L = 2^13 = 8192`)** and
   `n = 14` (`L = 16384`).
 - `deg f = 2^n - 1`, so the epoch domain is `e in {0, ..., L-1}`.
-- Field: **Pallas base field** `F_p` (Pasta),
-  `p = 0x40000000000000000000000000000000224698fc094cf91b992d30ed00000001`
-  `= 28948022309329048855892746252171976963363056481941560715954676764349967630337`
-  (`~2^254`). Either Pasta prime is fine for the demo.
+- Field: **Pallas base field** `F_p` (Pasta)
 - Secrets `a_i, b_i` are nonzero field elements (PRF-derived in the real scheme; sample
   uniformly for the demo). Normalize: `f(X) = B * prod_i (1 + r_i X^(2^i))` with
   `B = prod b_i`, `r_i = a_i / b_i`. So `f` is determined by the **`n+1` values
@@ -28,29 +25,33 @@ nf_e = f(e),    f(X) = prod_{i=0}^{n-1} (a_i * X^(2^i) + b_i)
 
 ## Problem
 
-The attacker (a delegated sync service) is given `nf_e` for a window of `W` consecutive
-positive epochs `e in {e0, ..., e0+W-1}`. The offset `e0` is **any nonzero value** (notes
-never start at epoch 0; epochs are positive and sequential). The attack must not depend on
-`e0`, recovery should succeed for an arbitrary nonzero offset.
+The attacker (a delegated sync service) is given `nf_e` for a window of `W`
+consecutive positive epochs `e in {e0, ..., e0+W-1}`. The offset `e0` begins at
+**any nonzero value** (notes never start at epoch 0; epochs are positive and
+sequential). The attack must not depend on `e0`, recovery should succeed for an
+arbitrary nonzero offset.
 
-Recover `(B, r_i)`, then **predict `nf_{e*}` at an epoch `e*` outside the window** (e.g. the
-would-be spend epoch `L-1`) and verify it equals `f(e*)`. Report wall-clock.
+Recover `(B, r_i)`, then predict `nf_{e*}` at an epoch `e*` *outside the
+window*. (e.g. the would-be spend epoch `L-1`) and verify it equals `f(e*)`.
+Report wall-clock.
 
-Why small `W` is the interesting case: any `W < L = deg(f)+1` makes Lagrange interpolation of
-`f` impossible (and no coefficient can be read off, a sub-full point set aliases high-degree
-terms into low ones), so the attack is forced onto the `(n+1)`-parameter structure rather
-than the trivial interpolate-and-factor route.
+Why small `W` is the interesting case: any `W < L = deg(f)+1` makes Lagrange
+interpolation of `f` impossible (and no coefficient can be read off, a sub-full
+point set aliases high-degree terms into low ones), so the attack is forced
+onto the `(n+1)`-parameter structure rather than the trivial
+interpolate-and-factor route.
 
 ## Demonstration targets
 
-Show recovery and timing at **revealed-window sizes `W in {64, 128, 256, 512}`** (all far
-above the `n+1 = 14` information-theoretic minimum, and all far below `L`, so each one forces
-the structured solve). For each `W`:
+Show recovery and timing at **revealed-window sizes `W in {64, 128, 256, 512,
+1024, 2048, 4096}`** (all far above the `n+1 = 14` information-theoretic
+minimum, and all far below `L`, so each one forces the structured solve). For
+each `W`:
 
 - use an arbitrary nonzero `e0` (ideally repeat with two different offsets to confirm the
   result is offset-independent),
 - recover `(B, r_i)`,
-- predict `nf` at an unrevealed epoch (e.g. `L-1`) and verify equality,
+- predict `nf` at one or more unrevealed epochs (e.g. `L-1`) and verify equality,
 - record wall-clock.
 
 The headline result is the recover/verify outcome and the runtime-vs-`W` curve across those
@@ -104,17 +105,18 @@ therefore in which solver class fits.
 
 ## Environment / operator notes
 
-- Available hardware: a Framework desktop (128 GB RAM, many cores) and an M3 MacBook Pro
-  (36 GB). The large-RAM box favors large in-memory matrices; a GPU favors the sparse
-  mat-vec inner loop.
-- The operator prefers a GPU-first approach **where it offers a real benefit** (see the GPU
-  consideration above) but leaves the choice of method to the implementing agent.
+Available hardware
+- a Framework desktop 128 GB RAM, your present machine.
+- an M3 MacBook Pro 36 GB, the developer's machine. 
+
+The operator prefers a GPU-first approach **where it offers a real benefit**
+but leaves the choice of method to the implementing agent.
 
 ## Sanity ladder
 
 1. `n=3`, full window — confirm the rig recovers `(B, r_i)` and predicts an unseen `nf`.
-2. `n=13`, full `W = 8192` — interpolate-and-factor; fast, proves the pipeline end to end.
-3. `n=13`, `W in {64, 128, 256, 512}` — the demonstration (structured solve, arbitrary `e0`).
+3. `n=13`, full `W = 8192` — interpolate-and-factor; fast, proves the pipeline end to end.
+4. `n=13`, `W in {64, 128, 256, 512}` — the demonstration (structured solve, arbitrary `e0`).
 
 ## Success metric
 
@@ -152,3 +154,4 @@ unrevealed `nf`. It reduces to either an over-determined multilinear system (13 
 sparse structured quadratic system (`2^13` coeffs); the implementer chooses the formulation,
 solver, and hardware. Demonstrate at windows of 64, 128, 256, and 512 and report wall-clock
 plus a correct unrevealed-nullifier prediction."
+
