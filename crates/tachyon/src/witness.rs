@@ -9,6 +9,8 @@
 use alloc::vec::Vec;
 
 use ragu::{Header, Step};
+use ragu_arithmetic::PoseidonPermutation as _;
+use ragu_pasta::PoseidonFp;
 
 use crate::{
     nullifier::Nullifier,
@@ -16,7 +18,7 @@ use crate::{
         ActionDigest, ActionSetPoly, Anchor, EpochIndex, NfSeqPoly, Tachygram, TachygramSetPoly,
     },
     stamp::proof::{
-        delegation::NullifierFuse,
+        delegation::{NfDerive, NullifierFuse},
         pool::{AnchorSeed, EndEpochUnspentSeed, UnspentBind, UnspentFuse, UnspentSeed},
         spendable::SpendableInit,
         stamp::MergeStamp,
@@ -28,6 +30,27 @@ type StepLeft<S> = <<S as Step>::Left as Header>::Data;
 type StepRight<S> = <<S as Step>::Right as Header>::Data;
 
 type StepWitness<'src, S> = <S as Step>::Witness<'src>;
+
+/// Prepare the witness for [`NfDerive`]: `(window_start, mask, seq)`.
+///
+/// The sequence covers the mask's contiguous run of the window's epochs,
+/// derived from the master key on the left header. `window_start` must be
+/// group-aligned.
+#[must_use]
+pub fn nf_derive(
+    (left, _right): (StepLeft<NfDerive>, StepRight<NfDerive>),
+    window_start: EpochIndex,
+    mask: [bool; PoseidonFp::RATE],
+) -> StepWitness<'static, NfDerive> {
+    let (_cm, mk) = left;
+    let seq = mk
+        .derive_group(window_start)
+        .into_iter()
+        .zip(mask)
+        .filter_map(|(nf, selected)| selected.then_some(nf))
+        .collect::<NfSeqPoly>();
+    (window_start, mask, seq)
+}
 
 /// Prepare the witness for [`NullifierFuse`]: `(left, merged, leaf)`.
 #[must_use]

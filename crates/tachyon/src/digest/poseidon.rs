@@ -2,10 +2,14 @@
 //!
 //! Each named function provides one protocol-defined hash.
 
+use core::array;
+
 use ff::PrimeField as _;
 use group::{CurveAffine as _, GroupEncoding as _};
 use pasta_curves::{EpAffine, EqAffine, Fp, arithmetic::Coordinates};
 use ragu::Sponge;
+use ragu_arithmetic::PoseidonPermutation as _;
+use ragu_pasta::PoseidonFp;
 
 #[expect(
     clippy::expect_used,
@@ -79,34 +83,40 @@ pub fn pad_tachygram(rcm: Fp, pk: Fp, value: u64, psi: Fp) -> Fp {
     ])
 }
 
-const NULLIFIER_PREFIX_DOMAIN: &[u8; 16] = b"Tachyon-NfPrefix";
+const NULLIFIER_MASTER_DOMAIN: &[u8; 16] = b"Tachyon-NfMaster";
 
-/// Derives a GGM root (master key) from note trapdoor and wallet nullifier key.
+/// Derives a note's master key from its trapdoor and the wallet nullifier key.
+///
+/// $\mathsf{mk} = \mathsf{Poseidon}(\mathtt{NF\_MASTER\_DOMAIN}, \psi,
+/// \mathsf{nk})$
 #[must_use]
 pub fn nf_master(psi: Fp, nk: Fp) -> Fp {
     hash::<3>([
-        Fp::from_u128(u128::from_le_bytes(*NULLIFIER_PREFIX_DOMAIN)),
+        Fp::from_u128(u128::from_le_bytes(*NULLIFIER_MASTER_DOMAIN)),
         psi,
         nk,
     ])
 }
 
-/// Derives a nullifier prefix from a previous prefix and a walk direction.
-#[must_use]
-pub fn nf_prefix(prefix_prev: Fp, step: u8) -> Fp {
-    hash::<3>([
-        Fp::from_u128(u128::from_le_bytes(*NULLIFIER_PREFIX_DOMAIN)),
-        prefix_prev,
-        Fp::from(u64::from(step)), // TODO: chunk some booleans by arity?
-    ])
-}
-
 const NULLIFIER_DOMAIN: &[u8; 16] = b"Tachyon-NfDerive";
 
-/// Derives a nullifier from a leaf of the prefix tree.
+/// Derives the group of consecutive epoch nullifiers starting at the
+/// group-aligned epoch `epoch_start` from the note's master key.
+#[expect(
+    clippy::expect_used,
+    reason = "mock sponge absorb/squeeze cannot fail in wireless `Always` mode"
+)]
 #[must_use]
-pub fn nullifier(leaf: Fp) -> Fp {
-    hash::<2>([Fp::from_u128(u128::from_le_bytes(*NULLIFIER_DOMAIN)), leaf])
+pub fn nullifier_group(mk: Fp, epoch_start: Fp) -> [Fp; PoseidonFp::RATE] {
+    let mut sponge = Sponge::new();
+    for value in [
+        Fp::from_u128(u128::from_le_bytes(*NULLIFIER_DOMAIN)),
+        mk,
+        epoch_start,
+    ] {
+        sponge.absorb(value).expect("infallible");
+    }
+    array::from_fn(|_| sponge.squeeze().expect("infallible"))
 }
 
 /// A Vesta point's compressed encoding as two 128-bit $\mathbb{F}_p$ limbs.

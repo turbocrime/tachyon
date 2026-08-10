@@ -81,7 +81,7 @@ impl Step for SpendableInit {
     /// `(pre_cm_anchor, creation_set, present_nf)`.
     type Witness<'source> = (Anchor, TachygramSetPoly, Nullifier);
 
-    const INDEX: Index = Index::new(10);
+    const INDEX: Index = Index::new(9);
 
     fn witness<'source>(
         &self,
@@ -139,7 +139,7 @@ impl Step for SpendableLift {
     type Right = Unspent;
     type Witness<'source> = ();
 
-    const INDEX: Index = Index::new(11);
+    const INDEX: Index = Index::new(10);
 
     fn witness<'source>(
         &self,

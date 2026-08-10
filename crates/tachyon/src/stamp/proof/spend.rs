@@ -68,7 +68,7 @@ impl Step for SpendBind {
     /// `(nf_next,)`.
     type Witness<'source> = (Nullifier,);
 
-    const INDEX: Index = Index::new(14);
+    const INDEX: Index = Index::new(13);
 
     fn witness<'source>(
         &self,

@@ -895,6 +895,8 @@ dependencies = [
  "group",
  "lazy_static",
  "ragu",
+ "ragu_arithmetic",
+ "ragu_pasta",
  "rand",
  "rand_core 0.10.1",
  "zakura-pasta-curves",

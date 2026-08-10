@@ -1,50 +1,50 @@
-//! GGM nullifier-derivation chain: prove a contiguous range of a note's
-//! per-epoch nullifiers `GGM(mk, ·)`. Wallet-only; every range header carries
-//! `cm` for its consumers.
+//! Prove a fusable range of a note's per-epoch nullifiers. Wallet-only; every
+//! range header carries `cm` for its consumers.
+//!
+//! Three steps. [`NfMasterSeed`] certifies the note's commitment and master
+//! key; [`NfDerive`] runs one sponge group and exports a masked contiguous run
+//! of its outputs; and [`NullifierFuse`] concatenates adjacent ranges.
 
 extern crate alloc;
 
 use alloc::{vec, vec::Vec};
+use core::array;
 
 use ff::Field as _;
 use pasta_curves::{Ep, Eq, Fp, Fq};
 use ragu::{
-    Cycle as _, FixedGenerators as _, Header, Index, Pasta, Step, Suffix,
+    Header, Index, Step, Suffix,
     constraint::{enforce_equal_point, enforce_zero},
 };
+use ragu_arithmetic::PoseidonPermutation as _;
+use ragu_pasta::PoseidonFp;
 
 use crate::{
-    digest::poseidon,
-    keys::{GGM_TREE_ARITY, GGM_TREE_DEPTH, ProofAuthorizingKey},
+    keys::{NoteMasterKey, ProofAuthorizingKey},
     note::{self, Note},
     nullifier::Nullifier,
     primitives::{EpochIndex, NfSeqCommit, NfSeqPoly},
     relations::enforce::enforce_shifted_combination,
 };
 
-/// In-progress GGM walk position `(cm, node, depth, index)`: the note
-/// commitment `cm` carried for the final binding, the current tree `node`,
-/// levels descended `depth`, and leaf `index`. Wallet-only.
+/// A note's certified commitment and master key (wallet-only).
+///
+/// `mk` is derived natively from the note's secrets and certified here, so
+/// every consuming [`NfDerive`] threads a genuine master key without
+/// re-witnessing the note. `cm` rides along for the derivation's consumers to
+/// bind against.
 #[derive(Clone, Debug)]
-pub struct NfPrefixHeader;
+pub struct NfMasterHeader;
 
-impl Header for NfPrefixHeader {
-    type Data = (note::Commitment, Fp, u8, EpochIndex);
+impl Header for NfMasterHeader {
+    /// `(cm, mk)`.
+    type Data = (note::Commitment, NoteMasterKey);
 
     const SUFFIX: Suffix = Suffix::new(1);
 
     fn encode(data: &Self::Data) -> (Vec<Fp>, Vec<Fq>, Vec<Ep>, Vec<Eq>) {
-        (
-            vec![
-                Fp::from(data.0),
-                data.1,
-                Fp::from(u64::from(data.2)),
-                Fp::from(u64::from(data.3.0)),
-            ],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        )
+        let (cm, mk) = *data;
+        (vec![Fp::from(cm), mk.0], Vec::new(), Vec::new(), Vec::new())
     }
 }
 
@@ -53,10 +53,10 @@ impl Header for NfPrefixHeader {
 /// `(cm, (epoch_start, nf_start), nf_seq_commit, (epoch_end, nf_end))`: `cm`
 /// lets every consumer bind the range to the real note; `nf_seq_commit` (the
 /// nullifier sequence) sits between its boundary `(epoch, nullifier)` pairs and
-/// commits to the half-open range `[nf_start, .., nf_end]` (`N_e = GGM(mk, e)`)
-/// at degree 0, sentinel-terminated (see [`NfSeqPoly`]) so the commitment is
-/// never the identity point. `nf_start`/`nf_end` are the genuine boundary
-/// leaves, so a consumer can bind them without opening the sequence.
+/// commits to the half-open range `[nf_start, .., nf_end]` at degree 0,
+/// sentinel-terminated (see [`NfSeqPoly`]) so the commitment is never the
+/// identity point. `nf_start`/`nf_end` are the genuine boundary members, so a
+/// consumer can bind them without opening the sequence.
 #[derive(Clone, Debug)]
 pub struct NullifierHeader;
 
@@ -87,18 +87,27 @@ impl Header for NullifierHeader {
     }
 }
 
-/// Seed the GGM walk at the master root.
+/// Certify a note's commitment and master key.
 ///
-/// Witnesses the note and `pak`, proves `mk` is the note's master key
-/// (`note.pk == pak.derive_payment_key()`), and emits the depth-0 node carrying
-/// the note's `cm`.
+/// Seed step. Witnesses the note and its proof authorizing key, proves the
+/// key belongs to the note (`note.pk == pak.derive_payment_key()`, which pins
+/// `nk`), derives `mk` from `nk` and the note's trapdoor, and computes `cm`.
+/// `nk` never leaves the step; only `pk`, which preimage-hides it, enters
+/// `cm`.
+///
+/// # Soundness
+///
+/// A seed can invent a note, so `cm` closes downstream, at
+/// [`SpendableInit`](super::spendable::SpendableInit) and
+/// [`SpendStamp`](super::stamp::SpendStamp). What this step establishes is
+/// the pairing: `mk` is *this* `cm`'s master key.
 #[derive(Debug)]
 pub struct NfMasterSeed;
 
 impl Step for NfMasterSeed {
     type Aux<'source> = ();
     type Left = ();
-    type Output = NfPrefixHeader;
+    type Output = NfMasterHeader;
     type Right = ();
     /// `(note, pak)`.
     type Witness<'source> = (Note, ProofAuthorizingKey);
@@ -118,90 +127,171 @@ impl Step for NfMasterSeed {
         )?;
         let mk = pak.nk.derive_note_private(note.psi);
         let cm = note.commitment();
-        Ok(((cm, mk.0, 0, EpochIndex(0)), ()))
+        Ok(((cm, mk), ()))
     }
 }
 
-/// Descend one level of the GGM tree.
+/// Derive one sponge group of nullifiers and export a masked contiguous run
+/// of it as a [`NullifierHeader`].
 ///
-/// Witnesses a free `chunk`; `node' = nf_prefix(node, chunk)`, `index' =
-/// index*ARITY + chunk`, `depth' = depth + 1`.
+/// `Left = NfMasterSeed`. Witnesses the window start epoch $w$ (constrained
+/// group-aligned, $w \bmod \mathsf{RATE} = 0$), a
+/// `[bool; PoseidonFp::RATE]` mask selecting which of the window's epochs
+/// the exported range covers, and the range's sequence polynomial. One sponge
+/// absorbs $(\mathtt{NF\_DOMAIN}, \mathsf{mk}, w)$ and squeezes the window's
+/// `PoseidonFp::RATE` nullifiers (one permutation each way); the mask then
+/// shifts the exported `epoch_start` past the leading unselected epochs and
+/// sizes the range at the run's length, so the step emits an exact-fit span
+/// of one to `PoseidonFp::RATE` epochs.
+///
+/// With mask bits $m_j$, rising edges $e_j = (1 - m_{j-1})\,m_j$ (taking
+/// $m_{-1} = 0$) and falling edges $f_j = m_j\,(1 - m_{j+1})$ (taking
+/// $m_4 = 0$), the constraints are:
+///
+/// $$m_j (m_j - 1) = 0, \qquad \textstyle\sum_j e_j = 1$$
+///
+/// (booleanity, and exactly one contiguous nonempty run), and the sequence
+/// bind at a transcript challenge $z$ derived from the sequence commitment:
+///
+/// $$\mathsf{seq}(z) \cdot \sum_j e_j z^j
+///   = \sum_j m_j\,\mathsf{nf}_j\,z^j + \sum_j f_j z^{j+1}$$
+///
+/// since $\sum_j e_j z^j = z^{\mathsf{lead}}$, the masked members sit at
+/// absolute degrees $\mathsf{lead}..\mathsf{lead}+\mathsf{count}$, and
+/// $\sum_j f_j z^{j+1} = z^{\mathsf{lead}+\mathsf{count}}$ is the sentinel's
+/// absolute slot. By Schwartz–Zippel this pins $\mathsf{seq}$ to exactly
+/// $\sum_p \mathsf{nf}_{\mathsf{lead}+p} X^p + X^{\mathsf{count}}$.
+///
+/// # Soundness
+///
+/// `mk` is threaded from the left header, so it is the note's genuine master
+/// key by PCD soundness. The opening's only free operand is the range
+/// sequence, committed before $z$ exists and independent of it.
+///
+/// The window start and the mask are free witnesses, pinned by the header
+/// they produce: with $w$ constrained group-aligned,
+/// $\mathsf{epoch\_start} = w + \mathsf{lead}$ with $\mathsf{lead}$ inside
+/// the window is an injective decomposition, and $\mathsf{count} =
+/// \mathsf{epoch\_end} - \mathsf{epoch\_start}$, so the emitted span
+/// determines both. The boundary nullifiers are edge-selected from the
+/// sponge outputs of the threaded `mk`, pinned in-circuit.
+///
+/// Committed-polynomial inventory: one witnessed polynomial (the range
+/// sequence), opened once at $z$.
 #[derive(Debug)]
-pub struct NfPrefixStep;
+pub struct NfDerive;
 
-impl Step for NfPrefixStep {
+impl Step for NfDerive {
     type Aux<'source> = ();
-    type Left = NfPrefixHeader;
-    type Output = NfPrefixHeader;
+    type Left = NfMasterHeader;
+    type Output = NullifierHeader;
     type Right = ();
-    /// `(chunk,)`.
-    type Witness<'source> = (u8,);
+    /// `(window_start, mask, seq)`.
+    type Witness<'source> = (EpochIndex, [bool; PoseidonFp::RATE], NfSeqPoly);
 
     const INDEX: Index = Index::new(1);
 
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::indexing_slicing,
+        clippy::integer_division_remainder_used,
+        reason = "mask offsets and the alignment remainder are bounded by the \
+                  fixed group width"
+    )]
     fn witness<'source>(
         &self,
-        _ctx: &mut ragu::StepCtx<'_>,
-        (chunk,): Self::Witness<'source>,
-        (cm, node, depth, index): <Self::Left as Header>::Data,
+        ctx: &mut ragu::StepCtx<'_>,
+        (window_start, mask, seq): Self::Witness<'source>,
+        (cm, mk): <Self::Left as Header>::Data,
         _right: <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
-        if depth >= GGM_TREE_DEPTH {
-            return Err(ragu::Error::InvalidWitness(
-                "NfPrefixStep: already at maximum depth".into(),
-            ));
-        }
-        if chunk >= GGM_TREE_ARITY {
-            return Err(ragu::Error::InvalidWitness(
-                "NfPrefixStep: chunk exceeds GGM arity".into(),
-            ));
-        }
-        let child = poseidon::nf_prefix(node, chunk);
-        let child_index = EpochIndex(index.0 * u32::from(GGM_TREE_ARITY) + u32::from(chunk));
-        Ok(((cm, child, depth + 1, child_index), ()))
-    }
-}
-
-/// Turn a leaf node into a single-leaf [`NullifierHeader`].
-///
-/// Requires the walk to be at a leaf (`depth == GGM_TREE_DEPTH`); the nullifier
-/// is `Poseidon(node)` and the range commits to it alone at degree 0 (sentinel
-/// above), spanning the single epoch `[index, index + 1)`.
-#[derive(Debug)]
-pub struct NullifierStep;
-
-impl Step for NullifierStep {
-    type Aux<'source> = ();
-    type Left = NfPrefixHeader;
-    type Output = NullifierHeader;
-    type Right = ();
-    type Witness<'source> = ();
-
-    const INDEX: Index = Index::new(2);
-
-    fn witness<'source>(
-        &self,
-        _ctx: &mut ragu::StepCtx<'_>,
-        _witness: Self::Witness<'source>,
-        (cm, node, depth, index): <Self::Left as Header>::Data,
-        _right: <Self::Right as Header>::Data,
-    ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
-        #[expect(clippy::expect_used, reason = "constant size")]
-        let &[g0, g1] = Pasta::host_generators(Pasta::baked())
-            .g()
-            .split_first_chunk::<2>()
-            .expect("at least two generators")
-            .0;
-
         enforce_zero(
-            Fp::from(u64::from(depth)) - Fp::from(u64::from(GGM_TREE_DEPTH)),
-            "NullifierStep: not at maximum depth",
+            Fp::from(u64::from(window_start.0 % PoseidonFp::RATE as u32)),
+            "NfDerive: window start is not group-aligned",
         )?;
-        let nf = Nullifier::from(poseidon::nullifier(node));
+        let nullifiers = mk.derive_group(window_start).map(Fp::from);
 
-        // Single-leaf sentinel sequence `nf + X`: `g1` carries the sentinel.
-        let nf_seq_commit = NfSeqCommit::from(g0 * Fp::from(nf) + g1);
-        Ok(((cm, (index, nf), nf_seq_commit, (index.next(), nf)), ()))
+        let bits: [Fp; PoseidonFp::RATE] = mask.map(|selected| Fp::from(u64::from(selected)));
+        for bit in bits {
+            enforce_zero(bit * (bit - Fp::ONE), "NfDerive: mask entry is not boolean")?;
+        }
+        let rise: [Fp; PoseidonFp::RATE] = array::from_fn(|j| {
+            let prev = if j == 0 { Fp::ZERO } else { bits[j - 1] };
+            (Fp::ONE - prev) * bits[j]
+        });
+        let fall: [Fp; PoseidonFp::RATE] = array::from_fn(|j| {
+            let next = if j + 1 == PoseidonFp::RATE {
+                Fp::ZERO
+            } else {
+                bits[j + 1]
+            };
+            bits[j] * (Fp::ONE - next)
+        });
+        enforce_zero(
+            rise.iter().sum::<Fp>() - Fp::ONE,
+            "NfDerive: mask is not one contiguous nonempty run",
+        )?;
+
+        let lead = mask.iter().take_while(|selected| !**selected).count() as u32;
+        let count = mask.iter().filter(|selected| **selected).count() as u32;
+        let epoch_start = EpochIndex(window_start.0 + lead);
+        let epoch_end = EpochIndex(epoch_start.0 + count);
+
+        // Pin the emitted span to the witnessed window start and mask.
+        let lead_selected: Fp = (0u64..).zip(rise).map(|(j, edge)| Fp::from(j) * edge).sum();
+        let count_selected: Fp = bits.iter().sum();
+        enforce_zero(
+            Fp::from(epoch_start) - (Fp::from(window_start) + lead_selected),
+            "NfDerive: epoch_start does not match the mask shift",
+        )?;
+        enforce_zero(
+            Fp::from(epoch_end) - (Fp::from(window_start) + lead_selected + count_selected),
+            "NfDerive: epoch_end does not match the mask run",
+        )?;
+
+        // The boundary members, edge-selected from the sponge outputs.
+        let nf_start: Fp = rise
+            .iter()
+            .zip(nullifiers)
+            .map(|(edge, nf)| *edge * nf)
+            .sum();
+        let nf_end: Fp = fall
+            .iter()
+            .zip(nullifiers)
+            .map(|(edge, nf)| *edge * nf)
+            .sum();
+
+        // `z`: a fresh transcript challenge over the sequence commitment. The
+        // polynomial is fixed before it exists, so the single opening below
+        // is not vacuous.
+        let z = ctx.derive_challenge(&[seq.commit().into()])?;
+        let seq_at_z = seq.eval(z);
+        ctx.enforce_poly_query(seq.commit().into(), z, seq_at_z)?;
+
+        let mut z_pows = [Fp::ONE; PoseidonFp::RATE + 1];
+        for j in 1..z_pows.len() {
+            z_pows[j] = z_pows[j - 1] * z;
+        }
+        let z_lead: Fp = rise.iter().zip(z_pows).map(|(edge, pow)| *edge * pow).sum();
+        let members_at_z: Fp = (0..PoseidonFp::RATE)
+            .map(|j| bits[j] * nullifiers[j] * z_pows[j])
+            .sum();
+        let sentinel_at_z: Fp = (0..PoseidonFp::RATE).map(|j| fall[j] * z_pows[j + 1]).sum();
+        enforce_zero(
+            seq_at_z * z_lead - members_at_z - sentinel_at_z,
+            "NfDerive: sequence does not match the masked run",
+        )?;
+
+        Ok((
+            (
+                cm,
+                (epoch_start, Nullifier::from(nf_start)),
+                seq.commit(),
+                (epoch_end, Nullifier::from(nf_end)),
+            ),
+            (),
+        ))
     }
 }
 
@@ -222,7 +312,7 @@ impl Step for NullifierFuse {
     /// `(left_seq, merged_seq, right_seq)`.
     type Witness<'source> = (NfSeqPoly, NfSeqPoly, NfSeqPoly);
 
-    const INDEX: Index = Index::new(3);
+    const INDEX: Index = Index::new(2);
 
     fn witness<'source>(
         &self,

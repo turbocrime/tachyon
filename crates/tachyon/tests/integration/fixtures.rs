@@ -696,11 +696,11 @@ impl WalletSim {
         self.mk(note).derive_nullifier(epoch)
     }
 
-    pub fn note_master<RNG: CryptoRng>(
+    pub fn master_pcd<RNG: CryptoRng>(
         &self,
         rng: &mut RNG,
         note: Note,
-    ) -> Pcd<delegation::NfPrefixHeader> {
+    ) -> Pcd<delegation::NfMasterHeader> {
         let (pcd, ()) = PROOF_SYSTEM
             .seed(rng, delegation::NfMasterSeed, (note, self.pak))
             .expect("note seed");
@@ -713,8 +713,8 @@ impl WalletSim {
         note: Note,
         target_epoch: EpochIndex,
     ) -> Pcd<delegation::NullifierHeader> {
-        let master = self.note_master(rng, note);
-        ggm_tools::nullifier_from_master(rng, master, target_epoch)
+        let master = self.master_pcd(rng, note);
+        derive_tools::nullifier_from_master(rng, &master, target_epoch)
     }
 
     pub fn derived_range<RNG: CryptoRng>(
@@ -724,8 +724,8 @@ impl WalletSim {
         epoch_start: EpochIndex,
         len: u32,
     ) -> Pcd<delegation::NullifierHeader> {
-        let master = self.note_master(rng, *note);
-        ggm_tools::nullifier_range_from_master(rng, &master, epoch_start, len)
+        let master = self.master_pcd(rng, *note);
+        derive_tools::nullifier_range_from_master(rng, &master, epoch_start, len)
     }
 
     pub fn spendable_init<RNG: CryptoRng>(
@@ -990,114 +990,104 @@ impl Default for SyncSim {
     }
 }
 
-pub mod ggm_tools {
+pub mod derive_tools {
     extern crate alloc;
     use alloc::vec::Vec;
+    use core::array;
 
     use ragu::{Pcd, Proof};
+    use ragu_arithmetic::PoseidonPermutation as _;
+    use ragu_pasta::PoseidonFp;
     use rand_core::CryptoRng;
     use zcash_tachyon::{
         EpochIndex,
-        digest::poseidon,
-        keys::{GGM_CHUNK_SIZE, GGM_TREE_DEPTH},
         nullifier::Nullifier,
         stamp::proof::{PROOF_SYSTEM, delegation},
         witness,
     };
 
-    pub fn walk_master_to_depth<RNG: CryptoRng>(
+    /// One masked [`delegation::NfDerive`] covering the epochs of the window
+    /// at `window_start` that intersect `[epoch_start, epoch_end)`.
+    pub fn masked_derivation<RNG: CryptoRng>(
         rng: &mut RNG,
-        master_pcd: Pcd<delegation::NfPrefixHeader>,
-        epoch: EpochIndex,
-        target_depth: u8,
-    ) -> Pcd<delegation::NfPrefixHeader> {
-        assert!(
-            (1..=GGM_TREE_DEPTH).contains(&target_depth),
-            "target_depth must be in 1..=GGM_DEPTH",
-        );
-
-        let mut pcd = master_pcd;
-        while pcd.data().2 < target_depth {
-            let next_step = pcd.data().2 + 1;
-            let chunk = chunk_at(epoch.0, next_step);
-            let (next_pcd, ()) = PROOF_SYSTEM
-                .fuse(
-                    rng,
-                    delegation::NfPrefixStep,
-                    (chunk,),
-                    pcd,
-                    Proof::trivial().carry::<()>(()),
-                )
-                .expect("note step");
-            pcd = next_pcd;
-        }
-
+        master_pcd: Pcd<delegation::NfMasterHeader>,
+        window_start: EpochIndex,
+        epoch_start: EpochIndex,
+        epoch_end: EpochIndex,
+    ) -> Pcd<delegation::NullifierHeader> {
+        let mask: [bool; PoseidonFp::RATE] = array::from_fn(|j| {
+            let epoch = window_start.0 + u32::try_from(j).expect("window offset fits");
+            (epoch_start.0..epoch_end.0).contains(&epoch)
+        });
+        let derive_witness = witness::nf_derive((*master_pcd.data(), ()), window_start, mask);
+        let (pcd, ()) = PROOF_SYSTEM
+            .fuse(
+                rng,
+                delegation::NfDerive,
+                derive_witness,
+                master_pcd,
+                Proof::trivial().carry::<()>(()),
+            )
+            .expect("NfDerive");
         pcd
     }
 
     pub fn nullifier_from_master<RNG: CryptoRng>(
         rng: &mut RNG,
-        master_pcd: Pcd<delegation::NfPrefixHeader>,
+        master_pcd: &Pcd<delegation::NfMasterHeader>,
         target_epoch: EpochIndex,
     ) -> Pcd<delegation::NullifierHeader> {
-        let prefix_pcd = walk_master_to_depth(rng, master_pcd, target_epoch, GGM_TREE_DEPTH);
-        let (pcd, ()) = PROOF_SYSTEM
-            .fuse(
-                rng,
-                delegation::NullifierStep,
-                (),
-                prefix_pcd,
-                Proof::trivial().carry::<()>(()),
-            )
-            .expect("nullifier step");
-        pcd
+        nullifier_range_from_master(rng, master_pcd, target_epoch, 1)
     }
 
+    /// A derivation range covering `[epoch_start, epoch_start + len)`: one
+    /// masked [`delegation::NfDerive`] per intersecting group, fused left to
+    /// right with [`delegation::NullifierFuse`].
     pub fn nullifier_range_from_master<RNG: CryptoRng>(
         rng: &mut RNG,
-        master_pcd: &Pcd<delegation::NfPrefixHeader>,
+        master_pcd: &Pcd<delegation::NfMasterHeader>,
         epoch_start: EpochIndex,
         len: u32,
     ) -> Pcd<delegation::NullifierHeader> {
         assert!(len >= 1, "range length must be at least 1");
+        let epoch_end = EpochIndex(epoch_start.0 + len);
+        let (_, mk) = *master_pcd.data();
+
+        let width = u32::try_from(PoseidonFp::RATE).expect("group width fits");
         let mut nfs: Vec<Nullifier> = Vec::new();
         let mut acc: Option<Pcd<delegation::NullifierHeader>> = None;
-        for offset in 0..len {
-            let epoch = EpochIndex(epoch_start.0 + offset);
-            let prefix_pcd = walk_master_to_depth(rng, master_pcd.clone(), epoch, GGM_TREE_DEPTH);
-            let nf = Nullifier::from(poseidon::nullifier(prefix_pcd.data().1));
-            let (leaf, ()) = PROOF_SYSTEM
-                .fuse(
-                    rng,
-                    delegation::NullifierStep,
-                    (),
-                    prefix_pcd,
-                    Proof::trivial().carry::<()>(()),
-                )
-                .expect("nullifier step");
+        let mut window = epoch_start.0 - epoch_start.0 % width;
+        while window < epoch_end.0 {
+            let piece = masked_derivation(
+                rng,
+                master_pcd.clone(),
+                EpochIndex(window),
+                epoch_start,
+                epoch_end,
+            );
+            let (_, (piece_start, _), _, (piece_end, _)) = *piece.data();
+            let piece_nfs: Vec<Nullifier> = (piece_start.0..piece_end.0)
+                .map(|epoch| mk.derive_nullifier(EpochIndex(epoch)))
+                .collect();
             acc = Some(match acc {
-                None => {
-                    nfs.push(nf);
-                    leaf
-                },
+                None => piece,
                 Some(left) => {
-                    let fuse_witness =
-                        witness::nullifier_fuse((*left.data(), *leaf.data()), nfs.as_slice(), nf);
-                    nfs.push(nf);
+                    let mut merged = nfs.clone();
+                    merged.extend_from_slice(&piece_nfs);
+                    let fuse_witness = (
+                        nfs.iter().copied().collect(),
+                        merged.into_iter().collect(),
+                        piece_nfs.iter().copied().collect(),
+                    );
                     let (fused, ()) = PROOF_SYSTEM
-                        .fuse(rng, delegation::NullifierFuse, fuse_witness, left, leaf)
+                        .fuse(rng, delegation::NullifierFuse, fuse_witness, left, piece)
                         .expect("NullifierFuse");
                     fused
                 },
             });
+            nfs.extend_from_slice(&piece_nfs);
+            window += width;
         }
         acc.expect("len >= 1 produced a range")
-    }
-
-    fn chunk_at(epoch_bits: u32, level: u8) -> u8 {
-        let shift = (GGM_TREE_DEPTH * GGM_CHUNK_SIZE) - level * GGM_CHUNK_SIZE;
-        let chunk_mask = (1u32 << GGM_CHUNK_SIZE) - 1u32;
-        let chunk_u32 = (epoch_bits >> shift) & chunk_mask;
-        u8::try_from(chunk_u32).expect("chunk fits in u8")
     }
 }

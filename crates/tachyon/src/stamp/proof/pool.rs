@@ -196,7 +196,7 @@ impl Step for AnchorSeed {
     /// `(start, epoch, stamp_commit)`.
     type Witness<'source> = (Anchor, EpochIndex, TachygramSetCommit);
 
-    const INDEX: Index = Index::new(4);
+    const INDEX: Index = Index::new(3);
 
     fn witness<'source>(
         &self,
@@ -225,7 +225,7 @@ impl Step for AnchorFuse {
     type Right = AnchorChain;
     type Witness<'source> = ();
 
-    const INDEX: Index = Index::new(5);
+    const INDEX: Index = Index::new(4);
 
     fn witness<'source>(
         &self,
@@ -258,7 +258,7 @@ impl Step for UnspentSeed {
     /// `(anchor_prev, (epoch, nf), stamp_tg_set)`.
     type Witness<'source> = (Anchor, (EpochIndex, Nullifier), TachygramSetPoly);
 
-    const INDEX: Index = Index::new(6);
+    const INDEX: Index = Index::new(5);
 
     fn witness<'source>(
         &self,
@@ -327,7 +327,7 @@ impl Step for EndEpochUnspentSeed {
     /// `(anchor_prev, (epoch_prev, nf_prev), nf)`.
     type Witness<'source> = (Anchor, (EpochIndex, Nullifier), Nullifier);
 
-    const INDEX: Index = Index::new(7);
+    const INDEX: Index = Index::new(6);
 
     fn witness<'source>(
         &self,
@@ -387,7 +387,7 @@ impl Step for UnspentFuse {
     /// `(left_elapsed_seq, combined_elapsed_seq, right_elapsed_seq)`.
     type Witness<'source> = (NfSeqPoly, NfSeqPoly, NfSeqPoly);
 
-    const INDEX: Index = Index::new(8);
+    const INDEX: Index = Index::new(7);
 
     fn witness<'source>(
         &self,
@@ -483,7 +483,7 @@ impl Step for UnspentBind {
     /// `(elapsed_seq, nf_seq)`.
     type Witness<'source> = (NfSeqPoly, NfSeqPoly);
 
-    const INDEX: Index = Index::new(9);
+    const INDEX: Index = Index::new(8);
 
     fn witness<'source>(
         &self,

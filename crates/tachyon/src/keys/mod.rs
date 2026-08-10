@@ -56,31 +56,34 @@
 //!
 //! ## Nullifier Derivation
 //!
-//! Nullifiers are derived via a GGM tree PRF instantiated from Poseidon:
+//! Nullifiers come `PoseidonFp::RATE` at a time from one Poseidon sponge
+//! keyed on the note's master key and the epoch's group start
+//! $w = e - (e \bmod \mathsf{RATE})$:
 //!
-//! $$\mathsf{mk} = \text{KDF}(\psi, \mathsf{nk})$$
-//! $$\mathsf{nf}_e = F_{\mathsf{mk}}(e)$$
+//! $$\mathsf{mk} = \mathsf{Poseidon}(\mathtt{NF\_MASTER\_DOMAIN}, \psi,
+//! \mathsf{nk})$$
+//! $$\mathsf{nf}_e =
+//! \mathsf{squeeze}_{e - w}\big(
+//!     \mathsf{absorb}(\mathtt{NF\_DOMAIN},\ \mathsf{mk},\ w)\big)$$
 //!
 //! where $\psi$ is the note's nullifier trapdoor, $\mathsf{nk}$ is the
-//! nullifier key, and $e$ is the epoch index.
+//! nullifier key, and $e$ is the epoch index. Each group re-absorbs $w$, so
+//! $\mathsf{nf}_e$ depends on $(\mathsf{mk}, e)$ alone and overlapping
+//! derivation windows agree on the epochs they share; start epochs are
+//! group-aligned.
 //!
-//! The master root key $\mathsf{mk}$ supports oblivious sync delegation:
-//! prefix keys $\Psi_t$ permit evaluating the PRF only for epochs
-//! $e \leq t$, enabling range-restricted delegation without revealing
-//! spend capability.
+//! `mk` evaluates the whole epoch space; delegation carries proven value
+//! windows.
 
 pub mod private;
 pub mod public;
 
-mod ggm;
+mod master;
 mod note;
 mod proof;
 
 // Re-exports: public API surface.
-pub use ggm::{
-    GGM_CHUNK_MASK, GGM_CHUNK_SIZE, GGM_MAX_INDEX, GGM_TREE_ARITY, GGM_TREE_DEPTH, NoteMasterKey,
-    NotePrefixedKey, cover_candidates,
-};
+pub use master::NoteMasterKey;
 pub use note::{NullifierKey, PaymentKey};
 pub use proof::{ProofAuthorizingKey, SpendValidatingKey};
 
@@ -92,10 +95,10 @@ mod tests {
 
     use crate::{
         entropy::ActionEntropy,
-        keys::{NullifierKey, PaymentKey, private},
+        keys::{NoteMasterKey, NullifierKey, PaymentKey, private},
         note::{self, Note},
         nullifier,
-        primitives::effect,
+        primitives::{EpochIndex, effect},
         value,
     };
 
@@ -155,6 +158,17 @@ mod tests {
         let rk_from_prover: [u8; 32] = ak.derive_action_public(&alpha).0.into();
 
         assert_eq!(rk_from_signer, rk_from_prover);
+    }
+
+    #[test]
+    fn group_matches_per_epoch_derivation() {
+        let mk = NoteMasterKey(Fp::random(&mut StdRng::seed_from_u64(0)));
+        let epoch_start = EpochIndex(96);
+
+        let epochs = (epoch_start.0..).map(EpochIndex);
+        for (epoch, nf) in epochs.zip(mk.derive_group(epoch_start)) {
+            assert_eq!(nf, mk.derive_nullifier(epoch), "epoch {}", epoch.0);
+        }
     }
 
     #[test]
