@@ -603,7 +603,7 @@ fn duplicated_spend_cannot_inflate() {
 
     // Build one honest spend with a trapdoor and randomizer we control, so the
     // duplicated bundle's binding and action signatures can be reproduced.
-    let range = wallet.derived_range(rng, &note, spend_epoch, 2);
+    let range = wallet.derivation_pcd(rng, note, spend_epoch, EpochIndex(spend_epoch.0 + 2));
     let rcv = value::Trapdoor::random(rng);
     let theta = ActionEntropy::random(rng);
     let plan = action::Plan::spend(note, theta, rcv, |alpha| {

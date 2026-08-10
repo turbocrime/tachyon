@@ -1,7 +1,7 @@
 //! Spendable bootstrap and lift.
 //!
 //! The spendable carries `(cm, (epoch, present_nf), anchor)`: the note's
-//! current epoch and its nullifier `GGM(mk, epoch)` there, its pool position,
+//! current epoch and its nullifier `F_mk(epoch)` there, its pool position,
 //! and the minted-note commitment binding the lineage (and its value) across
 //! lifts. [`SpendableInit`]
 //! bootstraps it from a minted note; [`SpendableLift`] advances it over
@@ -10,16 +10,19 @@
 extern crate alloc;
 
 use alloc::{vec, vec::Vec};
+use core::num::NonZero;
 
-use ff::Field as _;
 use pasta_curves::{Ep, Eq, Fp, Fq};
-use ragu::{Header, Index, Step, Suffix, constraint::enforce_zero};
+use ragu::{
+    Cycle as _, FixedGenerators as _, Header, Index, Pasta, Step, Suffix,
+    constraint::{enforce_equal_point, enforce_zero},
+};
 
-use super::{delegation::NullifierHeader, pool::Unspent};
+use super::{delegation::NullifierDerivation, pool::Unspent};
 use crate::{
     note,
     nullifier::Nullifier,
-    primitives::{Anchor, EpochIndex, TachygramSetPoly},
+    primitives::{Anchor, EpochIndex, NfSeqPoly, TachygramSetPoly, multisequence},
 };
 
 /// Wallet's spendable position `(cm, (epoch, present_nf), anchor)`
@@ -56,56 +59,101 @@ impl Header for SpendableHeader {
 
 /// Bootstrap a spendable from a minted note, pinned to the creation epoch.
 ///
-/// Wallet-only, one-child over the wallet's single-leaf [`NullifierHeader`]:
-/// binds `present_nf` to the proven leaf, checks `cm in creation_set`, and
-/// computes the post-cm anchor from a free-witnessed predecessor.
+/// Wallet-only, one-child over any [`NullifierDerivation`] covering the
+/// creation epoch, so one derived window feeds init, bind, and spend alike.
+/// The divisibility
+/// $\mathsf{nf\_seq} = F_{\mathsf{creation\_epoch},\mathsf{present\_nf}}
+/// \cdot \mathsf{complement}$ forces `present_nf` to the window's genuine
+/// member at the creation epoch, the complement absorbing the remaining span.
+/// `cm` is proven among the creation stamp's tachygrams, and the post-cm
+/// anchor folds from a free-witnessed predecessor.
 ///
-/// The emitted anchor binds nothing here: `pre_cm_anchor` is a free witness,
-/// so a standalone spendable proves nothing about real chain coverage.
-/// Binding closes downstream. [`SpendableLift`] adjacency threads the anchor
-/// to the eventual spend, whose anchor consensus checks for chain membership;
-/// a genuine chain node is `H(prev || epoch || commit)` under the stamp
-/// domain, so preimage resistance forces the witnessed `pre_cm_anchor`,
-/// `epoch`, and `creation_commit` to be the real predecessor, the real
-/// creation epoch, and the real cm-stamp. The same argument pins the derived
-/// range's starting epoch: a wrong `epoch` folds into an anchor off the
-/// published sequence.
+/// # Soundness
+///
+/// Every free witness closes through consensus or the read. `pre_cm_anchor`,
+/// `creation_epoch` and the creation set close through consensus anchor
+/// membership: the fold absorbs the epoch and the set commit, a genuine
+/// chain node is `H(prev || epoch || commit)` under the stamp domain, and
+/// preimage resistance forces all three once the eventual spend's anchor is
+/// consensus-checked, a wrong epoch landing off the published sequence.
+///
+/// `present_nf` closes through the read, pinned by absorbing
+/// $G_0 \cdot \mathsf{present\_nf}$, so the identity forces the read to the
+/// emitted pair.
+///
+/// `creation_epoch` needs no bound check against the derivation's range. The
+/// divisibility forces $F_{\mathsf{creation\_epoch},\mathsf{present\_nf}}$ to
+/// be one of the derivation's own members, so the epoch is one the derivation
+/// holds a member for.
+///
+/// Nothing ties this window to the one the spend later reads; `cm` equality
+/// binds every window of the same note.
 #[derive(Debug)]
 pub struct SpendableInit;
 
 impl Step for SpendableInit {
     type Aux<'source> = ();
-    type Left = NullifierHeader;
+    type Left = NullifierDerivation;
     type Output = SpendableHeader;
     type Right = ();
-    /// `(pre_cm_anchor, creation_set, present_nf)`.
-    type Witness<'source> = (Anchor, TachygramSetPoly, Nullifier);
+    /// `(pre_cm_anchor, creation_set, creation_epoch, present_nf, nf_seq,
+    /// complement_seq)`.
+    type Witness<'source> = (
+        Anchor,
+        TachygramSetPoly,
+        EpochIndex,
+        Nullifier,
+        NfSeqPoly,
+        NfSeqPoly,
+    );
 
-    const INDEX: Index = Index::new(10);
+    const INDEX: Index = Index::new(8);
 
     fn witness<'source>(
         &self,
         ctx: &mut ragu::StepCtx<'_>,
-        (pre_cm_anchor, creation_set, present_nf): Self::Witness<'source>,
-        (cm, (nf_epoch_start, nf_start), _nf_seq_commit, (nf_epoch_end, _nf_end)): <Self::Left as Header>::Data,
+        (pre_cm_anchor, creation_set, creation_epoch, present_nf, nf_seq, complement_seq): Self::Witness<
+            'source,
+        >,
+        (cm, _, nf_commit, _): <Self::Left as Header>::Data,
         _right: <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
-        // Bind `present_nf` to the single derived starting leaf `GGM(mk, epoch)`.
-        enforce_zero(
-            Fp::from(nf_epoch_end) - (Fp::from(nf_epoch_start) + Fp::ONE),
-            "SpendableInit: starting range must span one epoch",
+        enforce_equal_point(
+            Eq::from(nf_seq.commit()),
+            Eq::from(nf_commit),
+            "SpendableInit: covering sequence does not match header",
         )?;
+
+        // The 1-wide read at the creation epoch: the divisibility
+        // `nf_seq = read · complement` at a challenge absorbing the witnessed
+        // commitments and the scalar-binding point of the free `present_nf`.
+        #[expect(clippy::expect_used, reason = "constant size")]
+        let &g0 = Pasta::host_generators(Pasta::baked())
+            .g()
+            .first()
+            .expect("at least one generator");
+        let z = ctx.derive_challenge(&[
+            nf_seq.commit().into(),
+            complement_seq.commit().into(),
+            g0 * Fp::from(present_nf),
+        ])?;
+        let nf_seq_at_z = nf_seq.eval(z);
+        let complement_at_z = complement_seq.eval(z);
+
+        #[expect(clippy::expect_used, reason = "one plus an epoch is nonzero")]
+        let idx = NonZero::new(1 + u64::from(creation_epoch.0)).expect("offset index is nonzero");
+        let read_at_z = multisequence::direct_eval_sequence(idx, [Fp::from(present_nf)], z);
         enforce_zero(
-            Fp::from(present_nf) - Fp::from(nf_start),
-            "SpendableInit: present nullifier does not match the derived leaf",
+            nf_seq_at_z - read_at_z * complement_at_z,
+            "SpendableInit: nullifier does not match the derivation",
         )?;
-        let epoch = nf_epoch_start;
+        ctx.enforce_poly_query(nf_seq.commit().into(), z, nf_seq_at_z)?;
+        ctx.enforce_poly_query(complement_seq.commit().into(), z, complement_at_z)?;
 
         // Inclusion: cm ∈ set ⇔ the set polynomial vanishes at cm.
-        let cm_point = Fp::from(cm);
-        let eval = creation_set.eval(cm_point);
-        ctx.enforce_poly_query(creation_set.commit().into(), cm_point, eval)?;
-        enforce_zero(eval, "SpendableInit: commitment not in set")?;
+        let cm_in_set = creation_set.eval(cm.into());
+        ctx.enforce_poly_query(creation_set.commit().into(), cm.into(), cm_in_set)?;
+        enforce_zero(cm_in_set, "SpendableInit: commitment not in set")?;
         let creation_commit = creation_set.commit();
 
         // The anchor immediately after the creation stamp, computed in-circuit
@@ -113,10 +161,10 @@ impl Step for SpendableInit {
         // consensus membership of the eventual spend anchor binds the rest
         // (see the step doc).
         let post_cm_anchor = pre_cm_anchor
-            .next_stamp(epoch, &creation_commit)
+            .next_stamp(creation_epoch, &creation_commit)
             .map_err(|_e| ragu::Error::InvalidWitness("invalid anchor step".into()))?;
 
-        Ok(((cm, (epoch, present_nf), post_cm_anchor), ()))
+        Ok(((cm, (creation_epoch, present_nf), post_cm_anchor), ()))
     }
 }
 
@@ -124,7 +172,7 @@ impl Step for SpendableInit {
 ///
 /// Wallet-only, witness-free. Checks `cm`, the boundary pair `(epoch_start,
 /// nf_start) == (epoch, present_nf)`, and anchor adjacency, then advances to
-/// the tip `(epoch_end, nf_end, anchor_last)`.
+/// the tip `(epoch_last, nf_last, anchor_last)`.
 ///
 /// The segment may span any number of epochs. A lineage resting on its epoch's
 /// terminal anchor advances the same way, over a segment that opens with the
@@ -139,7 +187,7 @@ impl Step for SpendableLift {
     type Right = Unspent;
     type Witness<'source> = ();
 
-    const INDEX: Index = Index::new(11);
+    const INDEX: Index = Index::new(9);
 
     fn witness<'source>(
         &self,
@@ -150,7 +198,7 @@ impl Step for SpendableLift {
             unspent_cm,
             unspent_anchor_prev,
             (unspent_epoch_start, unspent_nf_start),
-            (unspent_epoch_end, unspent_nf_end),
+            (unspent_epoch_last, unspent_nf_last),
             unspent_anchor_last,
         ): <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
@@ -173,7 +221,7 @@ impl Step for SpendableLift {
         Ok((
             (
                 spendable_cm,
-                (unspent_epoch_end, unspent_nf_end),
+                (unspent_epoch_last, unspent_nf_last),
                 unspent_anchor_last,
             ),
             (),

@@ -54,6 +54,7 @@ pasta_curves = { package = "zakura-pasta-curves", version = "1.0.0-rc.2", featur
 ragu = { git = "https://github.com/tachyon-zcash/ragu", rev = "f4f6315b10ed96944c40b2bbdbca0fe06af66ce0", default-features = false, features = [
     "mock",
 ] }
+ragu_arithmetic = { git = "https://github.com/tachyon-zcash/ragu", rev = "f4f6315b10ed96944c40b2bbdbca0fe06af66ce0", package = "ragu_arithmetic", default-features = false }
 rand_core = { version = "0.10", default-features = false }
 reddsa = { version = "1.0.0-rc.2", package = "zakura-reddsa" }
 
