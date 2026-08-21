@@ -14,7 +14,7 @@ use ff::PrimeField as _;
 use pasta_curves::Fp;
 use proof::{
     PROOF_SYSTEM, output,
-    stamp::{MergeStamp, OutputStamp, SpendStamp, StampHeader},
+    stamp::{MergeStamp, OutputStamp, SpendStamp, StampHeader, StampLift},
 };
 use ragu::{self, proof::PROOF_SIZE_COMPRESSED};
 use rand_core::{CryptoRng, RngCore};
@@ -631,6 +631,46 @@ impl ProofStamp {
             anchor,
             Box::new(rerand.proof().clone()),
         ))
+    }
+
+    /// Advances the stamp's anchor along an [`AnchorChain`] segment.
+    ///
+    /// `action_digests` is the multiset of every action the stamp covers,
+    /// which is what the header's action commitment is taken over; a stamp
+    /// covering adjunct bundles needs their digests too. Order does not
+    /// matter, multiplicity does.
+    ///
+    /// [`StampLift`] requires the segment to root at this stamp's anchor.
+    /// Whether the segment corresponds to real blocks is a consensus question:
+    /// the anchor is a hash chain over published stamp commitments, so a
+    /// segment built from anything else lands on an anchor no validator
+    /// acknowledges.
+    ///
+    /// `coverage`, `tachygram_set` and `tachygrams` are unchanged.
+    ///
+    /// [`AnchorChain`]: proof::pool::AnchorChain
+    pub fn lift<RNG: RngCore + CryptoRng>(
+        self,
+        rng: &mut RNG,
+        action_digests: impl IntoIterator<Item = ActionDigest>,
+        chain: ragu::Pcd<proof::pool::AnchorChain>,
+    ) -> Result<Self, ragu::Error> {
+        let action_set = action_digests.into_iter().collect::<ActionSetPoly>();
+        let stamp_pcd =
+            self.proof
+                .carry::<StampHeader>((action_set.commit(), self.tachygram_set, self.anchor));
+
+        let (pcd, ()) = PROOF_SYSTEM.fuse(rng, StampLift, (), stamp_pcd, chain)?;
+        let anchor = pcd.data().2;
+        let rerand = PROOF_SYSTEM.rerandomize(pcd, rng)?;
+
+        Ok(Self {
+            coverage: self.coverage,
+            anchor,
+            tachygram_set: self.tachygram_set,
+            tachygrams: self.tachygrams,
+            proof: Box::new(rerand.proof().clone()),
+        })
     }
 
     /// Merges two stamps into one covering stamp.
