@@ -291,9 +291,6 @@ pub enum LiftError {
     /// No lift is needed.
     #[display("no lift is needed")]
     NoLift,
-    /// Action digest construction failed (cv or rk was the identity point).
-    #[display("action digest failed: {_0}")]
-    ActionDigest(ActionDigestError),
     /// A provided anchor input could not advance the anchor.
     #[display("anchor step failed: {_0}")]
     AnchorError(AnchorError),
@@ -302,7 +299,7 @@ pub enum LiftError {
     AnchorContinuityFailed(ragu::Error),
     /// The stamp lift itself failed
     #[display("stamp lift failed: {_0}")]
-    LiftFailed(ragu::Error),
+    LiftFailed(stamp::ProveError),
 }
 
 /// Errors during bundle verification.
@@ -567,14 +564,11 @@ impl Bundle<ProofStamp> {
         adjuncts: &[&Bundle<dyn StampState>],
         (epoch, tachygram_sets): (EpochIndex, Vec<TachygramSetCommit>),
     ) -> Result<Self, LiftError> {
-        let own_digests = self.actions.iter().map(|&action| action.digest());
-        let other_digests = adjuncts
-            .iter()
-            .flat_map(|&adj| adj.actions.iter().map(|&action| action.digest()));
-        let action_digests = own_digests
-            .chain(other_digests)
-            .collect::<Result<Vec<ActionDigest>, ActionDigestError>>()
-            .map_err(LiftError::ActionDigest)?;
+        let descriptors: BTreeSet<action::Descriptor> = self
+            .descriptors()
+            .into_iter()
+            .chain(adjuncts.iter().flat_map(|&adj| adj.descriptors()))
+            .collect();
 
         let anchor_chain = {
             let seed_witnesses: Vec<(Anchor, EpochIndex, TachygramSetCommit)> = tachygram_sets
@@ -613,7 +607,7 @@ impl Bundle<ProofStamp> {
 
         let stamp = self
             .stamp
-            .lift(rng, action_digests, anchor_chain)
+            .lift(rng, &descriptors, anchor_chain)
             .map_err(LiftError::LiftFailed)?;
 
         Ok(Self { stamp, ..self })

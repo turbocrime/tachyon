@@ -456,6 +456,9 @@ pub enum ProveError {
     /// Stamp merge failed; carries the underlying step-level error.
     #[display("stamp merge failed: {_0}")]
     MergeFailed(ragu::Error),
+    /// Stamp lift failed; carries the underlying step-level error.
+    #[display("stamp lift failed: {_0}")]
+    LiftFailed(ragu::Error),
     /// Number of spendable PCDs doesn't match number of spends.
     #[display("spendable PCD count mismatch")]
     SpendableMismatch,
@@ -634,7 +637,9 @@ impl ProofStamp {
     }
 
     /// Advances the stamp's anchor along an [`AnchorChain`] segment.
-    pub fn lift<RNG: RngCore + CryptoRng>(
+    ///
+    /// `action_digests` and the chain's root are unchecked here.
+    pub fn prove_lift<RNG: RngCore + CryptoRng>(
         self,
         rng: &mut RNG,
         action_digests: impl IntoIterator<Item = ActionDigest>,
@@ -656,6 +661,24 @@ impl ProofStamp {
             tachygrams: self.tachygrams,
             proof: Box::new(rerand.proof().clone()),
         })
+    }
+
+    /// Advances the stamp's anchor along an [`AnchorChain`] segment, deriving
+    /// the action digests for the lift proof from the covered descriptors.
+    pub fn lift<RNG: RngCore + CryptoRng>(
+        self,
+        rng: &mut RNG,
+        descriptors: &BTreeSet<action::Descriptor>,
+        chain: ragu::Pcd<AnchorChain>,
+    ) -> Result<Self, ProveError> {
+        let action_digests = descriptors
+            .iter()
+            .map(action::Descriptor::digest)
+            .collect::<Result<BTreeSet<ActionDigest>, ActionDigestError>>()
+            .map_err(ProveError::ActionDigest)?;
+
+        self.prove_lift(rng, action_digests, chain)
+            .map_err(ProveError::LiftFailed)
     }
 
     /// Merges two stamps into one covering stamp.

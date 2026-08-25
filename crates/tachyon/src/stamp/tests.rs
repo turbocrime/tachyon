@@ -712,7 +712,7 @@ fn lift_advances_a_stamp_anchor() {
 
     let before = stamp.clone();
     let lifted = stamp
-        .lift(rng, [], chain)
+        .prove_lift(rng, [], chain)
         .expect("lift over a within-epoch segment");
 
     assert_eq!(lifted.anchor, pool.anchor_at(lifted_to));
@@ -739,10 +739,39 @@ fn lift_then_verify() {
     let chain =
         build_anchor_chain_pcd(rng, &pool, stamped_at.next().expect("next")..=pool.height());
 
-    let lifted = stamp.lift(rng, [digest], chain).expect("lift");
+    let lifted = stamp.prove_lift(rng, [digest], chain).expect("lift");
 
     assert!(
         lifted.verify_proof(rng, [digest]).expect("verify"),
+        "a lifted stamp must verify against the actions it covers"
+    );
+}
+
+/// The descriptor wrapper derives the same action set the digest-taking core
+/// is given, so a lift over descriptors verifies against their digests.
+#[test]
+fn lift_over_descriptors_then_verify() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let wallet = WalletSim::random(rng);
+    let mut pool = PoolSim::genesis(rng);
+
+    pool.advance(3, |_| random_block(rng, 1, 4));
+    let note = wallet.random_note(200);
+    let (stamp, plan) = build_output_stamp(rng, pool.anchor(), note);
+    let stamped_at = pool.height();
+
+    pool.advance(2, |_| random_block(rng, 1, 4));
+    let chain =
+        build_anchor_chain_pcd(rng, &pool, stamped_at.next().expect("next")..=pool.height());
+
+    let lifted = stamp
+        .lift(rng, &BTreeSet::from_iter([plan.descriptor()]), chain)
+        .expect("lift over the covered descriptors");
+
+    assert!(
+        lifted
+            .verify_proof(rng, [plan.digest().expect("valid plan")])
+            .expect("verify"),
         "a lifted stamp must verify against the actions it covers"
     );
 }
@@ -763,7 +792,7 @@ fn lift_rejects_a_foreign_chain() {
     let chain = build_anchor_chain_pcd(rng, &foreign, BlockHeight(1)..=foreign.height());
 
     stamp
-        .lift(rng, [], chain)
+        .prove_lift(rng, [], chain)
         .expect_err("a segment from another chain must not lift a stamp");
 }
 
@@ -787,7 +816,7 @@ fn lift_rejects_wrong_digests() {
         build_anchor_chain_pcd(rng, &pool, stamped_at.next().expect("next")..=pool.height());
 
     let lifted = stamp
-        .lift(rng, [foreign_digest], chain)
+        .prove_lift(rng, [foreign_digest], chain)
         .expect("the lift itself cannot see the wrong action set");
 
     assert!(
@@ -829,7 +858,7 @@ fn merge_after_lift() {
 
     let chain = build_anchor_chain_pcd(rng, &pool, height_a.next().expect("next")..=height_b);
     let lifted_a = stamp_a
-        .lift(rng, [plan_a.digest().expect("valid plan")], chain)
+        .prove_lift(rng, [plan_a.digest().expect("valid plan")], chain)
         .expect("lift onto the later anchor");
 
     assert_eq!(lifted_a.anchor, stamp_b.anchor);
