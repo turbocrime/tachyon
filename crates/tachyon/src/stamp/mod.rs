@@ -408,7 +408,7 @@ impl Plan {
                         (left_digests, left_tachygrams, left_anchor, left_proof),
                         (right_digests, right_tachygrams, right_anchor, right_proof),
                     )
-                    .map_err(ProveError::MergeFailed)?;
+                    .map_err(ProveError::ProofFailed)?;
 
                 let merged_descs = left_desc.union(&right_desc).copied().collect();
 
@@ -449,16 +449,9 @@ pub enum ProveError {
     /// Action digest construction failed (cv or rk was the identity point).
     #[display("action digest failed: {_0}")]
     ActionDigest(ActionDigestError),
-    /// Proof creation failed for an action; carries the underlying
-    /// step-level error.
-    #[display("action proof failed: {_0}")]
+    /// Proof creation failed; carries the underlying step-level error.
+    #[display("proof failed: {_0}")]
     ProofFailed(ragu::Error),
-    /// Stamp merge failed; carries the underlying step-level error.
-    #[display("stamp merge failed: {_0}")]
-    MergeFailed(ragu::Error),
-    /// Stamp lift failed; carries the underlying step-level error.
-    #[display("stamp lift failed: {_0}")]
-    LiftFailed(ragu::Error),
     /// Number of spendable PCDs doesn't match number of spends.
     #[display("spendable PCD count mismatch")]
     SpendableMismatch,
@@ -678,7 +671,7 @@ impl ProofStamp {
             .map_err(ProveError::ActionDigest)?;
 
         self.prove_lift(rng, action_digests, chain)
-            .map_err(ProveError::LiftFailed)
+            .map_err(ProveError::ProofFailed)
     }
 
     /// Merges two stamps into one covering stamp.
@@ -720,7 +713,7 @@ impl ProofStamp {
                 right_stamp.proof,
             ),
         )
-        .map_err(ProveError::MergeFailed)?;
+        .map_err(ProveError::ProofFailed)?;
 
         let coverage = blake2b::action_descriptor_digest(
             &left_desc

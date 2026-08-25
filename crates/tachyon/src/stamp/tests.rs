@@ -212,8 +212,8 @@ fn double_output_cannot_aggregate() {
             (stamp_b.clone(), descriptors_b.clone()),
         )
         .expect_err("overlapping tachygrams must not merge");
-        let ProveError::MergeFailed(ragu::Error::InvalidWitness(inner)) = merge_err else {
-            panic!("expected MergeFailed(InvalidWitness), got {merge_err:?}");
+        let ProveError::ProofFailed(ragu::Error::InvalidWitness(inner)) = merge_err else {
+            panic!("expected ProofFailed(InvalidWitness), got {merge_err:?}");
         };
         assert_eq!(
             inner.to_string(),
@@ -339,8 +339,8 @@ fn double_spend_cannot_aggregate() {
             (stamp_b.clone(), descriptors_b.clone()),
         )
         .expect_err("shared nullifiers must not merge");
-        let ProveError::MergeFailed(ragu::Error::InvalidWitness(inner)) = merge_err else {
-            panic!("expected MergeFailed(InvalidWitness), got {merge_err:?}");
+        let ProveError::ProofFailed(ragu::Error::InvalidWitness(inner)) = merge_err else {
+            panic!("expected ProofFailed(InvalidWitness), got {merge_err:?}");
         };
         assert_eq!(
             inner.to_string(),
@@ -423,8 +423,8 @@ fn cannot_forge_stamp_covering_duplicated_action() {
             (output_stamp.clone(), descriptors.clone()),
         )
         .expect_err("a duplicated action must not merge");
-        let ProveError::MergeFailed(ragu::Error::InvalidWitness(inner)) = merge_err else {
-            panic!("expected MergeFailed(InvalidWitness), got {merge_err:?}");
+        let ProveError::ProofFailed(ragu::Error::InvalidWitness(inner)) = merge_err else {
+            panic!("expected ProofFailed(InvalidWitness), got {merge_err:?}");
         };
         assert_eq!(
             inner.to_string(),
