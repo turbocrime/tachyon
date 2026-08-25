@@ -3,7 +3,8 @@
 use alloc::{boxed::Box, string::ToString as _, vec, vec::Vec};
 use core::cmp::Reverse;
 
-use pasta_curves::Fp;
+use group::Group as _;
+use pasta_curves::{Eq, Fp};
 use ragu::proof::PROOF_SIZE_COMPRESSED;
 use rand::{SeedableRng as _, rngs::StdRng};
 
@@ -2017,7 +2018,7 @@ fn bundle_lift_preserves_coverage() {
         .collect();
 
     let lifted = bundle
-        .lift(rng, &[], cm_height.epoch(), commits)
+        .lift(rng, &[], (cm_height.epoch(), commits))
         .expect("lift an autonome bundle");
 
     assert_eq!(lifted.stamp.anchor, pool.anchor());
@@ -2028,6 +2029,37 @@ fn bundle_lift_preserves_coverage() {
             .expect("coverage survives a lift"),
         descriptors
     );
+}
+
+/// An identity anchor input has no Poseidon absorption, so the lift reports it
+/// rather than unwinding inside the anchor fold.
+#[test]
+fn bundle_lift_rejects_an_identity_anchor_input() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let wallet = WalletSim::new(shared_sk());
+
+    let spend_note = wallet.random_note(1000);
+    let output_note = wallet.random_note(700);
+    let mut pool = PoolSim::genesis(rng);
+    pool.mine(random_block_with(rng, &[vec![spend_note.commitment()]], 1));
+    let cm_height = pool.height();
+    let spendable_pcd = wallet.fresh_spend(rng, &pool, cm_height, &spend_note);
+    let bundle = wallet.autonome(
+        rng,
+        spendable_pcd.data().2,
+        vec![(spend_note, spendable_pcd, cm_height.epoch())],
+        vec![output_note],
+    );
+
+    pool.advance(1, |_| random_block(rng, 1, 4));
+    let mut commits: Vec<TachygramSetCommit> = pool.stamp_commits_at(pool.height());
+    commits.push(TachygramSetCommit::from(Eq::identity()));
+
+    let Err(LiftError::AnchorError(AnchorError::ZeroStamp)) =
+        bundle.lift(rng, &[], (cm_height.epoch(), commits))
+    else {
+        panic!("identity anchor input advanced the anchor");
+    };
 }
 
 /// An aggregate's action commitment spans its adjuncts, so a lift that was
@@ -2107,7 +2139,7 @@ fn bundle_lift_over_an_aggregate() {
         .collect();
 
     let lifted = innocent
-        .lift(rng, &adjuncts, pool.height().epoch(), commits)
+        .lift(rng, &adjuncts, (pool.height().epoch(), commits))
         .expect("lift an aggregate over its adjuncts");
 
     assert_eq!(lifted.stamp.anchor, pool.anchor());
@@ -2128,7 +2160,7 @@ fn bundle_lift_over_no_stamps_is_refused() {
     let bundle = build_autonome(rng, &wallet, 1000, 700);
 
     let err = bundle
-        .lift(rng, &[], EpochIndex(0), vec![])
+        .lift(rng, &[], (EpochIndex(0), vec![]))
         .expect_err("a lift over no stamps must be refused");
     let LiftError::NoLift = err else {
         panic!("expected NoLift, got {err:?}");

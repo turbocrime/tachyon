@@ -1,11 +1,22 @@
 use corez::io::{self, Read, Write};
-use derive_more::{Debug, Eq as TotalEq, From, Into, PartialEq};
+use derive_more::{Debug, Display, Eq as TotalEq, Error, From, Into, PartialEq};
 use ff::Field as _;
-use group::Curve as _;
-use pasta_curves::{Eq, Fp};
+use group::{Curve as _, Group as _};
+use pasta_curves::Fp;
 
 use super::{EpochIndex, TachygramSetCommit};
 use crate::{digest::poseidon, serialization};
+
+/// Errors that can occur when advancing an anchor.
+#[derive(Debug, Display, Error)]
+pub enum AnchorError {
+    /// The stamp commit is the identity point.
+    #[display("stamp commit is the identity point")]
+    ZeroStamp,
+    /// The epoch is zero.
+    #[display("epoch is zero")]
+    ZeroEpoch,
+}
 
 /// Running anchor over the consensus state.
 ///
@@ -28,23 +39,37 @@ impl Anchor {
     /// Advance the anchor by absorbing one stamp's commit, bound to the epoch
     /// of the block containing it.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `stamp_commit` is the identity point.
-    #[must_use]
-    pub fn next_stamp(self, epoch: EpochIndex, stamp_commit: &TachygramSetCommit) -> Self {
-        Self(poseidon::anchor_stamp_step(
-            self.0,
-            epoch,
-            Eq::from(*stamp_commit).to_affine(),
-        ))
+    /// Fails if `stamp_commit` is the identity point.
+    pub fn next_stamp(
+        self,
+        epoch: EpochIndex,
+        stamp_commit: &TachygramSetCommit,
+    ) -> Result<Self, AnchorError> {
+        if bool::from(stamp_commit.as_ref().is_identity()) {
+            Err(AnchorError::ZeroStamp)
+        } else {
+            Ok(Self(poseidon::anchor_stamp_step(
+                self.0,
+                epoch.into(),
+                stamp_commit.as_ref().to_affine(),
+            )))
+        }
     }
 
     /// Lift the anchor across an epoch boundary into the new epoch's
     /// initial state.
-    #[must_use]
-    pub fn next_epoch(self, new_epoch: EpochIndex) -> Self {
-        Self(poseidon::anchor_epoch_step(self.0, new_epoch))
+    ///
+    /// # Errors
+    ///
+    /// Fails if `new_epoch` is zero, which no boundary crosses into.
+    pub fn next_epoch(self, new_epoch: EpochIndex) -> Result<Self, AnchorError> {
+        if new_epoch == EpochIndex(0) {
+            Err(AnchorError::ZeroEpoch)
+        } else {
+            Ok(Self(poseidon::anchor_epoch_step(self.0, new_epoch.into())))
+        }
     }
 
     /// Read a 32-byte anchor.
@@ -61,12 +86,13 @@ impl Anchor {
 impl Default for Anchor {
     /// The genesis epoch boundary.
     fn default() -> Self {
-        Self(Fp::ZERO).next_epoch(EpochIndex(0))
+        Self(poseidon::anchor_epoch_step(Fp::ZERO, Fp::ZERO))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use pasta_curves::Eq;
     use rand::{SeedableRng as _, rngs::StdRng};
 
     use super::*;
@@ -83,10 +109,14 @@ mod tests {
 
         let run_one = Anchor::default()
             .next_stamp(EPOCH, &first)
-            .next_stamp(EPOCH, &second);
+            .expect("valid step")
+            .next_stamp(EPOCH, &second)
+            .expect("valid step");
         let run_two = Anchor::default()
             .next_stamp(EPOCH, &first)
-            .next_stamp(EPOCH, &second);
+            .expect("valid step")
+            .next_stamp(EPOCH, &second)
+            .expect("valid step");
         assert_eq!(run_one, run_two);
     }
 
@@ -98,8 +128,12 @@ mod tests {
         let second = TachygramSetPoly::from_iter([Tachygram::random(&mut *rng)]).commit();
 
         assert_ne!(
-            Anchor::default().next_stamp(EPOCH, &first),
-            Anchor::default().next_stamp(EPOCH, &second),
+            Anchor::default()
+                .next_stamp(EPOCH, &first)
+                .expect("valid step"),
+            Anchor::default()
+                .next_stamp(EPOCH, &second)
+                .expect("valid step"),
         );
     }
 
@@ -112,10 +146,14 @@ mod tests {
 
         let forward = Anchor::default()
             .next_stamp(EPOCH, &first)
-            .next_stamp(EPOCH, &second);
+            .expect("valid step")
+            .next_stamp(EPOCH, &second)
+            .expect("valid step");
         let reverse = Anchor::default()
             .next_stamp(EPOCH, &second)
-            .next_stamp(EPOCH, &first);
+            .expect("valid step")
+            .next_stamp(EPOCH, &first)
+            .expect("valid step");
         assert_ne!(forward, reverse);
     }
 
@@ -127,12 +165,12 @@ mod tests {
         let start = Anchor::default();
 
         assert_ne!(
-            start.next_stamp(EpochIndex(1), &stamp),
-            start.next_stamp(EpochIndex(2), &stamp),
+            start.next_stamp(EpochIndex(1), &stamp).expect("valid step"),
+            start.next_stamp(EpochIndex(2), &stamp).expect("valid step"),
         );
         assert_ne!(
-            start.next_epoch(EpochIndex(1)),
-            start.next_epoch(EpochIndex(2))
+            start.next_epoch(EpochIndex(1)).expect("valid step"),
+            start.next_epoch(EpochIndex(2)).expect("valid step"),
         );
     }
 
@@ -144,6 +182,34 @@ mod tests {
         let stamp = TachygramSetPoly::from_iter([Tachygram::random(&mut *rng)]).commit();
         let via_epoch = Anchor::default().next_epoch(EPOCH);
         let via_stamp = Anchor::default().next_stamp(EPOCH, &stamp);
-        assert_ne!(via_epoch, via_stamp);
+        assert_ne!(
+            via_epoch.expect("valid step"),
+            via_stamp.expect("valid step")
+        );
+    }
+
+    /// The identity commitment has no Poseidon absorption, so it cannot
+    /// advance the anchor.
+    #[test]
+    fn next_stamp_rejects_the_identity_commitment() {
+        let identity = TachygramSetCommit::from(Eq::identity());
+
+        let Err(AnchorError::ZeroStamp) = Anchor::default().next_stamp(EPOCH, &identity) else {
+            panic!("identity commitment advanced the anchor");
+        };
+    }
+
+    /// No boundary crosses into epoch zero; genesis rests there already.
+    #[test]
+    fn next_epoch_rejects_epoch_zero() {
+        let Err(AnchorError::ZeroEpoch) = Anchor::default().next_epoch(EpochIndex(0)) else {
+            panic!("epoch zero was crossed into");
+        };
+
+        assert_eq!(
+            Anchor::default(),
+            Anchor(poseidon::anchor_epoch_step(Fp::ZERO, Fp::ZERO)),
+            "genesis remains the epoch-zero link"
+        );
     }
 }

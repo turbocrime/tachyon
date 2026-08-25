@@ -28,7 +28,7 @@ use crate::{
     keys::ProofAuthorizingKey,
     primitives::{ActionDigest, ActionDigestError, Anchor, Tachygram, TachygramSetCommit},
     serialization,
-    stamp::proof::{delegation, spend, spendable},
+    stamp::proof::{delegation, pool::AnchorChain, spend, spendable},
     value,
 };
 
@@ -638,7 +638,7 @@ impl ProofStamp {
         self,
         rng: &mut RNG,
         action_digests: impl IntoIterator<Item = ActionDigest>,
-        chain: ragu::Pcd<proof::pool::AnchorChain>,
+        chain: ragu::Pcd<AnchorChain>,
     ) -> Result<Self, ragu::Error> {
         let action_set = action_digests.into_iter().collect::<ActionSetPoly>();
         let stamp_pcd =

@@ -12,7 +12,7 @@ use super::{ActionDigest, Tachygram};
 use crate::serialization;
 
 /// Pedersen commitment to a stamp's tachygram set.
-#[derive(Clone, Copy, Debug, From, Into, PartialEq, TotalEq)]
+#[derive(AsRef, Clone, Copy, Debug, From, Into, PartialEq, TotalEq)]
 pub struct TachygramSetCommit(Eq);
 
 impl TachygramSetCommit {
