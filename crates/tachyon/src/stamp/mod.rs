@@ -32,7 +32,7 @@ use crate::{
         ActionDigest, ActionDigestError, Anchor, EpochIndex, Tachygram, TachygramSetCommit,
     },
     serialization,
-    stamp::proof::{delegation, pool, pool::AnchorChain, spend, spendable},
+    stamp::proof::{delegation, pool, spend, spendable},
     value,
 };
 
@@ -637,21 +637,19 @@ impl ProofStamp {
         ))
     }
 
-    /// Advances the stamp's anchor along an [`AnchorChain`] segment.
-    ///
-    /// `action_digests` and the chain's root are unchecked here.
+    /// Advances the stamp's anchor with the provided anchor chain proof.
     pub fn prove_lift<RNG: RngCore + CryptoRng>(
         self,
         rng: &mut RNG,
         action_digests: impl IntoIterator<Item = ActionDigest>,
-        chain: ragu::Pcd<AnchorChain>,
+        anchor_chain: ragu::Pcd<pool::AnchorChain>,
     ) -> Result<Self, ragu::Error> {
         let action_set = action_digests.into_iter().collect::<ActionSetPoly>();
         let stamp_pcd =
             self.proof
                 .carry::<StampHeader>((action_set.commit(), self.tachygram_set, self.anchor));
 
-        let (pcd, ()) = PROOF_SYSTEM.fuse(rng, StampLift, (), stamp_pcd, chain)?;
+        let (pcd, ()) = PROOF_SYSTEM.fuse(rng, StampLift, (), stamp_pcd, anchor_chain)?;
         let anchor = pcd.data().2;
         let rerand = PROOF_SYSTEM.rerandomize(pcd, rng)?;
 
@@ -664,18 +662,7 @@ impl ProofStamp {
         })
     }
 
-    /// Advances the stamp's anchor across the stamps that follow it, deriving
-    /// the action digests for the lift proof from the covered descriptors.
-    ///
-    /// `seed_witnesses` are the [`pool::AnchorSeed`] witnesses of the stamps
-    /// immediately following this one, in chain order. They are expected to
-    /// form a valid chain rooted at [`ProofStamp::anchor`], which the caller
-    /// establishes by folding them through [`Anchor::next_stamp`].
-    ///
-    /// # Errors
-    ///
-    /// A sequence that is empty, or that does not chain, fails as
-    /// [`ProveError::ProofFailed`].
+    /// Advances the stamp's anchor with a proof of the provided sequence.
     pub fn lift<RNG: RngCore + CryptoRng>(
         self,
         rng: &mut RNG,

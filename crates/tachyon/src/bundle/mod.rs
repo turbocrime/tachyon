@@ -98,7 +98,7 @@ use crate::{
     keys::{private, public},
     primitives::{Anchor, AnchorError, EpochIndex, effect},
     reddsa, serialization,
-    stamp::{self, AggregateIdError, PointerStamp, ProofStamp, StampState, Unproven},
+    stamp::{self, AggregateIdError, PointerStamp, ProofStamp, ProveError, StampState, Unproven},
     value,
 };
 
@@ -290,7 +290,7 @@ pub enum LiftError {
     AnchorError(AnchorError),
     /// The stamp lift itself failed.
     #[display("stamp lift failed: {_0}")]
-    LiftFailed(stamp::ProveError),
+    LiftFailed(ProveError),
 }
 
 /// Errors during bundle verification.
@@ -544,27 +544,11 @@ impl Bundle<ProofStamp> {
 
     /// Advance the stamp's anchor across the stamps that follow it.
     ///
-    /// `(epoch, next_bundles)` must contain the epoch index of this bundle's
-    /// anchor and the bundles stamped immediately after it, in chain order.
-    /// Only their tachygram set commitments are read; the anchor chain is
-    /// folded from this bundle's own anchor, so a following bundle's anchor
-    /// does not have to be its position in the chain. Following stamps should
-    /// be obtained from consensus data.
+    /// Provide the consensus sequence of proof-stamped bundles immediately
+    /// following this bundle's anchor as `next_bundles`.
     ///
-    /// The actions of `adjuncts` join this bundle's own in the descriptor set
-    /// the lift proof is built against, so a set that does not match the
-    /// stamp's coverage yields a stamp that fails verification.
-    ///
-    /// Verification of coverage is the responsibility of the caller.
-    ///
-    /// # Errors
-    ///
-    /// An empty `next_bundles` builds no anchor chain, so there is nothing to
-    /// lift along.
-    ///
-    /// Every set is folded through [`Anchor::next_stamp`] before any proving
-    /// begins, so a set that cannot advance the anchor fails with
-    /// [`LiftError::AnchorError`] at no proving cost.
+    /// If you fail to use the correct sequence according to consensus, you will
+    /// succesesfully lift to an anchor that consensus does not recognize.
     pub fn lift<RNG: RngCore + CryptoRng>(
         self,
         rng: &mut RNG,
