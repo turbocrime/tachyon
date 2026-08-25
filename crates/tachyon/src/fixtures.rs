@@ -568,6 +568,16 @@ impl PoolSim {
         }
     }
 
+    /// Mine a block publishing the stamps of `bundles`, in order.
+    pub fn mine_bundles(&mut self, bundles: &[&Bundle<ProofStamp>]) {
+        self.mine(
+            bundles
+                .iter()
+                .map(|&bundle| bundle.stamp.tachygrams.iter().copied().collect())
+                .collect(),
+        );
+    }
+
     pub fn mine(&mut self, stamps: Vec<Vec<Tachygram>>) {
         let new_height = BlockHeight::from(self.history.len());
         let old_tip = self.anchor();

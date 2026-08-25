@@ -7,6 +7,7 @@ extern crate alloc;
 pub mod proof;
 
 use alloc::{boxed::Box, collections::BTreeSet, vec, vec::Vec};
+use core::error;
 
 use corez::io::{self, Read, Write};
 use derive_more::{Debug, Display, Eq as TotalEq, Error, Into, PartialEq};
@@ -26,9 +27,11 @@ use crate::{
     effect,
     entropy::ActionRandomizer,
     keys::ProofAuthorizingKey,
-    primitives::{ActionDigest, ActionDigestError, Anchor, Tachygram, TachygramSetCommit},
+    primitives::{
+        ActionDigest, ActionDigestError, Anchor, EpochIndex, Tachygram, TachygramSetCommit,
+    },
     serialization,
-    stamp::proof::{delegation, pool::AnchorChain, spend, spendable},
+    stamp::proof::{delegation, pool, pool::AnchorChain, spend, spendable},
     value,
 };
 
@@ -352,7 +355,9 @@ impl Plan {
         let mut entries = Vec::with_capacity(self.spends.len() + self.outputs.len());
 
         if self.spends.len() != spendbind_inputs.len() {
-            return Err(ProveError::SpendableMismatch);
+            return Err(ProveError::MissingPcd(
+                "one spendbind input per spend action".into(),
+            ));
         }
 
         for ((desc, alpha, note, rcv), (nf_pcd, spendable_pcd)) in
@@ -420,7 +425,8 @@ impl Plan {
                     merged_proof,
                 ))
             })
-            .ok_or(ProveError::NoActions)??;
+            .transpose()?
+            .ok_or(ProveError::MissingPcd("no actions to prove".into()))?;
 
         let coverage = blake2b::action_descriptor_digest(&Vec::<[u8; 64]>::from_iter(descriptors));
         let tachygram_set = tachygrams
@@ -443,18 +449,15 @@ impl Plan {
 #[derive(Debug, Display, Error)]
 #[non_exhaustive]
 pub enum ProveError {
-    /// The plan has no actions to prove.
-    #[display("no actions to prove")]
-    NoActions,
+    /// Missing PCD inputs for the operation.
+    #[display("missing pcd inputs: {_0}")]
+    MissingPcd(Box<dyn error::Error + Send + Sync + 'static>),
     /// Action digest construction failed (cv or rk was the identity point).
     #[display("action digest failed: {_0}")]
     ActionDigest(ActionDigestError),
     /// Proof creation failed; carries the underlying step-level error.
     #[display("proof failed: {_0}")]
     ProofFailed(ragu::Error),
-    /// Number of spendable PCDs doesn't match number of spends.
-    #[display("spendable PCD count mismatch")]
-    SpendableMismatch,
 }
 
 /// A stamp carrying tachygrams, anchor, and a proof for specific actions.
@@ -470,17 +473,13 @@ pub struct ProofStamp {
     /// See [`blake2b::action_descriptor_digest`]
     pub coverage: [u8; 32],
 
-    /// Pool state at the anchor block.
+    /// The historic pool state for which this stamp is valid.
     pub anchor: Anchor,
 
-    /// Commitment to the tachygram multiset below, so that anchor advancement
-    /// reads the point rather than rebuilding it.
-    ///
-    /// Carried, not derived, so full validation must confirm it against
-    /// `tachygrams`. See [`ProofStamp::is_accumulating`].
+    /// The commitment to this stamp's tachygram set.
     pub tachygram_set: TachygramSetCommit,
 
-    /// Tachygrams (nullifiers and note commitments) for data availability.
+    /// This stamp's tachygram set.
     pub tachygrams: BTreeSet<Tachygram>,
 
     /// The Ragu proof bytes.
@@ -656,21 +655,53 @@ impl ProofStamp {
         })
     }
 
-    /// Advances the stamp's anchor along an [`AnchorChain`] segment, deriving
+    /// Advances the stamp's anchor across the stamps that follow it, deriving
     /// the action digests for the lift proof from the covered descriptors.
+    ///
+    /// `seed_witnesses` are the [`pool::AnchorSeed`] witnesses of the stamps
+    /// immediately following this one, in chain order. They are expected to
+    /// form a valid chain rooted at [`ProofStamp::anchor`], which the caller
+    /// establishes by folding them through [`Anchor::next_stamp`].
+    ///
+    /// # Errors
+    ///
+    /// A sequence that is empty, or that does not chain, fails as
+    /// [`ProveError::ProofFailed`].
     pub fn lift<RNG: RngCore + CryptoRng>(
         self,
         rng: &mut RNG,
         descriptors: &BTreeSet<action::Descriptor>,
-        chain: ragu::Pcd<AnchorChain>,
+        seed_witnesses: Vec<(Anchor, EpochIndex, TachygramSetCommit)>,
     ) -> Result<Self, ProveError> {
+        let anchor_seeds = seed_witnesses
+            .into_iter()
+            .map(|witness| {
+                PROOF_SYSTEM
+                    .seed(rng, pool::AnchorSeed, witness)
+                    .map(|(pcd, _aux)| pcd)
+                    .map_err(ProveError::ProofFailed)
+            })
+            .collect::<Result<Vec<_>, ProveError>>()?;
+
+        let anchor_chain = anchor_seeds
+            .into_iter()
+            .map(Ok)
+            .reduce(|left, right| {
+                PROOF_SYSTEM
+                    .fuse(rng, pool::AnchorFuse, (), left?, right?)
+                    .map(|(pcd, _aux)| pcd)
+                    .map_err(ProveError::ProofFailed)
+            })
+            .transpose()?
+            .ok_or(ProveError::MissingPcd("anchor chain is empty".into()))?;
+
         let action_digests = descriptors
             .iter()
             .map(action::Descriptor::digest)
             .collect::<Result<BTreeSet<ActionDigest>, ActionDigestError>>()
             .map_err(ProveError::ActionDigest)?;
 
-        self.prove_lift(rng, action_digests, chain)
+        self.prove_lift(rng, action_digests, anchor_chain)
             .map_err(ProveError::ProofFailed)
     }
 

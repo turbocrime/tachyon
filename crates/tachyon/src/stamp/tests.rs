@@ -99,7 +99,10 @@ fn plan_prove_rejects_invalid_inputs() {
     {
         let plan = Plan::new(alloc::vec![], alloc::vec![], anchor);
         let err = plan.prove(rng, &user.pak, alloc::vec![]).unwrap_err();
-        assert!(matches!(err, ProveError::NoActions), "expected NoActions");
+        let ProveError::MissingPcd(reason) = err else {
+            panic!("expected MissingPcd, got {err:?}");
+        };
+        assert_eq!(reason.to_string(), "no actions to prove");
     }
 
     let bundle_a = || (range_a.clone(), sp_a.clone());
@@ -110,10 +113,10 @@ fn plan_prove_rejects_invalid_inputs() {
         let plan = Plan::new(two_spends(), alloc::vec![], anchor);
         let pcds = alloc::vec![bundle_a()];
         let err = plan.prove(rng, &user.pak, pcds).unwrap_err();
-        assert!(
-            matches!(err, ProveError::SpendableMismatch),
-            "expected SpendableMismatch"
-        );
+        let ProveError::MissingPcd(reason) = err else {
+            panic!("expected MissingPcd, got {err:?}");
+        };
+        assert_eq!(reason.to_string(), "one spendbind input per spend action");
     }
 
     // Too many PCDs: 2 spends, 3 PCDs.
@@ -121,10 +124,10 @@ fn plan_prove_rejects_invalid_inputs() {
         let plan = Plan::new(two_spends(), alloc::vec![], anchor);
         let pcds = alloc::vec![bundle_a(), bundle_b(), bundle_a()];
         let err = plan.prove(rng, &user.pak, pcds).unwrap_err();
-        assert!(
-            matches!(err, ProveError::SpendableMismatch),
-            "expected SpendableMismatch"
-        );
+        let ProveError::MissingPcd(reason) = err else {
+            panic!("expected MissingPcd, got {err:?}");
+        };
+        assert_eq!(reason.to_string(), "one spendbind input per spend action");
     }
 
     // Correspondence swap: lengths match, pairing is wrong. Each pair is
@@ -135,11 +138,11 @@ fn plan_prove_rejects_invalid_inputs() {
         let plan = Plan::new(two_spends(), alloc::vec![], anchor);
         let pcds = alloc::vec![bundle_b(), bundle_a()];
         let err = plan.prove(rng, &user.pak, pcds).unwrap_err();
-        let ProveError::ProofFailed(ragu::Error::InvalidWitness(inner)) = err else {
+        let ProveError::ProofFailed(ragu::Error::InvalidWitness(reason)) = err else {
             panic!("expected ProofFailed(InvalidWitness), got {err:?}");
         };
         assert_eq!(
-            inner.to_string(),
+            reason.to_string(),
             "SpendStamp: note does not match the spend"
         );
     }
@@ -747,8 +750,9 @@ fn lift_then_verify() {
     );
 }
 
-/// The descriptor wrapper derives the same action set the digest-taking core
-/// is given, so a lift over descriptors verifies against their digests.
+/// A stamp covers the actions of the plan it was proven for, so lifting it
+/// over their descriptors reaches the same action set the digest-taking core
+/// is given directly, and the result verifies against their digests.
 #[test]
 fn lift_over_descriptors_then_verify() {
     let rng = &mut StdRng::seed_from_u64(0);
@@ -757,20 +761,32 @@ fn lift_over_descriptors_then_verify() {
 
     pool.advance(3, |_| random_block(rng, 1, 4));
     let note = wallet.random_note(200);
-    let (stamp, plan) = build_output_stamp(rng, pool.anchor(), note);
+    let (stamp, covered_plan) = build_output_stamp(rng, pool.anchor(), note);
+    let covered_descriptors = BTreeSet::from_iter([covered_plan.descriptor()]);
     let stamped_at = pool.height();
 
+    // The stamps published after this one, each paired with the anchor it
+    // absorbs into, which is what an `AnchorSeed` witnesses.
     pool.advance(2, |_| random_block(rng, 1, 4));
-    let chain =
-        build_anchor_chain_pcd(rng, &pool, stamped_at.next().expect("next")..=pool.height());
+    let epoch = pool.height().epoch();
+    let following_stamps = (stamped_at.0 + 1..=pool.height().0)
+        .flat_map(|height| pool.stamp_commits_at(BlockHeight(height)))
+        .scan(stamp.anchor, |anchor_before, tachygram_set| {
+            let witness = (*anchor_before, epoch, tachygram_set);
+            *anchor_before = anchor_before
+                .next_stamp(epoch, &tachygram_set)
+                .expect("valid step");
+            Some(witness)
+        })
+        .collect();
 
     let lifted = stamp
-        .lift(rng, &BTreeSet::from_iter([plan.descriptor()]), chain)
+        .lift(rng, &covered_descriptors, following_stamps)
         .expect("lift over the covered descriptors");
 
     assert!(
         lifted
-            .verify_proof(rng, [plan.digest().expect("valid plan")])
+            .verify_proof(rng, [covered_plan.digest().expect("valid plan")])
             .expect("verify"),
         "a lifted stamp must verify against the actions it covers"
     );

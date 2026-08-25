@@ -19,6 +19,7 @@ use crate::{
         shared_sk, spend_witness,
     },
     primitives::{BlockHeight, Tachygram, TachygramSetPoly},
+    stamp::ProveError,
     value,
 };
 
@@ -2011,14 +2012,14 @@ fn bundle_lift_preserves_coverage() {
 
     let descriptors = bundle.verify_coverage(&[]).expect("autonome coverage");
 
-    // Two blocks, so the chain fuses rather than standing on one seed.
-    pool.advance(2, |_| random_block(rng, 1, 4));
-    let commits = (cm_height.0 + 1..=pool.height().0)
-        .flat_map(|height| pool.stamp_commits_at(BlockHeight(height)))
-        .collect();
+    // Two following stamps, so the chain fuses rather than standing on one
+    // seed.
+    let next_a = build_autonome(rng, &wallet, 400, 300);
+    let next_b = build_autonome(rng, &wallet, 500, 200);
+    pool.mine_bundles(&[&next_a, &next_b]);
 
     let lifted = bundle
-        .lift(rng, &[], (cm_height.epoch(), commits))
+        .lift(rng, &[], (cm_height.epoch(), &[&next_a, &next_b]))
         .expect("lift an autonome bundle");
 
     assert_eq!(lifted.stamp.anchor, pool.anchor());
@@ -2051,12 +2052,15 @@ fn bundle_lift_rejects_an_identity_anchor_input() {
         vec![output_note],
     );
 
-    pool.advance(1, |_| random_block(rng, 1, 4));
-    let mut commits: Vec<TachygramSetCommit> = pool.stamp_commits_at(pool.height());
-    commits.push(TachygramSetCommit::from(Eq::identity()));
+    // A proven bundle never carries the identity, so the fold is fed one
+    // directly. The lift must refuse it before any proving, which is why the
+    // rest of this bundle's incoherence never comes into play.
+    let mut next = build_autonome(rng, &wallet, 400, 300);
+    pool.mine_bundles(&[&next]);
+    next.stamp.tachygram_set = TachygramSetCommit::from(Eq::identity());
 
     let Err(LiftError::AnchorError(AnchorError::ZeroStamp)) =
-        bundle.lift(rng, &[], (cm_height.epoch(), commits))
+        bundle.lift(rng, &[], (cm_height.epoch(), &[&next]))
     else {
         panic!("identity anchor input advanced the anchor");
     };
@@ -2132,14 +2136,12 @@ fn bundle_lift_over_an_aggregate() {
 
     // The aggregate's anchor is the epoch's terminal one, so the segment it
     // lifts over must start in the next epoch's first block.
-    let lifted_from = pool.height();
-    pool.advance(2, |_| random_block(rng, 1, 2));
-    let commits = (lifted_from.0 + 1..=pool.height().0)
-        .flat_map(|height| pool.stamp_commits_at(BlockHeight(height)))
-        .collect();
+    pool.advance(1, |_| alloc::vec![]);
+    let next = build_autonome(rng, &wallet, 400, 300);
+    pool.mine_bundles(&[&next]);
 
     let lifted = innocent
-        .lift(rng, &adjuncts, (pool.height().epoch(), commits))
+        .lift(rng, &adjuncts, (pool.height().epoch(), &[&next]))
         .expect("lift an aggregate over its adjuncts");
 
     assert_eq!(lifted.stamp.anchor, pool.anchor());
@@ -2160,9 +2162,9 @@ fn bundle_lift_over_no_stamps_is_refused() {
     let bundle = build_autonome(rng, &wallet, 1000, 700);
 
     let err = bundle
-        .lift(rng, &[], (EpochIndex(0), vec![]))
+        .lift(rng, &[], (EpochIndex(0), &[]))
         .expect_err("a lift over no stamps must be refused");
-    let LiftError::NoLift = err else {
-        panic!("expected NoLift, got {err:?}");
+    let LiftError::LiftFailed(ProveError::MissingPcd(_reason)) = err else {
+        panic!("expected a missing anchor chain, got {err:?}");
     };
 }

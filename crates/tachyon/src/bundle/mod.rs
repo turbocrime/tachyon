@@ -98,10 +98,7 @@ use crate::{
     keys::{private, public},
     primitives::{Anchor, AnchorError, EpochIndex, effect},
     reddsa, serialization,
-    stamp::{
-        self, AggregateIdError, PointerStamp, ProofStamp, StampState, Unproven,
-        proof::{PROOF_SYSTEM, pool},
-    },
+    stamp::{self, AggregateIdError, PointerStamp, ProofStamp, StampState, Unproven},
     value,
 };
 
@@ -288,16 +285,10 @@ pub enum VerifyPointersError {
 #[derive(Debug, Display, Error)]
 #[non_exhaustive]
 pub enum LiftError {
-    /// No lift is needed.
-    #[display("no lift is needed")]
-    NoLift,
     /// A provided anchor input could not advance the anchor.
     #[display("anchor advance failed: {_0}")]
     AnchorError(AnchorError),
-    /// Anchor continuity could not be proved
-    #[display("anchor continuity failed: {_0}")]
-    AnchorContinuityFailed(ragu::Error),
-    /// The stamp lift itself failed
+    /// The stamp lift itself failed.
     #[display("stamp lift failed: {_0}")]
     LiftFailed(stamp::ProveError),
 }
@@ -553,61 +544,58 @@ impl Bundle<ProofStamp> {
 
     /// Advance the stamp's anchor across the stamps that follow it.
     ///
-    /// `(epoch, tachygram_sets)` must contain the epoch index of this bundle's
-    /// anchor and a sequence of tachygram set commitments for stamps
-    /// immediately after this bundle's anchor.
+    /// `(epoch, next_bundles)` must contain the epoch index of this bundle's
+    /// anchor and the bundles stamped immediately after it, in chain order.
+    /// Only their tachygram set commitments are read; the anchor chain is
+    /// folded from this bundle's own anchor, so a following bundle's anchor
+    /// does not have to be its position in the chain. Following stamps should
+    /// be obtained from consensus data.
+    ///
+    /// The actions of `adjuncts` join this bundle's own in the descriptor set
+    /// the lift proof is built against, so a set that does not match the
+    /// stamp's coverage yields a stamp that fails verification.
     ///
     /// Verification of coverage is the responsibility of the caller.
+    ///
+    /// # Errors
+    ///
+    /// An empty `next_bundles` builds no anchor chain, so there is nothing to
+    /// lift along.
+    ///
+    /// Every set is folded through [`Anchor::next_stamp`] before any proving
+    /// begins, so a set that cannot advance the anchor fails with
+    /// [`LiftError::AnchorError`] at no proving cost.
     pub fn lift<RNG: RngCore + CryptoRng>(
         self,
         rng: &mut RNG,
         adjuncts: &[&Bundle<dyn StampState>],
-        (epoch, tachygram_sets): (EpochIndex, Vec<TachygramSetCommit>),
+        (epoch, next_bundles): (EpochIndex, &[&Self]),
     ) -> Result<Self, LiftError> {
+        let seed_witnesses: Vec<(Anchor, EpochIndex, TachygramSetCommit)> = next_bundles
+            .iter()
+            .scan(self.stamp.anchor, |scanning_anchor, &next_bundle| {
+                let prev_anchor = *scanning_anchor;
+                let tachygram_set = next_bundle.stamp.tachygram_set;
+                let next_anchor = prev_anchor
+                    .next_stamp(epoch, &tachygram_set)
+                    .map_err(LiftError::AnchorError);
+
+                Some(next_anchor.map(|anchor| {
+                    *scanning_anchor = anchor;
+                    (prev_anchor, epoch, tachygram_set)
+                }))
+            })
+            .collect::<Result<Vec<_>, LiftError>>()?;
+
         let descriptors: BTreeSet<action::Descriptor> = self
             .descriptors()
             .into_iter()
             .chain(adjuncts.iter().flat_map(|&adj| adj.descriptors()))
             .collect();
 
-        let anchor_chain = {
-            let seed_witnesses: Vec<(Anchor, EpochIndex, TachygramSetCommit)> = tachygram_sets
-                .into_iter()
-                .scan(self.stamp.anchor, |running_anchor, tg_set| {
-                    let prev_anchor = *running_anchor;
-                    let next_anchor = prev_anchor
-                        .next_stamp(epoch, &tg_set)
-                        .map_err(LiftError::AnchorError);
-
-                    Some(next_anchor.map(|anchor| {
-                        *running_anchor = anchor;
-                        (prev_anchor, epoch, tg_set)
-                    }))
-                })
-                .collect::<Result<Vec<_>, LiftError>>()?;
-
-            let anchor_seeds = seed_witnesses
-                .into_iter()
-                .map(|witness| {
-                    PROOF_SYSTEM
-                        .seed(rng, pool::AnchorSeed, witness)
-                        .map_err(LiftError::AnchorContinuityFailed)
-                        .map(|(pcd, _aux)| pcd)
-                })
-                .collect::<Result<Vec<_>, LiftError>>()?;
-
-            let anchor_fused = anchor_seeds.into_iter().map(Ok).reduce(|left, right| {
-                PROOF_SYSTEM
-                    .fuse(rng, pool::AnchorFuse, (), left?, right?)
-                    .map(|(pcd, _aux)| pcd)
-                    .map_err(LiftError::AnchorContinuityFailed)
-            });
-            anchor_fused.unwrap_or(Err(LiftError::NoLift))?
-        };
-
         let stamp = self
             .stamp
-            .lift(rng, &descriptors, anchor_chain)
+            .lift(rng, &descriptors, seed_witnesses)
             .map_err(LiftError::LiftFailed)?;
 
         Ok(Self { stamp, ..self })

@@ -52,7 +52,8 @@ impl Anchor {
     /// # Errors
     ///
     /// Fails with `AnchorError::ZeroEpoch` if `next_epoch` is zero, since there
-    /// is no valid anchor before the genesis epoch boundary [`Anchor::default`].
+    /// is no valid anchor before the genesis epoch boundary
+    /// [`Anchor::default`].
     pub fn next_epoch(self, next_epoch: EpochIndex) -> Result<Self, AnchorError> {
         if next_epoch == EpochIndex(0) {
             Err(AnchorError::ZeroEpoch)
