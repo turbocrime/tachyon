@@ -6,13 +6,14 @@ extern crate alloc;
 
 pub mod proof;
 
-use alloc::{boxed::Box, collections::BTreeSet, vec, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeSet, format, vec, vec::Vec};
 use core::error;
 
 use corez::io::{self, Read, Write};
 use derive_more::{Debug, Display, Eq as TotalEq, Error, Into, PartialEq};
 use ff::PrimeField as _;
-use pasta_curves::Fp;
+use group::{Curve as _, GroupEncoding as _};
+use pasta_curves::{Eq, Fp};
 use proof::{
     PROOF_SYSTEM, output,
     stamp::{MergeStamp, OutputStamp, SpendStamp, StampHeader, StampLift},
@@ -172,7 +173,7 @@ impl StampState for ProofStamp {
             blake2b::stamp_data_digest(
                 blake2b::stamp_proof_digest(proof.as_ref()),
                 anchor,
-                self.tachygram_set.to_bytes(),
+                self.tachygram_set.as_ref().to_affine().to_bytes(),
                 &tachygrams,
             )
         };
@@ -199,7 +200,8 @@ impl StampState for ProofStamp {
         // Parsing does not confirm this against the tachygrams below: an MSM
         // over attacker-supplied bytes is a denial-of-service vector. See
         // `ProofStamp::is_accumulating`.
-        let tachygram_set = TachygramSetCommit::read(&mut reader)?;
+        let tachygram_set =
+            TachygramSetCommit::from(Eq::from(serialization::read_eq_affine(&mut reader)?));
 
         // `n_tachygrams` is attacker-controlled up to MAX_COMPACT_SIZE (2^25), so
         // do not pre-allocate vector capacity. vector reads are ASSUMED to hit
@@ -255,7 +257,7 @@ impl StampState for ProofStamp {
     fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
         writer.write_all(&self.coverage)?;
         self.anchor.write(&mut writer)?;
-        self.tachygram_set.write(&mut writer)?;
+        serialization::write_eq_affine(&mut writer, &self.tachygram_set.as_ref().to_affine())?;
         serialization::write_compactsize(
             &mut writer,
             u64::try_from(self.tachygrams.len()).map_err(|_err| {
@@ -356,7 +358,12 @@ impl Plan {
 
         if self.spends.len() != spendbind_inputs.len() {
             return Err(ProveError::MissingPcd(
-                "one spendbind input per spend action".into(),
+                format!(
+                    "cannot prove {} spend actions with {} spendbind inputs",
+                    self.spends.len(),
+                    spendbind_inputs.len(),
+                )
+                .into(),
             ));
         }
 
@@ -401,7 +408,7 @@ impl Plan {
 
         let (descriptors, _digests, tachygrams, anchor, proof) = entries
             .into_iter()
-            .map(Ok::<_, ProveError>)
+            .map(Ok)
             .reduce(|acc, next| {
                 let (left_desc, left_digests, left_tachygrams, left_anchor, left_proof) = acc?;
                 let (right_desc, right_digests, right_tachygrams, right_anchor, right_proof) =
@@ -426,7 +433,9 @@ impl Plan {
                 ))
             })
             .transpose()?
-            .ok_or(ProveError::MissingPcd("no actions to prove".into()))?;
+            .ok_or(ProveError::MissingPcd(
+                "no proof for no planned actions".into(),
+            ))?;
 
         let coverage = blake2b::action_descriptor_digest(&Vec::<[u8; 64]>::from_iter(descriptors));
         let tachygram_set = tachygrams
@@ -693,7 +702,9 @@ impl ProofStamp {
                     .map_err(ProveError::ProofFailed)
             })
             .transpose()?
-            .ok_or(ProveError::MissingPcd("anchor chain is empty".into()))?;
+            .ok_or(ProveError::MissingPcd(
+                "no anchor chain proof for no anchor advance".into(),
+            ))?;
 
         let action_digests = descriptors
             .iter()

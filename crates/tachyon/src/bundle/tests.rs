@@ -2032,10 +2032,8 @@ fn bundle_lift_preserves_coverage() {
     );
 }
 
-/// An identity anchor input has no Poseidon absorption, so the lift reports it
-/// rather than unwinding inside the anchor fold.
 #[test]
-fn bundle_lift_rejects_an_identity_anchor_input() {
+fn bundle_lift_rejects_invalid_anchor_inputs() {
     let rng = &mut StdRng::seed_from_u64(0);
     let wallet = WalletSim::new(shared_sk());
 
@@ -2052,18 +2050,51 @@ fn bundle_lift_rejects_an_identity_anchor_input() {
         vec![output_note],
     );
 
-    // A proven bundle never carries the identity, so the fold is fed one
-    // directly. The lift must refuse it before any proving, which is why the
-    // rest of this bundle's incoherence never comes into play.
-    let mut next = build_autonome(rng, &wallet, 400, 300);
+    let next = build_autonome(rng, &wallet, 400, 300);
     pool.mine_bundles(&[&next]);
-    next.stamp.tachygram_set = TachygramSetCommit::from(Eq::identity());
 
-    let Err(LiftError::AnchorError(AnchorError::ZeroStamp)) =
-        bundle.lift(rng, &[], (cm_height.epoch(), &[&next]))
-    else {
-        panic!("identity anchor input advanced the anchor");
+    let forged_with = |tachygram_set| {
+        let mut forged = next.clone();
+        forged.stamp.tachygram_set = tachygram_set;
+        forged
     };
+
+    // The identity point is not a valid set.
+    {
+        let forged = forged_with(TachygramSetCommit::from(Eq::identity()));
+        let err = bundle
+            .clone()
+            .lift(rng, &[], (cm_height.epoch(), &[&forged]))
+            .unwrap_err();
+        let LiftError::AnchorError(AnchorError::NextStampZero) = err else {
+            panic!("expected NextStampZero, got {err:?}");
+        };
+    }
+
+    // An empty set is rejected.
+    {
+        let forged = forged_with(TachygramSetCommit::default());
+        let err = bundle
+            .clone()
+            .lift(rng, &[], (cm_height.epoch(), &[&forged]))
+            .unwrap_err();
+        let LiftError::AnchorError(AnchorError::NextStampEmpty) = err else {
+            panic!("expected NextStampEmpty, got {err:?}");
+        };
+    }
+
+    // Lifting over an empty sequence nonsensical.
+    {
+        let err = bundle.lift(rng, &[], (cm_height.epoch(), &[])).unwrap_err();
+
+        let LiftError::LiftFailed(ProveError::MissingPcd(reason)) = err else {
+            panic!("expected a missing anchor chain, got {err:?}");
+        };
+        assert_eq!(
+            reason.to_string(),
+            "no anchor chain proof for no anchor advance"
+        );
+    }
 }
 
 /// An aggregate's action commitment spans its adjuncts, so a lift that was
@@ -2151,20 +2182,4 @@ fn bundle_lift_over_an_aggregate() {
             .expect("a lifted aggregate verifies against its adjuncts"),
         "a lifted aggregate must verify against its adjuncts"
     );
-}
-
-/// An anchor chain has no zero-link form, so a lift with nothing to cross is
-/// refused rather than silently returning the bundle unchanged.
-#[test]
-fn bundle_lift_over_no_stamps_is_refused() {
-    let rng = &mut StdRng::seed_from_u64(0);
-    let wallet = WalletSim::new(shared_sk());
-    let bundle = build_autonome(rng, &wallet, 1000, 700);
-
-    let err = bundle
-        .lift(rng, &[], (EpochIndex(0), &[]))
-        .expect_err("a lift over no stamps must be refused");
-    let LiftError::LiftFailed(ProveError::MissingPcd(_reason)) = err else {
-        panic!("expected a missing anchor chain, got {err:?}");
-    };
 }

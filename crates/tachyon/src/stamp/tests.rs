@@ -98,11 +98,12 @@ fn plan_prove_rejects_invalid_inputs() {
     // Empty plan: no actions at all.
     {
         let plan = Plan::new(alloc::vec![], alloc::vec![], anchor);
+
         let err = plan.prove(rng, &user.pak, alloc::vec![]).unwrap_err();
         let ProveError::MissingPcd(reason) = err else {
             panic!("expected MissingPcd, got {err:?}");
         };
-        assert_eq!(reason.to_string(), "no actions to prove");
+        assert_eq!(reason.to_string(), "no proof for no planned actions");
     }
 
     let bundle_a = || (range_a.clone(), sp_a.clone());
@@ -112,22 +113,30 @@ fn plan_prove_rejects_invalid_inputs() {
     {
         let plan = Plan::new(two_spends(), alloc::vec![], anchor);
         let pcds = alloc::vec![bundle_a()];
+
         let err = plan.prove(rng, &user.pak, pcds).unwrap_err();
         let ProveError::MissingPcd(reason) = err else {
             panic!("expected MissingPcd, got {err:?}");
         };
-        assert_eq!(reason.to_string(), "one spendbind input per spend action");
+        assert_eq!(
+            reason.to_string(),
+            "cannot prove 2 spend actions with 1 spendbind inputs"
+        );
     }
 
     // Too many PCDs: 2 spends, 3 PCDs.
     {
         let plan = Plan::new(two_spends(), alloc::vec![], anchor);
         let pcds = alloc::vec![bundle_a(), bundle_b(), bundle_a()];
+
         let err = plan.prove(rng, &user.pak, pcds).unwrap_err();
         let ProveError::MissingPcd(reason) = err else {
             panic!("expected MissingPcd, got {err:?}");
         };
-        assert_eq!(reason.to_string(), "one spendbind input per spend action");
+        assert_eq!(
+            reason.to_string(),
+            "cannot prove 2 spend actions with 3 spendbind inputs"
+        );
     }
 
     // Correspondence swap: lengths match, pairing is wrong. Each pair is
@@ -607,18 +616,34 @@ fn verify_proof_action_multiset_invariants() {
 /// even though the sequence is non-decreasing.
 #[test]
 fn read_rejects_duplicate_tachygrams() {
-    let tg = Tachygram::from(Fp::ONE);
+    let rng = &mut StdRng::seed_from_u64(0);
+
+    let anchor = Anchor(Fp::random(&mut *rng));
+    let tg = Tachygram::random(&mut *rng);
+    let tg_set = [tg, tg];
 
     let mut buf = Vec::new();
-    buf.extend_from_slice(&[0u8; 32]); // covered actions digest
-    Anchor(Fp::ZERO).write(&mut buf).expect("write anchor");
-    TachygramSetPoly::from_iter([tg])
-        .commit()
-        .write(&mut buf)
+    {
+        buf.extend_from_slice(&[0u8; 32]); // dummy actions digest
+        anchor.write(&mut buf).expect("write anchor");
+        serialization::write_eq_affine(
+            &mut buf,
+            &TachygramSetPoly::from_iter(tg_set)
+                .commit()
+                .as_ref()
+                .to_affine(),
+        )
         .expect("write tachygram set commitment");
-    serialization::write_compactsize(&mut buf, 2).expect("write tachygram count");
-    serialization::write_fp(&mut buf, &Fp::from(tg)).expect("write tachygram");
-    serialization::write_fp(&mut buf, &Fp::from(tg)).expect("write tachygram");
+
+        serialization::write_compactsize(
+            &mut buf,
+            tg_set.len().try_into().expect("tachygram count"),
+        )
+        .expect("write tachygram count");
+        for write_tg in tg_set {
+            serialization::write_fp(&mut buf, &write_tg.into()).expect("write tachygram");
+        }
+    }
 
     let err = ProofStamp::read(&*buf).expect_err("duplicate tachygrams must be rejected");
     assert_eq!(err.to_string(), "tachygrams are not unique");
@@ -773,9 +798,7 @@ fn lift_over_descriptors_then_verify() {
         .flat_map(|height| pool.stamp_commits_at(BlockHeight(height)))
         .scan(stamp.anchor, |anchor_before, tachygram_set| {
             let witness = (*anchor_before, epoch, tachygram_set);
-            *anchor_before = anchor_before
-                .next_stamp(epoch, &tachygram_set)
-                .expect("valid step");
+            *anchor_before = anchor_before.next_stamp(epoch, &tachygram_set).unwrap();
             Some(witness)
         })
         .collect();
