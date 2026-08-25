@@ -10,65 +10,54 @@ use crate::{digest::poseidon, serialization};
 /// Errors that can occur when advancing an anchor.
 #[derive(Debug, Display, Error)]
 pub enum AnchorError {
-    /// The stamp commit is the identity point.
-    #[display("stamp commit is the identity point")]
+    /// The provided tachygram set is empty.
+    #[display("next stamp cannot be empty")]
     ZeroStamp,
-    /// The epoch is zero.
-    #[display("epoch is zero")]
+    /// The provided epoch index is zero.
+    #[display("next epoch cannot be zero")]
     ZeroEpoch,
 }
 
 /// Running anchor over the consensus state.
-///
-/// A Poseidon hash sequence with two domain-separated link types:
-///
-/// - [`Anchor::next_stamp`] (`Tachyon-StampFld`) absorbs one stamp's epoch and
-///   tachygram-set commitment.
-/// - [`Anchor::next_epoch`] (`Tachyon-EpochStp`) lifts across an epoch
-///   boundary. `EndEpochUnspentSeed` is the only step that folds it, from a
-///   predecessor it does not constrain to be the epoch's terminal anchor.
-///
-/// A block that publishes no stamp contributes no link, so the anchor is
-/// constant across a stampless span.
-///
-/// Opening reveals each link's role by its domain.
 #[derive(Clone, Copy, Debug, From, Into, PartialEq, TotalEq)]
 pub struct Anchor(pub Fp);
 
 impl Anchor {
-    /// Advance the anchor by absorbing one stamp's commit, bound to the epoch
-    /// of the block containing it.
+    /// Advance the anchor to the next stamp in the present epoch.
+    ///
+    /// The present epoch index may be zero, within the genesis epoch.
     ///
     /// # Errors
     ///
-    /// Fails if `stamp_commit` is the identity point.
+    /// Fails with `AnchorError::ZeroStamp` if `stamp_commit` is the identity
+    /// point.
     pub fn next_stamp(
         self,
-        epoch: EpochIndex,
+        present_epoch: EpochIndex,
         stamp_commit: &TachygramSetCommit,
     ) -> Result<Self, AnchorError> {
         if bool::from(stamp_commit.as_ref().is_identity()) {
             Err(AnchorError::ZeroStamp)
         } else {
-            Ok(Self(poseidon::anchor_stamp_step(
+            Ok(Self(poseidon::anchor_next_stamp(
                 self.0,
-                epoch.into(),
+                present_epoch.into(),
                 stamp_commit.as_ref().to_affine(),
             )))
         }
     }
 
-    /// Lift the anchor across an epoch boundary into the new epoch's
-    /// initial state.
+    /// Advance the anchor to the next epoch boundary.
     ///
     /// # Errors
     ///
-    /// Fails if `new_epoch` is zero, which no boundary crosses into.
-    pub fn next_epoch(self, new_epoch: EpochIndex) -> Result<Self, AnchorError> {
-        if new_epoch == EpochIndex(0) {
+    /// Fails with `AnchorError::ZeroEpoch` if `next_epoch` is zero, since there
+    /// is no valid anchor before the genesis epoch boundary [`Anchor::default`].
+    pub fn next_epoch(self, next_epoch: EpochIndex) -> Result<Self, AnchorError> {
+        if next_epoch == EpochIndex(0) {
             Err(AnchorError::ZeroEpoch)
         } else {
-            Ok(Self(poseidon::anchor_epoch_step(self.0, new_epoch.into())))
+            Ok(Self(poseidon::anchor_next_epoch(self.0, next_epoch.into())))
         }
     }
 
@@ -84,9 +73,9 @@ impl Anchor {
 }
 
 impl Default for Anchor {
-    /// The genesis epoch boundary.
+    /// The genesis epoch boundary, for epoch zero.
     fn default() -> Self {
-        Self(poseidon::anchor_epoch_step(Fp::ZERO, Fp::ZERO))
+        Self(poseidon::anchor_next_epoch(Fp::ZERO, Fp::ZERO))
     }
 }
 
@@ -208,7 +197,7 @@ mod tests {
 
         assert_eq!(
             Anchor::default(),
-            Anchor(poseidon::anchor_epoch_step(Fp::ZERO, Fp::ZERO)),
+            Anchor(poseidon::anchor_next_epoch(Fp::ZERO, Fp::ZERO)),
             "genesis remains the epoch-zero link"
         );
     }

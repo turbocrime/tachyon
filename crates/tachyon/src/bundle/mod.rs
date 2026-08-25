@@ -292,7 +292,7 @@ pub enum LiftError {
     #[display("no lift is needed")]
     NoLift,
     /// A provided anchor input could not advance the anchor.
-    #[display("anchor step failed: {_0}")]
+    #[display("anchor advance failed: {_0}")]
     AnchorError(AnchorError),
     /// Anchor continuity could not be proved
     #[display("anchor continuity failed: {_0}")]
