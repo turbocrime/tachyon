@@ -13,7 +13,7 @@ use ff::Field as _;
 use pasta_curves::Fp;
 use ragu::{Pcd, Proof};
 use rand::{SeedableRng as _, rngs::StdRng};
-use rand_core::{CryptoRng, RngCore};
+use rand_core::CryptoRng;
 
 use super::{PROOF_SYSTEM, delegation, output, pool, spend, spendable, stamp};
 use crate::{
@@ -37,8 +37,8 @@ fn mine_cm_block(rng: &mut StdRng, pool: &mut PoolSim, cm: note::Commitment) -> 
     pool.height()
 }
 
-fn mine_cm_in_epoch_one(
-    rng: &mut (impl RngCore + CryptoRng),
+fn mine_cm_in_epoch_one<RNG: CryptoRng>(
+    rng: &mut RNG,
     pool: &mut PoolSim,
     cm: note::Commitment,
 ) -> BlockHeight {
