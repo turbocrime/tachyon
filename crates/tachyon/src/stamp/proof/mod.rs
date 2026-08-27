@@ -43,7 +43,8 @@ fn make_app() -> Result<Application, ragu::Error> {
 }
 
 lazy_static! {
-    pub(crate) static ref PROOF_SYSTEM: Application = {
+    /// A static ref to the mock ragu application.
+    pub static ref PROOF_SYSTEM: Application = {
         #[expect(
             clippy::expect_used,
             reason = "hardcoded step ordering must register cleanly"
