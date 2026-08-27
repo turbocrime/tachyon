@@ -17,7 +17,7 @@ $$
 
 $$
 \mathsf{tg}_1 = \mathsf{tg}_\bot =
-    \mathsf{Poseidon}_\texttt{Tachyon-PadDeriv}(
+    \mathsf{Poseidon}_\texttt{Tachyon-CmOutPad}(
         \mathsf{rcm}, \mathsf{pk}, v, \psi
     )
 $$
