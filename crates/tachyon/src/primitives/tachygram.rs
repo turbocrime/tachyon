@@ -1,12 +1,13 @@
 use core::cmp::Ordering;
 
-use crate::serialization;
 use corez::io::{self, Read, Write};
 use derive_more::{Debug, Eq as TotalEq, From, Into, PartialEq};
 use ff::PrimeField as _;
 use pasta_curves::Fp;
 #[cfg(test)]
 use rand_core::CryptoRng;
+
+use crate::serialization;
 
 /// A field element ($\mathbb{F}_p$) in the Tachyon polynomial accumulator.
 ///

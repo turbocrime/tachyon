@@ -1,6 +1,4 @@
 #![allow(
-    dead_code,
-    unused,
     clippy::as_conversions,
     clippy::expect_used,
     clippy::missing_assert_message,
@@ -26,7 +24,6 @@ use pasta_curves::Fp;
 use ragu::{Pcd, Proof};
 use rand::{SeedableRng as _, rngs::StdRng};
 use rand_core::CryptoRng;
-
 use zcash_tachyon::{
     ActionSetPoly, Anchor, BlockHeight, EpochIndex, Tachygram, TachygramSetCommit,
     TachygramSetPoly,
@@ -1023,7 +1020,6 @@ pub mod ggm_tools {
 
     use ragu::{Pcd, Proof};
     use rand_core::CryptoRng;
-
     use zcash_tachyon::{
         EpochIndex,
         digest::poseidon,

@@ -1,15 +1,15 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use group::Curve as _;
 
-use crate::serialization;
 use corez::io::{self, Read, Write};
 use derive_more::{AsRef, Debug, Eq as TotalEq, From, Into, PartialEq};
+use group::Curve as _;
 use pasta_curves::{Eq, Fp};
 use ragu::{Polynomial, poly_with_roots};
 
 use super::{ActionDigest, Tachygram};
+use crate::serialization;
 
 /// Pedersen commitment to a stamp's tachygram set.
 #[derive(AsRef, Clone, Copy, Debug, From, Into, PartialEq, TotalEq)]

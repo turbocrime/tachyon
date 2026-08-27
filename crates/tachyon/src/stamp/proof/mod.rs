@@ -12,9 +12,6 @@ pub mod spend;
 pub mod spendable;
 pub mod stamp;
 
-#[cfg(test)]
-mod tests;
-
 use lazy_static::lazy_static;
 pub use ragu::Proof;
 use ragu::{Application, ApplicationBuilder};

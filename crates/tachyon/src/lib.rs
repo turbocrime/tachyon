@@ -28,9 +28,6 @@ mod primitives;
 mod relations;
 mod serialization;
 
-#[cfg(test)]
-pub(crate) mod fixtures;
-
 pub use action::{Action, Plan as ActionPlan};
 pub use bundle::{
     Bundle, LiftError, Plan as BundlePlan, SignatureError, TachyonBundle, VerificationError,

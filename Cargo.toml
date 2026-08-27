@@ -7,9 +7,14 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.90"
 
-# dependency opt level matters for fft performance in tests
+# dependency opt level matters for fft performance in unit tests
 [profile.dev.package."*"]
 debug-assertions = false
+opt-level = 3
+overflow-checks = false
+
+# overall opt level matters for performance in integration tests
+[profile.test]
 opt-level = 3
 overflow-checks = false
 

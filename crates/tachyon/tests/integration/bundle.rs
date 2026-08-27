@@ -8,9 +8,12 @@
 extern crate alloc;
 
 use alloc::{
-    boxed::Box, collections::BTreeMap, collections::BTreeSet, string::ToString as _, vec, vec::Vec,
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    string::ToString as _,
+    vec,
+    vec::Vec,
 };
-
 use core::cmp::Reverse;
 
 use corez::io;
@@ -18,9 +21,6 @@ use group::Group as _;
 use pasta_curves::{Eq, Fp};
 use ragu::proof::PROOF_SIZE_COMPRESSED;
 use rand::{SeedableRng as _, rngs::StdRng};
-
-use zcash_tachyon::*;
-
 use zcash_tachyon::{
     BlockHeight, SignatureError, Tachygram, TachygramSetPoly, action,
     bundle::{Plan, PlanError, Signature},
@@ -29,9 +29,8 @@ use zcash_tachyon::{
     effect,
     entropy::ActionEntropy,
     keys::private,
-    stamp::ProveError,
-    stamp::{PointerStamp, ProofStamp},
-    value,
+    stamp::{PointerStamp, ProofStamp, ProveError},
+    value, *,
 };
 
 use crate::fixtures::{
@@ -1781,7 +1780,7 @@ fn read_rejects_value_balance_out_of_range() {
     let wallet = WalletSim::new(shared_sk());
     let max_money = i64::try_from(MAX_MONEY).unwrap();
 
-    for value_balance in [max_money + 1, -max_money - 1] {
+    for value_balance in [max_money + 1, -max_money - 1, i64::MAX, i64::MIN] {
         let bundle = build_autonome(rng, &wallet, 1000, 700);
 
         let mut buf = Vec::new();
