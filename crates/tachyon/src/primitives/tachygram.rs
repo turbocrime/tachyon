@@ -1,5 +1,7 @@
 use core::cmp::Ordering;
 
+use crate::serialization;
+use corez::io::{self, Read, Write};
 use derive_more::{Debug, Eq as TotalEq, From, Into, PartialEq};
 use ff::PrimeField as _;
 use pasta_curves::Fp;
@@ -28,6 +30,18 @@ impl Tachygram {
         use ff::Field as _;
 
         Self(Fp::random(rng))
+    }
+
+    /// Read as a field element from the consensus wire format.
+    pub fn read<R: Read>(mut reader: R) -> io::Result<Self> {
+        let tg = serialization::read_fp(&mut reader)?;
+        Ok(Self(tg))
+    }
+
+    /// Write as a field element to the consensus wire format.
+    pub fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
+        serialization::write_fp(&mut writer, &self.0)?;
+        Ok(())
     }
 }
 
