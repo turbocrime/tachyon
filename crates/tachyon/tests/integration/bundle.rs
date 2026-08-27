@@ -1,10 +1,3 @@
-#![allow(
-    clippy::panic,
-    clippy::too_many_lines,
-    missing_docs,
-    reason = "test code"
-)]
-
 extern crate alloc;
 
 use alloc::{

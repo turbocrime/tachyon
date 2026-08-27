@@ -1,19 +1,3 @@
-#![allow(
-    clippy::as_conversions,
-    clippy::expect_used,
-    clippy::missing_assert_message,
-    clippy::must_use_candidate,
-    clippy::partial_pub_fields,
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    missing_debug_implementations,
-    clippy::indexing_slicing,
-    clippy::type_complexity,
-    missing_docs,
-    unreachable_pub,
-    reason = "test code"
-)]
-
 extern crate alloc;
 
 use alloc::{collections::BTreeMap, vec, vec::Vec};
@@ -311,7 +295,7 @@ impl PoolSimBlock {
             .map(|tgs| {
                 let stamp_prev = anchor;
                 let commit = tgs.iter().copied().collect::<TachygramSetPoly>().commit();
-                let stamp_after = anchor.next_stamp(epoch, &commit).expect("whatever");
+                let stamp_after = anchor.next_stamp(epoch, &commit).unwrap();
                 anchor = stamp_after;
                 (stamp_prev, tgs, commit, stamp_after)
             })
@@ -419,7 +403,7 @@ impl PoolSim {
         // Epoch-first blocks are preceded by a boundary anchor lift;
         // intra-epoch blocks advance directly from the previous tip.
         let prev = if new_height.is_epoch_first() {
-            old_tip.next_epoch(new_height.epoch()).expect("whatever")
+            old_tip.next_epoch(new_height.epoch()).unwrap()
         } else {
             old_tip
         };
@@ -449,7 +433,7 @@ pub(crate) fn build_anchor_chain_pcd<RNG: CryptoRng>(
     loop {
         for tgs in &pool.block(height).tachygrams() {
             let witness = witness::anchor_seed(((), ()), state, height.epoch(), tgs);
-            let next_state = state.next_stamp(witness.1, &witness.2).expect("whatever");
+            let next_state = state.next_stamp(witness.1, &witness.2).unwrap();
             let (seed, ()) = PROOF_SYSTEM
                 .seed(rng, pool::AnchorSeed, witness)
                 .expect("AnchorSeed");
@@ -618,11 +602,6 @@ fn fuse_unspent_tree<RNG: CryptoRng>(
     if chains.len() == 1 {
         return chains.pop().expect("single chain");
     }
-    #[expect(
-        clippy::integer_division,
-        clippy::integer_division_remainder_used,
-        reason = "midpoint split"
-    )]
     let right_chains = chains.split_off(chains.len() / 2);
     let left = fuse_unspent_tree(rng, nf, base, chains);
     let right = fuse_unspent_tree(rng, nf, base, right_chains);
@@ -768,14 +747,11 @@ impl WalletSim {
                 .expect("cm not found in any stamp at the cm-block");
 
             // Anchor immediately before the cm-stamp (the cm-block prefix fold).
-            let pre_cm_anchor = stamp_commits[..cm_idx].iter().fold(
-                pool.block(init_height).prev,
-                |anchor, commit| {
-                    anchor
-                        .next_stamp(init_height.epoch(), commit)
-                        .expect("whatever")
-                },
-            );
+            let pre_cm_anchor = stamp_commits[..cm_idx]
+                .iter()
+                .fold(pool.block(init_height).prev, |anchor, commit| {
+                    anchor.next_stamp(init_height.epoch(), commit).unwrap()
+                });
 
             (pre_cm_anchor, stamps[cm_idx].clone())
         };

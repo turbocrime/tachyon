@@ -2,8 +2,6 @@
 //! derivation chain, `ArbitraryUnspent` composition, and the `Spendable*`
 //! lineage.
 
-#![allow(clippy::panic, reason = "test code")]
-
 extern crate alloc;
 
 use alloc::{string::ToString as _, vec, vec::Vec};

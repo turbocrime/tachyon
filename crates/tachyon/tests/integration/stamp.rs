@@ -1,5 +1,3 @@
-#![allow(clippy::panic, clippy::too_many_lines, reason = "test code")]
-
 extern crate alloc;
 
 use alloc::{boxed::Box, collections::BTreeSet, string::ToString as _, vec, vec::Vec};
