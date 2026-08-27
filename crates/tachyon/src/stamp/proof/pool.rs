@@ -27,11 +27,11 @@ use ragu::{
 
 use super::delegation::NullifierDerivation;
 use crate::{
+    collections::multiseq,
     note::{self},
     nullifier::Nullifier,
     primitives::{
         Anchor, EpochIndex, NfSeqCommit, NfSeqPoly, TachygramSetCommit, TachygramSetPoly,
-        multisequence,
     },
     relations::enforce::enforce_poly_product,
 };
@@ -312,7 +312,7 @@ impl Step for UnspentSeed {
             .checked_add(1)
             .and_then(NonZero::new)
             .expect("offset index is nonzero");
-        let member_at_z = multisequence::direct_eval_sequence(idx, [Fp::from(nf)], z);
+        let member_at_z = multiseq::direct_eval(idx, [Fp::from(nf)], z);
 
         enforce_zero(
             elapsed_at_z - member_at_z,
@@ -406,8 +406,7 @@ impl Step for EndEpochUnspentSeed {
 
         #[expect(clippy::expect_used, reason = "one plus an epoch is nonzero")]
         let idx = NonZero::new(1 + u64::from(epoch_prev.0)).expect("offset index is nonzero");
-        let crossing_at_z =
-            multisequence::direct_eval_sequence(idx, [nf_prev, nf].map(Fp::from), z);
+        let crossing_at_z = multiseq::direct_eval(idx, [nf_prev, nf].map(Fp::from), z);
         enforce_zero(
             elapsed_at_z - crossing_at_z,
             "EndEpochUnspentSeed: elapsed does not match the crossing pairs",
@@ -512,7 +511,7 @@ impl Step for UnspentFuse {
 
         #[expect(clippy::expect_used, reason = "one plus an epoch is nonzero")]
         let idx = NonZero::new(1 + u64::from(left_epoch_last.0)).expect("offset index is nonzero");
-        let junction_at_z = multisequence::direct_eval_sequence(idx, [Fp::from(left_nf_last)], z);
+        let junction_at_z = multiseq::direct_eval(idx, [Fp::from(left_nf_last)], z);
         enforce_zero(
             combined_at_z * junction_at_z - left_at_z * right_at_z,
             "UnspentFuse: combined is not the concatenation of the halves",

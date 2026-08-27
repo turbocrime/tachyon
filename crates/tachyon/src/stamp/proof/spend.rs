@@ -13,9 +13,10 @@ use ragu::{
 
 use super::{delegation::NullifierDerivation, spendable::SpendableHeader};
 use crate::{
+    collections::multiseq,
     note,
     nullifier::Nullifier,
-    primitives::{Anchor, NfSeqPoly, multisequence},
+    primitives::{Anchor, NfSeqPoly},
 };
 
 /// Header binding a spend to its lineage note and epoch nullifier pair.
@@ -125,8 +126,7 @@ impl Step for SpendBind {
 
         #[expect(clippy::expect_used, reason = "one plus an epoch is nonzero")]
         let idx = NonZero::new(1 + u64::from(spendable_epoch.0)).expect("offset index is nonzero");
-        let pair_at_z =
-            multisequence::direct_eval_sequence(idx, [present_nf, nf_next].map(Fp::from), z);
+        let pair_at_z = multiseq::direct_eval(idx, [present_nf, nf_next].map(Fp::from), z);
         enforce_zero(
             nf_seq_at_z - pair_at_z * complement_at_z,
             "SpendBind: nullifier pair does not match the derivation",

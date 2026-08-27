@@ -12,7 +12,6 @@ pub use anchor::{Anchor, AnchorError};
 pub use block_height::BlockHeight;
 pub use effect::Effect;
 pub use epoch::{EpochDiff, EpochGroup, EpochIndex};
-pub(crate) use seq::multisequence;
 pub use seq::{NfSeqCommit, NfSeqPoly};
 pub use sets::{ActionSetCommit, ActionSetPoly, TachygramSetCommit, TachygramSetPoly};
 pub use tachygram::Tachygram;

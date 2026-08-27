@@ -20,9 +20,10 @@ use ragu::{
 };
 
 use crate::{
+    collections::multiseq,
     keys::{NoteMasterKey, ProofAuthorizingKey},
     note::{self, Note},
-    primitives::{EpochGroup, EpochIndex, NfSeqCommit, NfSeqPoly, multisequence},
+    primitives::{EpochGroup, EpochIndex, NfSeqCommit, NfSeqPoly},
     relations::enforce::enforce_poly_product,
 };
 
@@ -193,7 +194,7 @@ impl Step for NfDerive {
         // sponge-derived nullifiers and their epochs.
         #[expect(clippy::expect_used, reason = "one plus an epoch is nonzero")]
         let idx = NonZero::new(1 + u64::from(epoch_start.0)).expect("offset index is nonzero");
-        let window_at_z = multisequence::direct_eval_sequence(idx, nullifiers.map(Fp::from), z);
+        let window_at_z = multiseq::direct_eval(idx, nullifiers.map(Fp::from), z);
 
         enforce_zero(
             seq_at_z - window_at_z,

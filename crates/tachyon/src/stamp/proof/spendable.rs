@@ -20,9 +20,10 @@ use ragu::{
 
 use super::{delegation::NullifierDerivation, pool::Unspent};
 use crate::{
+    collections::multiseq,
     note,
     nullifier::Nullifier,
-    primitives::{Anchor, EpochIndex, NfSeqPoly, TachygramSetPoly, multisequence},
+    primitives::{Anchor, EpochIndex, NfSeqPoly, TachygramSetPoly},
 };
 
 /// Wallet's spendable position `(cm, (epoch, present_nf), anchor)`
@@ -142,7 +143,7 @@ impl Step for SpendableInit {
 
         #[expect(clippy::expect_used, reason = "one plus an epoch is nonzero")]
         let idx = NonZero::new(1 + u64::from(creation_epoch.0)).expect("offset index is nonzero");
-        let read_at_z = multisequence::direct_eval_sequence(idx, [Fp::from(present_nf)], z);
+        let read_at_z = multiseq::direct_eval(idx, [Fp::from(present_nf)], z);
         enforce_zero(
             nf_seq_at_z - read_at_z * complement_at_z,
             "SpendableInit: nullifier does not match the derivation",
