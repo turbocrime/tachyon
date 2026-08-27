@@ -3,8 +3,8 @@
 #![allow(clippy::module_name_repetitions, reason = "intentional names")]
 #![allow(
     clippy::multiple_inherent_impl,
-    reason = "todo: take read/write off StampState, so the stamp types need \
-              only one inherent impl each"
+    clippy::same_name_method,
+    reason = "todo: take read/write off StampState"
 )]
 
 extern crate alloc;
@@ -147,11 +147,6 @@ impl StampState for PointerStamp {
     }
 }
 
-#[expect(
-    clippy::same_name_method,
-    reason = "todo: `StampState` requires `read`/`write`, colliding with the \
-              inherent wire codec every other type in the crate carries"
-)]
 impl PointerStamp {
     /// Read an aggregate id from the consensus wire format.
     pub fn read<R: Read>(mut reader: R) -> io::Result<Self> {
@@ -218,11 +213,6 @@ impl StampState for ProofStamp {
     }
 }
 
-#[expect(
-    clippy::same_name_method,
-    reason = "todo: `StampState` requires `read`/`write`, colliding with the \
-              inherent wire codec every other type in the crate carries"
-)]
 impl ProofStamp {
     /// Read a stamp from the consensus wire format. The proof blob has a
     /// known constant size.
