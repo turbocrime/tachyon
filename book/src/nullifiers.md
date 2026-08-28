@@ -18,11 +18,11 @@ $$
 Because $\mathsf{nf}_e$ is the output of a pseudo-random function of master key $\mathsf{mk}$ and epoch $e$, distinct epochs have unrelated nullifiers.
 
 Epochs are grouped at sponge rate $r$ for proof efficiency.
-One sponge squeezes $r$ consecutive nullifiers from group index $w = e - (e \bmod r)$
+One sponge squeezes $r$ consecutive nullifiers starting at base epoch $w = e - (e \bmod r)$
 
 $$
     \mathsf{Poseidon}_\texttt{Tachyon-NfDerive}\!(
-      \mathsf{mk}, w
+      \mathsf{mk}, \lfloor e/r \rfloor
     ) = (\mathsf{nf}_w, \ldots,\ \mathsf{nf}_{w + r - 1})
 $$
 
