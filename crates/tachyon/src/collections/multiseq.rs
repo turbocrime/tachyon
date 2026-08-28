@@ -81,16 +81,16 @@ use ragu::Polynomial;
 
 use super::poly_mul;
 
-const TWO: [u64; 4] = [2, 0, 0, 0];
+const NON_RESIDUE: Fp = Fp::from_raw([2, 0, 0, 0]);
 const THREE: [u64; 4] = [3, 0, 0, 0];
 
 #[must_use]
 fn encode_single(i: Fp, m: Fp) -> Polynomial {
-    // writing out expanded coefficients for $F(X) = (iX + m)^3 - \zeta$ is
+    // writing out expanded coefficients for $F(X) = (iX + m)^3 - c$ is
     // cheaper than constructing a linear $f(X) = iX + m$ and then cubing it.
     Polynomial::from_coeffs(
         [
-            m.pow(THREE) - Fp::from_raw(TWO),
+            m.pow(THREE) - NON_RESIDUE,
             Fp::from_raw(THREE) * i * m.square(),
             Fp::from_raw(THREE) * i.square() * m,
             i.pow(THREE),
@@ -101,7 +101,7 @@ fn encode_single(i: Fp, m: Fp) -> Polynomial {
 
 #[must_use]
 fn direct_eval_single(i: Fp, m: Fp, x: Fp) -> Fp {
-    ((i * x) + m).pow(THREE) - Fp::from_raw(TWO)
+    ((i * x) + m).pow(THREE) - NON_RESIDUE
 }
 
 /// Encode the provided members consecutively.
@@ -166,7 +166,7 @@ mod tests {
 
             {
                 let mut coeffs = Vec::from_iter(m_ix_cube.iter_coeffs());
-                coeffs[0] -= Fp::from_raw(TWO);
+                coeffs[0] -= NON_RESIDUE;
                 Polynomial::from_coeffs(coeffs)
             }
         };

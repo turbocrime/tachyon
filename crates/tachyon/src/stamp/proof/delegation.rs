@@ -12,7 +12,6 @@ extern crate alloc;
 use alloc::{vec, vec::Vec};
 use core::num::NonZero;
 
-use ff::Field as _;
 use pasta_curves::{Ep, Eq, Fp, Fq};
 use ragu::{
     Header, Index, Step, Suffix,
@@ -222,8 +221,7 @@ impl Step for NfDerive {
 /// product identity pins `merged`'s member multiset to the union of the
 /// halves'. The contiguity check preserves the header invariant established
 /// at the leaf: exactly one member per epoch in `[epoch_start, epoch_end)`,
-/// so the announced range labels the member multiset truthfully. The
-/// product identity is confirmed a second time at the fixed point $0$.
+/// so the announced range labels the member multiset truthfully.
 #[derive(Debug)]
 pub struct NullifierFuse;
 
@@ -270,19 +268,6 @@ impl Step for NullifierFuse {
             merged_seq.as_ref(),
             "NullifierFuse: merged is not the concat of the halves",
         )?;
-        // The same product identity at the fixed point 0.
-        let (left_at_zero, right_at_zero, merged_at_zero) = (
-            left_seq.eval(Fp::ZERO),
-            right_seq.eval(Fp::ZERO),
-            merged_seq.eval(Fp::ZERO),
-        );
-        enforce_zero(
-            merged_at_zero - left_at_zero * right_at_zero,
-            "NullifierFuse: merged constant term is not the product of the halves'",
-        )?;
-        ctx.enforce_poly_query(left_seq.commit().into(), Fp::ZERO, left_at_zero)?;
-        ctx.enforce_poly_query(right_seq.commit().into(), Fp::ZERO, right_at_zero)?;
-        ctx.enforce_poly_query(merged_nf_commit.into(), Fp::ZERO, merged_at_zero)?;
         Ok((
             (left_cm, left_epoch_start, merged_nf_commit, right_epoch_end),
             (),
