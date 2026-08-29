@@ -22,7 +22,7 @@ use zcash_tachyon::{
     stamp::{
         PointerStamp, ProofStamp, StampState,
         proof::{
-            PROOF_SYSTEM, delegation, pool, spendable,
+            PROOF_SYSTEM, delegation, pool, qr, spendable,
             stamp::{MergeStamp, StampHeader},
         },
     },
@@ -1081,4 +1081,149 @@ impl Default for SyncSim {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// One leaf of an epoch's QR evidence tree: its member set and the PCD
+/// certifying it.
+pub struct QrLeaf {
+    pub members: Vec<Tachygram>,
+    pub pcd: Pcd<qr::QrBucket>,
+}
+
+impl QrLeaf {
+    pub fn header(&self) -> <qr::QrBucket as ragu::Header>::Data {
+        *self.pcd.data()
+    }
+
+    /// Whether `value` classifies to this leaf's profile at every split.
+    pub fn matches(&self, value: Fp) -> bool {
+        let (_, _, _, discriminants, profile, _) = self.header();
+        profile
+            .bits()
+            .iter()
+            .zip(discriminants.iter())
+            .all(|(&bit, discriminant)| discriminant.side(value) == bit)
+    }
+
+    fn matching_count(&self, tgs: &[Tachygram]) -> usize {
+        tgs.iter().filter(|&&tg| self.matches(Fp::from(tg))).count()
+    }
+}
+
+fn unit_pcd() -> Pcd<()> {
+    Proof::trivial().carry::<()>(())
+}
+
+/// Split one leaf via both decomp steps, routing its members between the
+/// children by the freshly minted discriminant (read off the child header).
+fn split_qr_leaf<RNG: CryptoRng>(rng: &mut RNG, leaf: &QrLeaf) -> (QrLeaf, QrLeaf) {
+    let header = leaf.header();
+    let (left_pcd, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            qr::QrBucketLeftDecomp,
+            witness::qr_bucket_left_decomp((header, ()), &leaf.members),
+            leaf.pcd.clone(),
+            unit_pcd(),
+        )
+        .expect("QrBucketLeftDecomp");
+    let (right_pcd, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            qr::QrBucketRightDecomp,
+            witness::qr_bucket_right_decomp((header, ()), &leaf.members),
+            leaf.pcd.clone(),
+            unit_pcd(),
+        )
+        .expect("QrBucketRightDecomp");
+
+    let parent_depth = header.4.depth();
+    let minted = left_pcd.data().3[parent_depth];
+    let (residue, non_residue): (Vec<Tachygram>, Vec<Tachygram>) = leaf
+        .members
+        .iter()
+        .partition(|&&tg| minted.side(Fp::from(tg)));
+
+    (
+        QrLeaf {
+            members: residue,
+            pcd: left_pcd,
+        },
+        QrLeaf {
+            members: non_residue,
+            pcd: right_pcd,
+        },
+    )
+}
+
+/// Absorb one tachygram set into one leaf: the anchor folds, the matching
+/// values enter the accumulator.
+fn absorb_qr_leaf<RNG: CryptoRng>(rng: &mut RNG, leaf: &mut QrLeaf, tgs: &[Tachygram]) {
+    let header = leaf.header();
+    let (pcd, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            qr::QrBucketAbsorb,
+            witness::qr_bucket_absorb((header, ()), &leaf.members, tgs),
+            leaf.pcd.clone(),
+            unit_pcd(),
+        )
+        .expect("QrBucketAbsorb");
+    let matching: Vec<Tachygram> = tgs
+        .iter()
+        .copied()
+        .filter(|&tg| leaf.matches(Fp::from(tg)))
+        .collect();
+    leaf.members.extend(matching);
+    leaf.pcd = pcd;
+}
+
+/// Build one closed epoch's QR evidence tree: seed at the epoch's opening
+/// sentinel, absorb each stamp's tachygram set in chain order into every
+/// leaf, split any leaf that would exceed `cap` before absorbing.
+///
+/// The deterministic replay is the canonicity argument: split moments,
+/// momentary anchors, and hence discriminants are pure functions of
+/// consensus history and the cap.
+pub(crate) fn build_qr_tree_pcds<RNG: CryptoRng>(
+    rng: &mut RNG,
+    pool: &PoolSim,
+    epoch: EpochIndex,
+    cap: usize,
+) -> Vec<QrLeaf> {
+    let heights: Vec<BlockHeight> = (0..=pool.height().0)
+        .map(BlockHeight)
+        .filter(|height| height.epoch() == epoch)
+        .collect();
+    let sntl = pool.block(*heights.first().expect("epoch has blocks")).prev;
+
+    let (seed, ()) = PROOF_SYSTEM
+        .seed(
+            rng,
+            qr::QrBucketSeed,
+            witness::qr_bucket_seed(((), ()), epoch, sntl),
+        )
+        .expect("QrBucketSeed");
+    let mut leaves = vec![QrLeaf {
+        members: Vec::new(),
+        pcd: seed,
+    }];
+
+    for height in heights {
+        for tgs in pool.block(height).tachygrams() {
+            let mut settled = Vec::new();
+            while let Some(mut leaf) = leaves.pop() {
+                if leaf.members.len() + leaf.matching_count(&tgs) > cap {
+                    let (residue_child, non_residue_child) = split_qr_leaf(rng, &leaf);
+                    leaves.push(residue_child);
+                    leaves.push(non_residue_child);
+                    continue;
+                }
+                absorb_qr_leaf(rng, &mut leaf, &tgs);
+                settled.push(leaf);
+            }
+            leaves = settled;
+        }
+    }
+    leaves
 }

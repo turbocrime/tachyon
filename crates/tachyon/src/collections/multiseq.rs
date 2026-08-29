@@ -79,9 +79,7 @@ use ff::Field as _;
 use pasta_curves::Fp;
 use ragu::Polynomial;
 
-use super::poly_mul;
-
-const NON_RESIDUE: Fp = Fp::from_raw([2, 0, 0, 0]);
+const CUBIC_NON_RESIDUE: Fp = Fp::from_raw([2, 0, 0, 0]);
 const THREE: [u64; 4] = [3, 0, 0, 0];
 
 #[must_use]
@@ -90,7 +88,7 @@ fn encode_single(i: Fp, m: Fp) -> Polynomial {
     // cheaper than constructing a linear $f(X) = iX + m$ and then cubing it.
     Polynomial::from_coeffs(
         [
-            m.pow(THREE) - NON_RESIDUE,
+            m.pow(THREE) - CUBIC_NON_RESIDUE,
             Fp::from_raw(THREE) * i * m.square(),
             Fp::from_raw(THREE) * i.square() * m,
             i.pow(THREE),
@@ -101,7 +99,7 @@ fn encode_single(i: Fp, m: Fp) -> Polynomial {
 
 #[must_use]
 fn direct_eval_single(i: Fp, m: Fp, x: Fp) -> Fp {
-    ((i * x) + m).pow(THREE) - NON_RESIDUE
+    ((i * x) + m).pow(THREE) - CUBIC_NON_RESIDUE
 }
 
 /// Encode the provided members consecutively.
@@ -112,7 +110,7 @@ pub(crate) fn encode(start_idx: NonZero<u64>, members: impl IntoIterator<Item = 
 
     i_m.fold(
         Polynomial::from_coeffs([Fp::ONE].to_vec()),
-        |acc, (i, m)| poly_mul(&acc, &encode_single(i, m)),
+        |acc, (i, m)| super::poly_mul(&acc, &encode_single(i, m)),
     )
 }
 
@@ -136,7 +134,7 @@ mod tests {
 
     use rand::{RngExt as _, SeedableRng as _, rngs::StdRng};
 
-    use super::*;
+    use super::{super::poly_mul, *};
 
     #[test]
     fn member_encoding_matches_manual_evaluation() {
@@ -166,7 +164,7 @@ mod tests {
 
             {
                 let mut coeffs = Vec::from_iter(m_ix_cube.iter_coeffs());
-                coeffs[0] -= NON_RESIDUE;
+                coeffs[0] -= CUBIC_NON_RESIDUE;
                 Polynomial::from_coeffs(coeffs)
             }
         };

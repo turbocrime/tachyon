@@ -7,7 +7,7 @@ use ff::Field as _;
 use pasta_curves::Fp;
 
 use super::Anchor;
-use crate::digest::poseidon;
+use crate::{collections, digest::poseidon};
 
 /// One split's discriminating value $R$, separating members by the
 /// quadratic character of $x + R$.
@@ -29,6 +29,13 @@ impl QrDiscriminant {
     #[must_use]
     pub fn next(self, anchor: Anchor) -> Self {
         Self(poseidon::qr_discriminant_next(Fp::from(anchor), self.0))
+    }
+
+    /// The side of this discriminant that `value` falls on: `true` iff
+    /// $\mathsf{value} + R$ is a square or zero.
+    #[must_use]
+    pub fn side(self, value: Fp) -> bool {
+        collections::qr::classify(value, self.0).0
     }
 }
 

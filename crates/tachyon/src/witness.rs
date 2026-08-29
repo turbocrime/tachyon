@@ -6,19 +6,26 @@
 //! ready to seed or fuse through `PROOF_SYSTEM`. Functions are named after the
 //! step they serve. Steps with an empty `()` witness need no utility.
 
-use ragu::{Header, Step};
+use ff::Field as _;
+use pasta_curves::Fp;
+use ragu::{Header, Polynomial, Step};
 
 use crate::{
+    collections,
     keys::ProofAuthorizingKey,
     note::Note,
     nullifier::Nullifier,
     primitives::{
-        ActionDigest, ActionSetPoly, Anchor, EpochGroup, EpochIndex, NfSeqPoly, Tachygram,
-        TachygramSetPoly,
+        ActionDigest, ActionSetPoly, Anchor, EpochGroup, EpochIndex, NfSeqPoly, QrDiscriminant,
+        Tachygram, TachygramSetPoly,
     },
     stamp::proof::{
         delegation::{NfDerive, NfMasterSeed, NullifierFuse},
         pool::{AnchorSeed, EndEpochUnspentSeed, UnspentBind, UnspentFuse, UnspentSeed},
+        qr::{
+            MAX_QR_DEPTH, MAX_STAMP_TACHYGRAMS, QrBucket, QrBucketAbsorb, QrBucketLeftDecomp,
+            QrBucketRightDecomp, QrBucketSeed, QrUnspentLift,
+        },
         spend::SpendBind,
         spendable::SpendableInit,
         stamp::MergeStamp,
@@ -281,5 +288,191 @@ pub fn merge_stamp(
             right_actions.iter().copied().collect::<ActionSetPoly>(),
             right_tgs.iter().copied().collect::<TachygramSetPoly>(),
         ),
+    )
+}
+
+/// Prepare the witness for [`QrBucketSeed`]: `(epoch, sntl)`.
+#[must_use]
+pub const fn qr_bucket_seed(
+    (_left, _right): (StepLeft<QrBucketSeed>, StepRight<QrBucketSeed>),
+    epoch: EpochIndex,
+    sntl: Anchor,
+) -> StepWitness<'static, QrBucketSeed> {
+    (epoch, sntl)
+}
+
+/// One value's per-split classification row against the header's
+/// discriminants and profile bits: `(root, bit, inverse)` per active split,
+/// zeroes beyond the depth. Returns the row and whether the value matches
+/// the profile at every split.
+fn classification_row(
+    value: Fp,
+    discriminants: &[QrDiscriminant; MAX_QR_DEPTH],
+    leaf_bits: &[bool],
+) -> ([(Fp, bool, Fp); MAX_QR_DEPTH], bool) {
+    let mut row = [(Fp::ZERO, false, Fp::ZERO); MAX_QR_DEPTH];
+    let mut matches = true;
+    for (slot, (&discriminant, &leaf_bit)) in
+        row.iter_mut().zip(discriminants.iter().zip(leaf_bits))
+    {
+        let offset = Fp::from(discriminant);
+        let (bit, root) = collections::qr::classify(value, offset);
+        let inverse = Option::<Fp>::from((value + offset).invert()).unwrap_or(Fp::ZERO);
+        *slot = (root, bit, inverse);
+        matches &= bit == leaf_bit;
+    }
+    (row, matches)
+}
+
+/// Prepare the witness for [`QrBucketAbsorb`]:
+/// `(bucket, updated_bucket, stamp_tg_set, values)`.
+///
+/// `bucket_members` are the accumulator's current contents;
+/// `stamp_tgs` the absorbed tachygram set. Classifies every value against
+/// the header's discriminants and profile, so the updated accumulator holds
+/// exactly the prior contents plus the matching values.
+///
+/// # Panics
+///
+/// Panics if the set exceeds [`MAX_STAMP_TACHYGRAMS`].
+#[must_use]
+pub fn qr_bucket_absorb(
+    (left, _right): (StepLeft<QrBucketAbsorb>, StepRight<QrBucketAbsorb>),
+    bucket_members: &[Tachygram],
+    stamp_tgs: &[Tachygram],
+) -> StepWitness<'static, QrBucketAbsorb> {
+    let (_epoch, _sntl, _last_anchor, discriminants, profile, _commit) = left;
+    assert!(
+        stamp_tgs.len() <= MAX_STAMP_TACHYGRAMS,
+        "absorbed set exceeds the batch bound"
+    );
+
+    let leaf_bits = profile.bits();
+    #[expect(
+        clippy::large_stack_arrays,
+        reason = "the step's fixed-shape witness array, ~150KB, within thread stacks"
+    )]
+    let mut values =
+        [(Fp::ZERO, [(Fp::ZERO, false, Fp::ZERO); MAX_QR_DEPTH]); MAX_STAMP_TACHYGRAMS];
+    let mut updated = bucket_members.to_vec();
+    for (slot, &tachygram) in values.iter_mut().zip(stamp_tgs) {
+        let value = Fp::from(tachygram);
+        let (row, matches) = classification_row(value, &discriminants, &leaf_bits);
+        *slot = (value, row);
+        if matches {
+            updated.push(tachygram);
+        }
+    }
+
+    (
+        bucket_members.iter().copied().collect::<TachygramSetPoly>(),
+        updated.iter().copied().collect::<TachygramSetPoly>(),
+        stamp_tgs.iter().copied().collect::<TachygramSetPoly>(),
+        values,
+    )
+}
+
+/// The decomposition witness both decomp steps share:
+/// `(parent, residue_side, non_residue_side, residue_cert,
+/// non_residue_cert)` at the split's freshly minted discriminant.
+///
+/// # Panics
+///
+/// Panics if the parent members are not distinct (consensus squarefreeness).
+fn qr_decomp_witness(
+    header: <QrBucket as Header>::Data,
+    parent_members: &[Tachygram],
+) -> (
+    TachygramSetPoly,
+    TachygramSetPoly,
+    TachygramSetPoly,
+    (Polynomial, Polynomial),
+    (Polynomial, Polynomial),
+) {
+    let (_epoch, _sntl, last_anchor, discriminants, profile, _commit) = header;
+    let previous = profile
+        .depth()
+        .checked_sub(1)
+        .and_then(|last| discriminants.get(last).copied())
+        .unwrap_or(QrDiscriminant::ZERO);
+    let offset = Fp::from(previous.next(last_anchor));
+
+    let (residue, non_residue) =
+        collections::qr::split(parent_members.iter().map(|&tg| Fp::from(tg)), offset);
+    #[expect(
+        clippy::expect_used,
+        reason = "consensus squarefreeness makes accumulator members distinct"
+    )]
+    let residue_cert =
+        collections::qr::decomposition(&residue, offset, true).expect("distinct members decompose");
+    #[expect(
+        clippy::expect_used,
+        reason = "consensus squarefreeness makes accumulator members distinct"
+    )]
+    let non_residue_cert = collections::qr::decomposition(&non_residue, offset, false)
+        .expect("distinct members decompose");
+
+    let side_poly = |points: &[(Fp, Fp)]| {
+        points
+            .iter()
+            .map(|&(member, _)| Tachygram::from(member))
+            .collect::<TachygramSetPoly>()
+    };
+    (
+        parent_members.iter().copied().collect::<TachygramSetPoly>(),
+        side_poly(&residue),
+        side_poly(&non_residue),
+        residue_cert,
+        non_residue_cert,
+    )
+}
+
+/// Prepare the witness for [`QrBucketLeftDecomp`]:
+/// `(parent, residue_side, non_residue_side, residue_cert,
+/// non_residue_cert)`.
+#[must_use]
+pub fn qr_bucket_left_decomp(
+    (left, _right): (StepLeft<QrBucketLeftDecomp>, StepRight<QrBucketLeftDecomp>),
+    parent_members: &[Tachygram],
+) -> StepWitness<'static, QrBucketLeftDecomp> {
+    qr_decomp_witness(left, parent_members)
+}
+
+/// Prepare the witness for [`QrBucketRightDecomp`]:
+/// `(parent, residue_side, non_residue_side, residue_cert,
+/// non_residue_cert)`.
+#[must_use]
+pub fn qr_bucket_right_decomp(
+    (left, _right): (
+        StepLeft<QrBucketRightDecomp>,
+        StepRight<QrBucketRightDecomp>,
+    ),
+    parent_members: &[Tachygram],
+) -> StepWitness<'static, QrBucketRightDecomp> {
+    qr_decomp_witness(left, parent_members)
+}
+
+/// Prepare the witness for [`QrUnspentLift`]: `(bucket, classifications)`.
+///
+/// `bucket_members` are the evidence accumulator's contents; the tested
+/// nullifier is the lineage tip's, classified against the evidence header's
+/// discriminants and profile.
+#[must_use]
+pub fn qr_unspent_lift(
+    (left, right): (StepLeft<QrUnspentLift>, StepRight<QrUnspentLift>),
+    bucket_members: &[Tachygram],
+) -> StepWitness<'static, QrUnspentLift> {
+    let (_anchor_prev, _start, _elapsed, (_epoch_last, nf_last), _anchor_last) = left;
+    let (_epoch, _sntl, _endpoint, discriminants, profile, _commit) = right;
+
+    let (row, _matches) = classification_row(Fp::from(nf_last), &discriminants, &profile.bits());
+    let mut classifications = [(Fp::ZERO, Fp::ZERO); MAX_QR_DEPTH];
+    for (slot, (root, _bit, inverse)) in classifications.iter_mut().zip(row) {
+        *slot = (root, inverse);
+    }
+
+    (
+        bucket_members.iter().copied().collect::<TachygramSetPoly>(),
+        classifications,
     )
 }

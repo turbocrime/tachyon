@@ -41,8 +41,11 @@ use ragu::{
 };
 
 use super::pool::ArbitraryUnspent;
-use crate::primitives::{
-    Anchor, EpochIndex, QrDiscriminant, QrProfile, TachygramSetCommit, TachygramSetPoly,
+use crate::{
+    collections::qr::MAX_BUCKET_SIZE,
+    primitives::{
+        Anchor, EpochIndex, QrDiscriminant, QrProfile, TachygramSetCommit, TachygramSetPoly,
+    },
 };
 
 /// Maximum split depth: the header discriminant-array width and the
@@ -52,6 +55,9 @@ pub const MAX_QR_DEPTH: usize = 32;
 /// Maximum tachygram count of one absorbed set: the absorb step's
 /// per-value witness width, and the item-3 bounded-batch constant.
 pub const MAX_STAMP_TACHYGRAMS: usize = 64;
+
+/// Maximum bucket size $B$: the builder's pre-absorb split trigger.
+pub const MAX_BUCKET_MEMBERS: usize = MAX_BUCKET_SIZE;
 
 /// The least quadratic non-residue of the Pallas base field, verified by
 /// Euler's criterion in the native-algebra tests. Distinct from the *cubic*
@@ -189,6 +195,10 @@ impl Step for QrBucketAbsorb {
 
     const INDEX: Index = Index::new(18);
 
+    #[expect(
+        clippy::large_stack_frames,
+        reason = "the fixed-shape per-value witness array, ~150KB, within thread stacks"
+    )]
     fn witness<'source>(
         &self,
         ctx: &mut ragu::StepCtx<'_>,
@@ -203,9 +213,9 @@ impl Step for QrBucketAbsorb {
         )?;
 
         let stamp_commit = stamp_tg_set.commit();
-        let folded = last_anchor
-            .next_stamp(epoch, &stamp_commit)
-            .map_err(|_e| ragu::Error::InvalidWitness("QrBucketAbsorb: invalid anchor step".into()))?;
+        let folded = last_anchor.next_stamp(epoch, &stamp_commit).map_err(|_e| {
+            ragu::Error::InvalidWitness("QrBucketAbsorb: invalid anchor step".into())
+        })?;
 
         let updated_commit = updated_bucket.commit();
         let z = ctx.derive_challenge(&[
@@ -273,14 +283,7 @@ impl Step for QrBucketAbsorb {
         )?;
 
         Ok((
-            (
-                epoch,
-                sntl,
-                folded,
-                discriminants,
-                profile,
-                updated_commit,
-            ),
+            (epoch, sntl, folded, discriminants, profile, updated_commit),
             (),
         ))
     }
