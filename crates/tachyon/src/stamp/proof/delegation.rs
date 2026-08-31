@@ -131,53 +131,22 @@ impl Step for NfMasterSeed {
     }
 }
 
-/// Derive one sponge group of nullifiers and export a masked contiguous run
-/// of it as a [`NullifierHeader`].
+/// Derive one window of nullifiers and export it as a
+/// [`NullifierDerivation`].
 ///
-/// `Left = NfMasterSeed`. Witnesses the window start epoch $w$ (constrained
-/// group-aligned, $w \bmod \mathsf{RATE} = 0$), a
-/// `[bool; PoseidonFp::RATE]` mask selecting which of the window's epochs
-/// the exported range covers, and the range's sequence polynomial. One sponge
-/// absorbs $(\mathtt{NF\_DOMAIN}, \mathsf{mk}, w)$ and squeezes the window's
-/// `PoseidonFp::RATE` nullifiers (one permutation each way); the mask then
-/// shifts the exported `epoch_start` past the leading unselected epochs and
-/// sizes the range at the run's length, so the step emits an exact-fit span
-/// of one to `PoseidonFp::RATE` epochs.
-///
-/// With mask bits $m_j$, rising edges $e_j = (1 - m_{j-1})\,m_j$ (taking
-/// $m_{-1} = 0$) and falling edges $f_j = m_j\,(1 - m_{j+1})$ (taking
-/// $m_4 = 0$), the constraints are:
-///
-/// $$m_j (m_j - 1) = 0, \qquad \textstyle\sum_j e_j = 1$$
-///
-/// (booleanity, and exactly one contiguous nonempty run), and the sequence
-/// bind at a transcript challenge $z$ derived from the sequence commitment:
-///
-/// $$\mathsf{seq}(z) \cdot \sum_j e_j z^j
-///   = \sum_j m_j\,\mathsf{nf}_j\,z^j + \sum_j f_j z^{j+1}$$
-///
-/// since $\sum_j e_j z^j = z^{\mathsf{lead}}$, the masked members sit at
-/// absolute degrees $\mathsf{lead}..\mathsf{lead}+\mathsf{count}$, and
-/// $\sum_j f_j z^{j+1} = z^{\mathsf{lead}+\mathsf{count}}$ is the sentinel's
-/// absolute slot. By Schwartz–Zippel this pins $\mathsf{seq}$ to exactly
-/// $\sum_p \mathsf{nf}_{\mathsf{lead}+p} X^p + X^{\mathsf{count}}$.
+/// Witnesses the window's start epoch, constrained group-aligned, and the
+/// window sequence; one sponge per group squeezes the members, and a single
+/// opening at a challenge over the sequence commitment binds it to their
+/// natively encoded product.
 ///
 /// # Soundness
 ///
-/// `mk` is threaded from the left header, so it is the note's genuine master
-/// key by PCD soundness. The opening's only free operand is the range
-/// sequence, committed before $z$ exists and independent of it.
-///
-/// The window start and the mask are free witnesses, pinned by the header
-/// they produce: with $w$ constrained group-aligned,
-/// $\mathsf{epoch\_start} = w + \mathsf{lead}$ with $\mathsf{lead}$ inside
-/// the window is an injective decomposition, and $\mathsf{count} =
-/// \mathsf{epoch\_end} - \mathsf{epoch\_start}$, so the emitted span
-/// determines both. The boundary nullifiers are edge-selected from the
-/// sponge outputs of the threaded `mk`, pinned in-circuit.
-///
-/// Committed-polynomial inventory: one witnessed polynomial (the range
-/// sequence), opened once at $z$.
+/// `mk` is threaded from the left header. The opening's only free operand is
+/// the sequence, committed before the challenge exists. `epoch_start` is
+/// pinned by being emitted on the header directly. The alignment check is a
+/// native remainder under mock ragu; a real circuit needs a low-bit
+/// decomposition, since $4q = e$ is always solvable in the field.
+
 #[derive(Debug)]
 pub struct NfDerive;
 
