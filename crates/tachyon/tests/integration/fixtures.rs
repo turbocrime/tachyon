@@ -654,10 +654,8 @@ pub struct WalletSim {
     pub sk: private::SpendingKey,
     pub pak: ProofAuthorizingKey,
     pub notes: RefCell<BTreeMap<u64, StdRng>>,
-    /// Master-key seed PCDs, keyed by `cm`.
-    masters: RefCell<BTreeMap<Tachygram, Pcd<delegation::NfMasterHeader>>>,
-    /// Derivation range PCDs, keyed by `(cm, epoch_start, epoch_end)`.
-    derivations: RefCell<BTreeMap<(Tachygram, u32, u32), Pcd<delegation::NullifierHeader>>>,
+    pub masters: RefCell<BTreeMap<Tachygram, Pcd<delegation::NfMasterHeader>>>,
+    pub derivations: RefCell<BTreeMap<(Tachygram, u32, u32), Pcd<delegation::NullifierHeader>>>,
 }
 
 impl WalletSim {
@@ -704,8 +702,6 @@ impl WalletSim {
         self.mk(note).derive_nullifier(epoch)
     }
 
-    /// The certified master-key seed PCD for this note, cached by `cm`. The
-    /// note is witnessed once; every range fuses against the same seed.
     pub fn master_pcd<RNG: CryptoRng>(
         &self,
         rng: &mut RNG,
@@ -722,10 +718,6 @@ impl WalletSim {
         pcd
     }
 
-    /// The certified derivation PCD covering `[epoch_start, epoch_end)`,
-    /// cached by the covered range: one masked [`delegation::NfDerive`] per
-    /// intersecting group, fused left to right with
-    /// [`delegation::NullifierFuse`].
     pub fn derivation_pcd<RNG: CryptoRng>(
         &self,
         rng: &mut RNG,
@@ -752,13 +744,20 @@ impl WalletSim {
         let mut acc: Option<Pcd<delegation::NullifierHeader>> = None;
         let mut window = epoch_start.0 - epoch_start.0 % width;
         while window < epoch_end.0 {
-            let piece = masked_derivation(
-                rng,
-                master.clone(),
-                EpochIndex(window),
-                epoch_start,
-                epoch_end,
-            );
+            let mask: [bool; PoseidonFp::RATE] = array::from_fn(|j| {
+                let epoch = window + u32::try_from(j).expect("window offset fits");
+                (epoch_start.0..epoch_end.0).contains(&epoch)
+            });
+            let derive_witness = witness::nf_derive((*master.data(), ()), EpochIndex(window), mask);
+            let (piece, ()) = PROOF_SYSTEM
+                .fuse(
+                    rng,
+                    delegation::NfDerive,
+                    derive_witness,
+                    master.clone(),
+                    Proof::trivial().carry::<()>(()),
+                )
+                .expect("NfDerive");
             let (_, (piece_start, _), _, (piece_end, _)) = *piece.data();
             let piece_nfs: Vec<Nullifier> = (piece_start.0..piece_end.0)
                 .map(|epoch| self.nf_at(&note, EpochIndex(epoch)))
@@ -1049,30 +1048,4 @@ impl Default for SyncSim {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// One masked [`delegation::NfDerive`] covering the epochs of the window at
-/// `window_start` that intersect `[epoch_start, epoch_end)`.
-fn masked_derivation<RNG: CryptoRng>(
-    rng: &mut RNG,
-    master_pcd: Pcd<delegation::NfMasterHeader>,
-    window_start: EpochIndex,
-    epoch_start: EpochIndex,
-    epoch_end: EpochIndex,
-) -> Pcd<delegation::NullifierHeader> {
-    let mask: [bool; PoseidonFp::RATE] = array::from_fn(|j| {
-        let epoch = window_start.0 + u32::try_from(j).expect("window offset fits");
-        (epoch_start.0..epoch_end.0).contains(&epoch)
-    });
-    let derive_witness = witness::nf_derive((*master_pcd.data(), ()), window_start, mask);
-    let (pcd, ()) = PROOF_SYSTEM
-        .fuse(
-            rng,
-            delegation::NfDerive,
-            derive_witness,
-            master_pcd,
-            Proof::trivial().carry::<()>(()),
-        )
-        .expect("NfDerive");
-    pcd
 }
