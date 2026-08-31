@@ -71,9 +71,6 @@
 //! $\mathsf{nf}_e$ depends on $(\mathsf{mk}, e)$ alone and overlapping
 //! derivation windows agree on the epochs they share; start epochs are
 //! group-aligned.
-//!
-//! `mk` evaluates the whole epoch space; delegation carries proven value
-//! windows.
 
 pub mod private;
 pub mod public;

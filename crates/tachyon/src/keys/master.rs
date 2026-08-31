@@ -13,9 +13,6 @@ use crate::{digest::poseidon, nullifier::Nullifier, primitives::EpochIndex};
 /// the note's $\psi$ trapdoor, and the only key material a nullifier
 /// derivation needs. Epochs are derived `PoseidonFp::RATE` at a time from
 /// one sponge keyed on the group's start epoch.
-///
-/// `mk` grants derivation over the whole epoch space; a delegate receives
-/// proven value windows.
 #[derive(Clone, Copy, Debug, Into, PartialEq, TotalEq)]
 pub struct NoteMasterKey(#[debug(skip)] pub(crate) Fp);
 
@@ -36,13 +33,8 @@ impl NoteMasterKey {
     }
 
     /// Derive one sponge group: the nullifiers for
-    /// `[epoch_start, … + PoseidonFp::RATE)`.
-    ///
-    /// `epoch_start` must be group-aligned;
-    /// [`NfDerive`](crate::stamp::proof::delegation::NfDerive) constrains its
-    /// witnessed start epoch accordingly. Group alignment makes the sponge
-    /// count a compile-time constant: one absorb permutation and one squeeze
-    /// permutation.
+    /// `[epoch_start, … + PoseidonFp::RATE)`. `epoch_start` must be
+    /// group-aligned.
     #[must_use]
     #[expect(
         clippy::as_conversions,

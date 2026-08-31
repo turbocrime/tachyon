@@ -23,9 +23,6 @@ use crate::{digest::poseidon, nullifier};
 ///
 /// - **Nullifier derivation**: detecting when a note has been spent
 /// - **Oblivious sync delegation**: a delegate receives proven value windows.
-///   The master key $\mathsf{mk} =
-///   \mathsf{Poseidon}(\mathtt{NF\_MASTER\_DOMAIN}, \Psi, \mathsf{nk})$
-///   evaluates every epoch.
 ///
 /// `nk` alone does NOT confer spend authority — combined with `ak` it
 /// forms the proof authorizing key `pak`, enabling proof construction

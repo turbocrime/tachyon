@@ -9,10 +9,8 @@ use crate::primitives::Tachygram;
 
 /// A Tachyon nullifier.
 ///
-/// Derived from the note's master key $\mathsf{mk} =
-/// \mathsf{Poseidon}(\mathtt{NF\_MASTER\_DOMAIN}, \psi, \mathsf{nk})$ as one
-/// squeeze of the sponge keyed on $\mathsf{mk}$ and the epoch's group start.
-/// Published when a note is spent.
+/// Derived from the note's master key as one squeeze of the sponge keyed on
+/// $\mathsf{mk}$ and the epoch's group start. Published when a note is spent.
 ///
 /// Unlike Orchard, Tachyon nullifiers:
 /// - Don't need collision resistance (no faerie gold defense)
@@ -25,9 +23,7 @@ pub struct Nullifier(Tachygram);
 
 /// Nullifier trapdoor ($\psi$), per-note randomness for nullifier derivation.
 ///
-/// Used to derive the note's master key $\mathsf{mk} =
-/// \mathsf{Poseidon}(\mathtt{NF\_MASTER\_DOMAIN}, \psi, \mathsf{nk})$, which
-/// evaluates every epoch. Delegation carries proven value windows.
+/// Used to derive the note's master key.
 #[derive(Clone, Copy, Debug, From, Into, PartialEq, TotalEq)]
 pub struct Trapdoor(#[debug(skip)] Fp);
 
