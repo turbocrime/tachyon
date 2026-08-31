@@ -6,8 +6,8 @@ use ff::Field as _;
 use pasta_curves::Fp;
 use rand::{SeedableRng as _, rngs::StdRng};
 use zcash_tachyon::{
-    ActionDigest, Anchor, BlockHeight, CompactSize, ProofStamp, Tachygram, TachygramSetPoly,
-    action,
+    ActionDigest, Anchor, BlockHeight, CompactSize, EpochIndex, ProofStamp, Tachygram,
+    TachygramSetPoly, action,
     constants::EPOCH_SIZE,
     digest::blake2b,
     stamp::{Plan, ProveError},
@@ -77,8 +77,8 @@ fn plan_prove_rejects_invalid_inputs() {
 
     let sp_a = user.fresh_spend(rng, &pool, height, &note_a);
     let sp_b = user.fresh_spend(rng, &pool, height, &note_b);
-    let range_a = user.derived_range(rng, &note_a, spend_epoch, 2);
-    let range_b = user.derived_range(rng, &note_b, spend_epoch, 2);
+    let range_a = user.derivation_pcd(rng, note_a, spend_epoch, EpochIndex(spend_epoch.0 + 2));
+    let range_b = user.derivation_pcd(rng, note_b, spend_epoch, EpochIndex(spend_epoch.0 + 2));
 
     let (rcv_a, theta_a, alpha_a) = spend_witness(rng, &note_a);
     let plan_a = action::Plan::spend(note_a, theta_a, rcv_a, |alpha| {
