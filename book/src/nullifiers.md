@@ -45,7 +45,7 @@ The delegate is provided an arbitrary sequence of values $\delta_{e..e+d}$ to pr
 $$
   \Delta(X) =
     \prod_{i = e}^{e+d} \Bigl(
-        ((i+1)X + \delta_{i})^3 - 2
+        \bigl( \delta_{i} + (i+1)X \bigr)^3 - 2
     \Bigr)
 $$
 
@@ -53,7 +53,7 @@ In parallel, $\mathsf{mk}$ proves derivation of a nullifier sequence for a range
 
 $$
   N(X) = \prod_{j} \Bigl(
-      ((j+1)X + \mathsf{nf}_{j})^3 - 2
+      \bigl( \mathsf{nf}_{j} + (j+1)X \bigr)^3 - 2
     \Bigr)
 $$
 
@@ -61,7 +61,7 @@ Witness material $ C = N \setminus \Delta $ is prepared for the expected complem
 
 $$
   C(X) = \prod_{j \notin e..e+d} \Bigl(
-      ((j+1)X + \mathsf{nf}_{j})^3 - 2
+      \bigl( \mathsf{nf}_{j} + (j+1)X \bigr)^3 - 2
     \Bigr)
 $$
 

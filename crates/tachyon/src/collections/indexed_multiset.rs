@@ -1,21 +1,20 @@
 //! # Indexed multiset
 //!
-//! An indexed multiset may contain any number of unique or repeated nonzero
-//! members at each nonzero index. It is a multiset of `(index, member)`
-//! tuples.
+//! An indexed multiset may contain any number of unique or repeated members at
+//! each index. Conceptually, it is a multiset of `(index, member)` tuples.
 //!
 //! ## Irreducible encoding
 //!
-//! Construct a single-member indexed multiset of member $m$ at index
-//! $i$ as the polynomial
+//! Construct a single-member indexed multiset of member $m$ at index $i$ as the
+//! polynomial
 //!
 //! $$
-//!   F_{i,m}(X) = (iX + m)^3 - c
+//!   F_{i,m}(X) = (m + (i+1)X)^3 - c
 //! $$
 //!
 //! where $c = 2$ is selected because it is the smallest cubic non-residue.
 //!
-//! Since $(iX + m)^3 \neq c$ the encoding is irreducible.
+//! Since $(m + (i+1)X)^3 \neq c$ the encoding is irreducible.
 //!
 //! ## Product composition
 //!
@@ -60,14 +59,14 @@
 //! Precisely, if
 //!
 //! $$
-//!   \frac{i_1X + m_1}{i_2X + m_2} \in \{1, \zeta, \zeta^2\}
+//!   \frac{m_1 + (i_1+1)X}{m_2 + (i_2+1)X} \in \{1, \zeta, \zeta^2\}
 //! $$
 //!
 //! then $(i_1, m_1)$ cannot be distinguished from $(i_2, m_2)$ in an
 //! indexed multiset.
 //!
-//! Specifying $i_\mathsf{max}$ below $\lfloor\sqrt{p/3}\rfloor$ is sufficient
-//! to prevent collisions.
+//! Specifying $i_\mathsf{max} + 1$ below $\lfloor\sqrt{p/3}\rfloor$ is
+//! sufficient to prevent collisions.
 
 #![allow(clippy::min_ident_chars, reason = "just for fun")]
 
