@@ -1,9 +1,4 @@
-//! Prove a fusable range of a note's per-epoch nullifiers. Wallet-only; every
-//! range header carries `cm` for its consumers.
-//!
-//! Three steps. [`NfMasterSeed`] certifies the note's commitment and master
-//! key; [`NfDerive`] runs one sponge group and exports a masked contiguous run
-//! of its outputs; and [`NullifierFuse`] concatenates adjacent ranges.
+//! Prove a fusable range of a note's per-epoch nullifiers.
 
 extern crate alloc;
 
@@ -27,12 +22,7 @@ use crate::{
     relations::enforce::enforce_shifted_combination,
 };
 
-/// A note's certified commitment and master key (wallet-only).
-///
-/// `mk` is derived natively from the note's secrets and certified here, so
-/// every consuming [`NfDerive`] threads a genuine master key without
-/// re-witnessing the note. `cm` rides along for the derivation's consumers to
-/// bind against.
+/// A note commitment and master key.
 #[derive(Clone, Debug)]
 pub struct NfMasterHeader;
 
@@ -48,15 +38,7 @@ impl Header for NfMasterHeader {
     }
 }
 
-/// A proven contiguous range of derived nullifiers (wallet-only).
-///
-/// `(cm, (epoch_start, nf_start), nf_seq_commit, (epoch_end, nf_end))`: `cm`
-/// lets every consumer bind the range to the real note; `nf_seq_commit` (the
-/// nullifier sequence) sits between its boundary `(epoch, nullifier)` pairs and
-/// commits to the half-open range `[nf_start, .., nf_end]` at degree 0,
-/// sentinel-terminated (see [`NfSeqPoly`]) so the commitment is never the
-/// identity point. `nf_start`/`nf_end` are the genuine boundary members, so a
-/// consumer can bind them without opening the sequence.
+/// A proven contiguous range of derived nullifiers.
 #[derive(Clone, Debug)]
 pub struct NullifierHeader;
 
@@ -87,20 +69,12 @@ impl Header for NullifierHeader {
     }
 }
 
-/// Certify a note's commitment and master key.
-///
-/// Seed step. Witnesses the note and its proof authorizing key, proves the
-/// key belongs to the note (`note.pk == pak.derive_payment_key()`, which pins
-/// `nk`), derives `mk` from `nk` and the note's trapdoor, and computes `cm`.
-/// `nk` never leaves the step; only `pk`, which preimage-hides it, enters
-/// `cm`.
+/// Derive a note commitment and master key.
 ///
 /// # Soundness
 ///
-/// A seed can invent a note, so `cm` closes downstream, at
-/// [`SpendableInit`](super::spendable::SpendableInit) and
-/// [`SpendStamp`](super::stamp::SpendStamp). What this step establishes is
-/// the pairing: `mk` is *this* `cm`'s master key.
+/// The note commitment binds downstream at [`super::spendable::SpendableInit`]
+/// and [`super::stamp::SpendStamp`].
 #[derive(Debug)]
 pub struct NfMasterSeed;
 
@@ -131,22 +105,7 @@ impl Step for NfMasterSeed {
     }
 }
 
-/// Derive one window of nullifiers and export it as a
-/// [`NullifierDerivation`].
-///
-/// Witnesses the window's start epoch, constrained group-aligned, and the
-/// window sequence; one sponge per group squeezes the members, and a single
-/// opening at a challenge over the sequence commitment binds it to their
-/// natively encoded product.
-///
-/// # Soundness
-///
-/// `mk` is threaded from the left header. The opening's only free operand is
-/// the sequence, committed before the challenge exists. `epoch_start` is
-/// pinned by being emitted on the header directly. The alignment check is a
-/// native remainder under mock ragu; a real circuit needs a low-bit
-/// decomposition, since $4q = e$ is always solvable in the field.
-
+/// Derive one window of nullifiers at sponge rate.
 #[derive(Debug)]
 pub struct NfDerive;
 
@@ -231,9 +190,6 @@ impl Step for NfDerive {
             .map(|(edge, nf)| *edge * nf)
             .sum();
 
-        // `z`: a fresh transcript challenge over the sequence commitment. The
-        // polynomial is fixed before it exists, so the single opening below
-        // is not vacuous.
         let z = ctx.derive_challenge(&[seq.commit().into()])?;
         let seq_at_z = seq.eval(z);
         ctx.enforce_poly_query(seq.commit().into(), z, seq_at_z)?;
@@ -265,11 +221,6 @@ impl Step for NfDerive {
 }
 
 /// Merge two adjacent derived ranges into one (`left ++ right`).
-///
-/// Requires the same `cm` and contiguity (`right.start == left.end`). Witnesses
-/// the two range polynomials and their concatenation, binds each by
-/// commit-equality, and proves the concat at `offset = left.end - left.start`
-/// via the faithful opening relation.
 #[derive(Debug)]
 pub struct NullifierFuse;
 
@@ -320,13 +271,6 @@ impl Step for NullifierFuse {
         )?;
         let merged_nf_seq_commit = merged_seq.commit();
         let offset = left_epoch_end - left_epoch_start;
-        // Sentinel concat: a sequence of `k` members is `Σ n_i·X^i + X^k`, so
-        // `merged = left ++ right` is the shifted combination
-        // `merged(X) = left(X) + X^offset·right(X) - X^offset`. The `-X^offset`
-        // monomial cancels left's sentinel, right's first member lands in the
-        // vacated slot, and right's own sentinel re-terminates `merged`. The
-        // monomial's constant coefficient is trivially challenge-independent,
-        // and `offset` is left's header-fixed span.
         enforce_shifted_combination(
             ctx,
             [(left_seq.as_ref(), 0), (right_seq.as_ref(), offset.into())],
@@ -334,11 +278,7 @@ impl Step for NullifierFuse {
             merged_seq.as_ref(),
             "NullifierFuse: merged is not the concat of the halves",
         )?;
-        // Pin the boundary nullifiers that sit at a queryable degree-0 position:
-        // the merged sequence opens to `left_nf_start` (its first leaf), and the
-        // right half opens to `right_nf_start`. Each ties a witnessed sequence to
-        // the header value its seed proved by construction. (`left_nf_end` is the
-        // left half's top coefficient, not extractable by a single opening.)
+
         ctx.enforce_poly_query(
             merged_nf_seq_commit.into(),
             Fp::ZERO,
