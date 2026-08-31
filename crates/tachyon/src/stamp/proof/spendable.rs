@@ -10,7 +10,6 @@
 extern crate alloc;
 
 use alloc::{vec, vec::Vec};
-use core::num::NonZero;
 
 use pasta_curves::{Ep, Eq, Fp, Fq};
 use ragu::{
@@ -47,7 +46,7 @@ impl Header for SpendableHeader {
         (
             vec![
                 Fp::from(cm),
-                Fp::from(u64::from(epoch.0)),
+                Fp::from(epoch),
                 Fp::from(present_nf),
                 Fp::from(anchor),
             ],
@@ -141,12 +140,8 @@ impl Step for SpendableInit {
         let nf_seq_at_z = nf_seq.eval(z);
         let complement_at_z = complement_seq.eval(z);
 
-        #[expect(clippy::expect_used, reason = "nonzero")]
-        let read_at_z = indexed_multiset::direct_eval(
-            NonZero::new((u32::from(creation_epoch) + 1).into()).expect("nonzero"),
-            [present_nf.into()],
-            z,
-        );
+        let read_at_z =
+            indexed_multiset::direct_eval([(creation_epoch.into(), present_nf.into())], z);
         enforce_zero(
             nf_seq_at_z - read_at_z * complement_at_z,
             "SpendableInit: nullifier does not match the derivation",

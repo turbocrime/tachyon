@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use core::{num::NonZero, ops::Mul};
+use core::ops::Mul;
 
 use derive_more::{AsRef, Debug, Eq as TotalEq, From, Into, PartialEq};
 use ff::Field as _;
@@ -27,10 +27,8 @@ impl NfSeqPoly {
     /// the consecutive epochs starting at `epoch_start`.
     #[must_use]
     pub fn new(epoch_start: EpochIndex, nfs: &[Nullifier]) -> Self {
-        #[expect(clippy::expect_used, reason = "nonzero")]
         Self(indexed_multiset::encode(
-            NonZero::new((u32::from(epoch_start) + 1).into()).expect("nonzero"),
-            nfs.iter().copied().map(Fp::from),
+            (epoch_start.into()..).zip(nfs.iter().copied().map(Fp::from)),
         ))
     }
 

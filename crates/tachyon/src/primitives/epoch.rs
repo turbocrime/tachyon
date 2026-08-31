@@ -42,6 +42,12 @@ impl EpochIndex {
     }
 }
 
+impl From<EpochIndex> for u64 {
+    fn from(epoch: EpochIndex) -> Self {
+        epoch.0.into()
+    }
+}
+
 impl From<EpochIndex> for Fp {
     fn from(epoch: EpochIndex) -> Self {
         Self::from(u64::from(epoch.0))

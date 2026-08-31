@@ -10,7 +10,6 @@
 extern crate alloc;
 
 use alloc::{vec, vec::Vec};
-use core::num::NonZero;
 
 use pasta_curves::{Ep, Eq, Fp, Fq};
 use ragu::{
@@ -206,12 +205,8 @@ impl Step for NfDerive {
 
         // The window's members at `z`, encoded natively from the
         // sponge-derived nullifiers and their epochs.
-        #[expect(clippy::expect_used, reason = "nonzero")]
-        let window_at_z = indexed_multiset::direct_eval(
-            NonZero::new((u32::from(epoch_start) + 1).into()).expect("nonzero"),
-            nullifiers.map(Fp::from),
-            z,
-        );
+        let window_at_z =
+            indexed_multiset::direct_eval((epoch_start.into()..).zip(nullifiers.map(Fp::from)), z);
 
         enforce_zero(
             seq_at_z - window_at_z,

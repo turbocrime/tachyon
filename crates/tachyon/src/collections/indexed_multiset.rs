@@ -73,8 +73,6 @@
 
 extern crate alloc;
 
-use core::{iter, num::NonZero};
-
 use ff::Field as _;
 use pasta_curves::Fp;
 use ragu::Polynomial;
@@ -85,7 +83,8 @@ use super::poly_mul;
 const NON_RESIDUE: Fp = fp!(0x02);
 
 #[must_use]
-fn encode_single(i: Fp, m: Fp) -> Polynomial {
+fn encode_single(idx: u64, m: Fp) -> Polynomial {
+    let i = Fp::from(idx) + Fp::ONE;
     // writing out expanded coefficients for $F(X) = (iX + m)^3 - c$ is
     // cheaper than constructing a linear $f(X) = iX + m$ and then cubing it.
     Polynomial::from_coeffs(
@@ -100,39 +99,29 @@ fn encode_single(i: Fp, m: Fp) -> Polynomial {
 }
 
 #[must_use]
-fn direct_eval_single(i: Fp, m: Fp, x: Fp) -> Fp {
+fn direct_eval_single(idx: u64, m: Fp, x: Fp) -> Fp {
+    let i = Fp::from(idx) + Fp::ONE;
     ((i * x) + m).pow([3]) - NON_RESIDUE
 }
 
-/// Encode the provided members consecutively.
-pub(crate) fn encode(start_idx: NonZero<u64>, members: impl IntoIterator<Item = Fp>) -> Polynomial {
-    let i_m = iter::successors(Some(start_idx), |idx| idx.checked_add(1))
-        .map(|idx| Fp::from(idx.get()))
-        .zip(members);
-
-    i_m.fold(
+/// Encode the provided indexed members.
+pub(crate) fn encode(members: impl IntoIterator<Item = (u64, Fp)>) -> Polynomial {
+    members.into_iter().fold(
         Polynomial::from_coeffs([Fp::ONE].to_vec()),
-        |acc, (i, m)| poly_mul(&acc, &encode_single(i, m)),
+        |acc, (idx, m)| poly_mul(&acc, &encode_single(idx, m)),
     )
 }
 
 /// Evaluate the indexed multiset without building the polynomial.
-pub(crate) fn direct_eval(
-    start_idx: NonZero<u64>,
-    members: impl IntoIterator<Item = Fp>,
-    x: Fp,
-) -> Fp {
-    let i_m = iter::successors(Some(start_idx), |idx| idx.checked_add(1))
-        .map(|idx| Fp::from(idx.get()))
-        .zip(members);
-
-    i_m.fold(Fp::ONE, |acc, (i, m)| acc * direct_eval_single(i, m, x))
+pub(crate) fn direct_eval(members: impl IntoIterator<Item = (u64, Fp)>, x: Fp) -> Fp {
+    members
+        .into_iter()
+        .fold(Fp::ONE, |acc, (idx, m)| acc * direct_eval_single(idx, m, x))
 }
 
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
-    use core::iter;
 
     use rand::{RngExt as _, SeedableRng as _, rngs::StdRng};
 
@@ -142,12 +131,12 @@ mod tests {
     fn member_encoding_matches_manual_evaluation() {
         let rng = &mut StdRng::seed_from_u64(3);
         for _ in 0..8 {
-            let idx = NonZero::new(u64::from(rng.random_range(1..u32::MAX))).expect("nonzero");
+            let idx = u64::from(rng.random_range(0..u32::MAX));
             let member = Fp::random(&mut *rng);
             let x = Fp::random(&mut *rng);
             assert_eq!(
-                encode_single(Fp::from(idx.get()), member).eval(x),
-                direct_eval(idx, [member], x)
+                encode_single(idx, member).eval(x),
+                direct_eval([(idx, member)], x)
             );
         }
     }
@@ -155,12 +144,12 @@ mod tests {
     #[test]
     fn member_encoding_matches_manual_construction() {
         let rng = &mut StdRng::seed_from_u64(6);
-        let idx = NonZero::new(u64::from(rng.random_range(1..u32::MAX))).expect("nonzero");
+        let idx = u64::from(rng.random_range(0..u32::MAX));
         let member = Fp::random(&mut *rng);
         let x = Fp::random(&mut *rng);
 
         let manual_poly = {
-            let m_ix = Polynomial::from_coeffs([member, Fp::from(idx.get())].to_vec());
+            let m_ix = Polynomial::from_coeffs([member, Fp::from(idx) + Fp::ONE].to_vec());
 
             let m_ix_cube = poly_mul(&poly_mul(&m_ix, &m_ix), &m_ix);
 
@@ -171,25 +160,21 @@ mod tests {
             }
         };
 
-        assert_eq!(
-            encode_single(Fp::from(idx.get()), member).eval(x),
-            manual_poly.eval(x)
-        );
+        assert_eq!(encode_single(idx, member).eval(x), manual_poly.eval(x));
     }
 
     #[test]
     fn sequence_evaluation_matches_the_encoding() {
         let rng = &mut StdRng::seed_from_u64(12);
-        for len in 0..6 {
-            let start_idx =
-                NonZero::new(1 + u64::from(rng.random_range(0..u32::MAX))).expect("nonzero");
-            let members: Vec<Fp> = iter::repeat_with(|| Fp::random(&mut *rng))
-                .take(len)
+        for len in 0..6u64 {
+            let start_idx = u64::from(rng.random_range(0..u32::MAX));
+            let members: Vec<(u64, Fp)> = (start_idx..start_idx + len)
+                .map(|idx| (idx, Fp::random(&mut *rng)))
                 .collect();
             let x = Fp::random(&mut *rng);
             assert_eq!(
-                direct_eval(start_idx, members.iter().copied(), x),
-                encode(start_idx, members).eval(x)
+                direct_eval(members.iter().copied(), x),
+                encode(members).eval(x)
             );
         }
     }

@@ -3,7 +3,6 @@
 extern crate alloc;
 
 use alloc::{vec, vec::Vec};
-use core::num::NonZero;
 
 use pasta_curves::{Ep, Eq, Fp, Fq};
 use ragu::{
@@ -124,10 +123,11 @@ impl Step for SpendBind {
         let nf_seq_at_z = nf_seq.eval(z);
         let complement_at_z = complement_seq.eval(z);
 
-        #[expect(clippy::expect_used, reason = "nonzero")]
         let pair_at_z = indexed_multiset::direct_eval(
-            NonZero::new((u32::from(spendable_epoch) + 1).into()).expect("nonzero"),
-            [present_nf.into(), nf_next.into()],
+            [
+                (spendable_epoch.into(), present_nf.into()),
+                (spendable_epoch.next().into(), nf_next.into()),
+            ],
             z,
         );
         enforce_zero(
