@@ -718,7 +718,7 @@ impl WalletSim {
         pcd
     }
 
-    pub fn derivation_pcd<RNG: CryptoRng>(
+    pub fn nullifier_pcd<RNG: CryptoRng>(
         &self,
         rng: &mut RNG,
         note: Note,
@@ -814,7 +814,7 @@ impl WalletSim {
 
             (pre_cm_anchor, stamps[cm_idx].clone())
         };
-        let nf_header = self.derivation_pcd(rng, *note, epoch, epoch.next());
+        let nf_header = self.nullifier_pcd(rng, *note, epoch, epoch.next());
 
         let (spendable, ()) = PROOF_SYSTEM
             .fuse(
@@ -853,7 +853,7 @@ impl WalletSim {
     ) -> Pcd<pool::Unspent> {
         let (_, (epoch_start, _), _, (present_epoch, _), _) = *arbitrary.data();
         let len = present_epoch.0 - epoch_start.0 + 1;
-        let range = self.derivation_pcd(rng, *note, epoch_start, EpochIndex(epoch_start.0 + len));
+        let range = self.nullifier_pcd(rng, *note, epoch_start, EpochIndex(epoch_start.0 + len));
         let elapsed: Vec<Nullifier> = (epoch_start.0..present_epoch.0)
             .map(|epoch| self.nf_at(note, EpochIndex(epoch)))
             .collect();
@@ -922,7 +922,7 @@ impl WalletSim {
         let mut spend_pcds = Vec::with_capacity(spends.len());
         for (note, spendable_pcd, spend_epoch) in spends {
             let range_pcd =
-                self.derivation_pcd(rng, note, spend_epoch, EpochIndex(spend_epoch.0 + 2));
+                self.nullifier_pcd(rng, note, spend_epoch, EpochIndex(spend_epoch.0 + 2));
             let rcv = value::Trapdoor::random(rng);
             let theta = ActionEntropy::random(rng);
             let plan = action::Plan::spend(note, theta, rcv, |alpha| {

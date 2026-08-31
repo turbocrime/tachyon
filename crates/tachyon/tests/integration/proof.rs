@@ -57,7 +57,7 @@ fn honest_spend_bind(
     spendable: Pcd<spendable::SpendableHeader>,
     spend_epoch: EpochIndex,
 ) -> Pcd<spend::SpendHeader> {
-    let derived = user.derivation_pcd(rng, *note, spend_epoch, EpochIndex(spend_epoch.0 + 2));
+    let derived = user.nullifier_pcd(rng, *note, spend_epoch, EpochIndex(spend_epoch.0 + 2));
     let nf_next = user.nf_at(note, spend_epoch.next());
     let (bind_pcd, ()) = PROOF_SYSTEM
         .fuse(rng, spend::SpendBind, (nf_next,), spendable, derived)
@@ -145,7 +145,7 @@ fn spendable_init_rejects_tg_absent() {
     let user = WalletSim::new(shared_sk());
     let note = user.random_note(500);
 
-    let nf_header = user.derivation_pcd(rng, note, EpochIndex(0), EpochIndex(1));
+    let nf_header = user.nullifier_pcd(rng, note, EpochIndex(0), EpochIndex(1));
     let present_nf = user.nf_at(&note, EpochIndex(0));
     let absent_tg = Tachygram::from(Fp::random(&mut *rng));
 
@@ -449,7 +449,7 @@ fn spend_bind_rejects_forged_next() {
     let spend_epoch = height.epoch();
     let spendable_pcd = user.fresh_spend(rng, &pool, height, &note);
 
-    let derived = user.derivation_pcd(rng, note, spend_epoch, EpochIndex(spend_epoch.0 + 2));
+    let derived = user.nullifier_pcd(rng, note, spend_epoch, EpochIndex(spend_epoch.0 + 2));
     let forged_next = Nullifier::from(Fp::random(&mut *rng));
 
     let err = PROOF_SYSTEM
@@ -484,7 +484,7 @@ fn spend_bind_rejects_range_from_another_epoch() {
 
     // The note's own live pair, but for an epoch the lineage has not reached.
     let ahead = spend_epoch.next();
-    let derived = user.derivation_pcd(rng, note, ahead, EpochIndex(ahead.0 + 2));
+    let derived = user.nullifier_pcd(rng, note, ahead, EpochIndex(ahead.0 + 2));
 
     let err = PROOF_SYSTEM
         .fuse(
@@ -516,7 +516,7 @@ fn spend_bind_rejects_zero_next_nullifier() {
     let spend_epoch = height.epoch();
     let spendable_pcd = user.fresh_spend(rng, &pool, height, &note);
 
-    let derived = user.derivation_pcd(rng, note, spend_epoch, EpochIndex(spend_epoch.0 + 2));
+    let derived = user.nullifier_pcd(rng, note, spend_epoch, EpochIndex(spend_epoch.0 + 2));
     let zero_next = Nullifier::from(Fp::ZERO);
 
     let err = PROOF_SYSTEM
@@ -1430,7 +1430,7 @@ fn unspent_bind_rejects_tip_mismatch() {
     // The witnessed polynomials are the genuine derived values; the unspent
     // header carries the forged tip, so the appended-tip relation rejects the
     // lineage against the derived range.
-    let range = user.derivation_pcd(rng, note, EpochIndex(0), EpochIndex(4));
+    let range = user.nullifier_pcd(rng, note, EpochIndex(0), EpochIndex(4));
     let elapsed = NfSeqPoly::from_iter([
         user.nf_at(&note, EpochIndex(0)),
         user.nf_at(&note, EpochIndex(1)),
@@ -1489,7 +1489,7 @@ fn unspent_bind_setup(rng: &mut StdRng) -> (WalletSim, Note, Pcd<pool::Arbitrary
 fn unspent_bind_rejects_elapsed_mismatch() {
     let rng = &mut StdRng::seed_from_u64(0);
     let (user, note, unspent) = unspent_bind_setup(rng);
-    let range = user.derivation_pcd(rng, note, EpochIndex(0), EpochIndex(4));
+    let range = user.nullifier_pcd(rng, note, EpochIndex(0), EpochIndex(4));
     // The genuine crossings in swapped order commit differently.
     let bogus_elapsed = NfSeqPoly::from_iter([
         user.nf_at(&note, EpochIndex(1)),
@@ -1526,7 +1526,7 @@ fn unspent_bind_rejects_elapsed_mismatch() {
 fn unspent_bind_rejects_wrong_start_epoch() {
     let rng = &mut StdRng::seed_from_u64(0);
     let (user, note, unspent) = unspent_bind_setup(rng);
-    let range = user.derivation_pcd(rng, note, EpochIndex(1), EpochIndex(5));
+    let range = user.nullifier_pcd(rng, note, EpochIndex(1), EpochIndex(5));
     let elapsed = NfSeqPoly::from_iter([
         user.nf_at(&note, EpochIndex(0)),
         user.nf_at(&note, EpochIndex(1)),
@@ -1558,7 +1558,7 @@ fn unspent_bind_rejects_wrong_span() {
     let (user, note, unspent) = unspent_bind_setup(rng);
     // A three-crossing lineage demands a range of exactly its crossings plus
     // the tip (four epochs); a five-epoch range overshoots.
-    let range = user.derivation_pcd(rng, note, EpochIndex(0), EpochIndex(5));
+    let range = user.nullifier_pcd(rng, note, EpochIndex(0), EpochIndex(5));
     let elapsed = NfSeqPoly::from_iter([
         user.nf_at(&note, EpochIndex(0)),
         user.nf_at(&note, EpochIndex(1)),
@@ -1589,7 +1589,7 @@ fn unspent_bind_rejects_wrong_span() {
 fn unspent_bind_rejects_wrong_range_poly() {
     let rng = &mut StdRng::seed_from_u64(0);
     let (user, note, unspent) = unspent_bind_setup(rng);
-    let range = user.derivation_pcd(rng, note, EpochIndex(0), EpochIndex(4));
+    let range = user.nullifier_pcd(rng, note, EpochIndex(0), EpochIndex(4));
     let elapsed = NfSeqPoly::from_iter([
         user.nf_at(&note, EpochIndex(0)),
         user.nf_at(&note, EpochIndex(1)),
@@ -1629,7 +1629,7 @@ fn unspent_bind_rejects_start_nf_mismatch() {
     // A range header whose `nf_start` disagrees with its own committed
     // sequence: the derivation steps never produce this, so it is carried
     // directly.
-    let range = user.derivation_pcd(rng, note, EpochIndex(0), EpochIndex(4));
+    let range = user.nullifier_pcd(rng, note, EpochIndex(0), EpochIndex(4));
     let (nf_cm, (epoch_start, _nf_start), seq_commit, (epoch_end, nf_end)) = *range.data();
     let bogus = Nullifier::from(Fp::random(&mut *rng));
     let forged_range = Proof::trivial().carry::<delegation::NullifierHeader>((
@@ -1674,7 +1674,7 @@ fn unspent_bind_rejects_end_nf_mismatch() {
     let rng = &mut StdRng::seed_from_u64(0);
     let (user, note, unspent) = unspent_bind_setup(rng);
     // The mirror forgery: `nf_end` disagrees with the committed sequence.
-    let range = user.derivation_pcd(rng, note, EpochIndex(0), EpochIndex(4));
+    let range = user.nullifier_pcd(rng, note, EpochIndex(0), EpochIndex(4));
     let (nf_cm, (epoch_start, nf_start), seq_commit, (epoch_end, _nf_end)) = *range.data();
     let bogus = Nullifier::from(Fp::random(&mut *rng));
     let forged_range = Proof::trivial().carry::<delegation::NullifierHeader>((
@@ -1811,7 +1811,7 @@ fn crossing_bind_rejects_bad_range() {
                 ),
             )
             .expect("EndEpochUnspentSeed");
-        let range = user.derivation_pcd(
+        let range = user.nullifier_pcd(
             rng,
             *range_note,
             epoch_start,
@@ -1872,8 +1872,8 @@ fn nullifier_fuse_rejects_non_contiguous() {
     let user = WalletSim::new(shared_sk());
     let note = user.random_note(500);
 
-    let range_a = user.derivation_pcd(rng, note, EpochIndex(0), EpochIndex(1));
-    let range_b = user.derivation_pcd(rng, note, EpochIndex(2), EpochIndex(3));
+    let range_a = user.nullifier_pcd(rng, note, EpochIndex(0), EpochIndex(1));
+    let range_b = user.nullifier_pcd(rng, note, EpochIndex(2), EpochIndex(3));
     let witness = witness::nullifier_fuse(
         (*range_a.data(), *range_b.data()),
         &[user.nf_at(&note, EpochIndex(0))],
@@ -1897,8 +1897,8 @@ fn nullifier_fuse_rejects_wrong_cm() {
     let note_a = user.random_note(500);
     let note_b = user.random_note(500);
 
-    let range_a = user.derivation_pcd(rng, note_a, EpochIndex(0), EpochIndex(1));
-    let range_b = user.derivation_pcd(rng, note_b, EpochIndex(1), EpochIndex(2));
+    let range_a = user.nullifier_pcd(rng, note_a, EpochIndex(0), EpochIndex(1));
+    let range_b = user.nullifier_pcd(rng, note_b, EpochIndex(1), EpochIndex(2));
     let witness = witness::nullifier_fuse(
         (*range_a.data(), *range_b.data()),
         &[user.nf_at(&note_a, EpochIndex(0))],
