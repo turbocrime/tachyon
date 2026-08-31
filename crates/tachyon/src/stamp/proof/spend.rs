@@ -3,15 +3,21 @@
 extern crate alloc;
 
 use alloc::{vec, vec::Vec};
+use core::num::NonZero;
 
 use pasta_curves::{Ep, Eq, Fp, Fq};
 use ragu::{
-    Header, Index, Step, Suffix,
-    constraint::{enforce_nonzero, enforce_zero},
+    Cycle as _, FixedGenerators as _, Header, Index, Pasta, Step, Suffix,
+    constraint::{enforce_equal_point, enforce_nonzero, enforce_zero},
 };
 
-use super::{delegation::NullifierHeader, spendable::SpendableHeader};
-use crate::{note, nullifier::Nullifier, primitives::Anchor};
+use super::{delegation::NullifierDerivation, spendable::SpendableHeader};
+use crate::{
+    collections::indexed_multiset,
+    note,
+    nullifier::Nullifier,
+    primitives::{Anchor, NfSeqPoly},
+};
 
 /// Header binding a spend to its lineage note and epoch nullifier pair.
 ///
@@ -46,17 +52,30 @@ impl Header for SpendHeader {
     }
 }
 
-/// Confirms a spend's epoch nullifier pair against a covering two-leaf
-/// [`NullifierHeader`] range and binds it to the spendable lineage.
+/// Confirms a spend's epoch nullifier pair against a covering
+/// [`NullifierDerivation`] and binds it to the spendable lineage.
 ///
 /// The range is tied to the lineage's note by `nf_cm == spendable_cm` (both
 /// are the note commitment, bound where the range was derived and at
 /// [`SpendableInit`](super::spendable::SpendableInit) respectively), so no
-/// note witness is needed here. Witnesses `nf_next` and binds the published
-/// pair to the range's genuine `GGM(mk, ·)` boundary leaves: the range spans
-/// exactly two epochs, `present_nf` is its start leaf, and `nf_next` its end
-/// leaf. Both nullifiers are emitted on the [`SpendHeader`] for the
-/// action-producing step to publish.
+/// note witness is needed here. Any range covering the lineage's epoch and
+/// the next serves: the divisibility
+/// $\mathsf{nf\_seq} = F_{e,\mathsf{present\_nf}} \cdot
+/// F_{e+1,\mathsf{nf\_next}} \cdot \mathsf{complement}$ confirms the pair
+/// at adjacent epochs, with `present_nf` pinned against the spendable. Both
+/// nullifiers are emitted on the [`SpendHeader`] for the action-producing
+/// step to publish.
+///
+/// # Soundness
+///
+/// Neither epoch index is free. The present member's scalars are left-header
+/// fields, fixed by the recursive verification of the spendable PCD before
+/// the challenge, and adjacency is the pair's own epochs `e` and `e + 1`.
+/// The free `nf_next` is the only scalar needing a pin, and gets one from
+/// $G_0 \cdot \mathsf{nf\_next}$.
+///
+/// The step compares no bounds against the derivation's range, the
+/// divisibility concluding coverage.
 #[derive(Debug)]
 pub struct SpendBind;
 
@@ -64,41 +83,59 @@ impl Step for SpendBind {
     type Aux<'source> = ();
     type Left = SpendableHeader;
     type Output = SpendHeader;
-    type Right = NullifierHeader;
-    /// `(nf_next,)`.
-    type Witness<'source> = (Nullifier,);
+    type Right = NullifierDerivation;
+    /// `(nf_seq, complement_seq, nf_next)`.
+    type Witness<'source> = (NfSeqPoly, NfSeqPoly, Nullifier);
 
-    const INDEX: Index = Index::new(13);
+    const INDEX: Index = Index::new(12);
 
     fn witness<'source>(
         &self,
-        _ctx: &mut ragu::StepCtx<'_>,
-        (nf_next,): Self::Witness<'source>,
+        ctx: &mut ragu::StepCtx<'_>,
+        (nf_seq, complement_seq, nf_next): Self::Witness<'source>,
         (spendable_cm, (spendable_epoch, present_nf), anchor): <Self::Left as Header>::Data,
-        (nf_cm, (nf_epoch_start, nf_start), _nf_seq_commit, (nf_epoch_end, nf_end)): <Self::Right as Header>::Data,
+        (nf_cm, _, nf_commit, _): <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
-        enforce_zero(
-            Fp::from(nf_epoch_end) - (Fp::from(nf_epoch_start) + Fp::from(2u64)),
-            "SpendBind: live range must span two epochs",
-        )?;
-        enforce_zero(
-            Fp::from(nf_epoch_start) - Fp::from(spendable_epoch),
-            "SpendBind: live range does not start at the lineage epoch",
-        )?;
         enforce_zero(
             Fp::from(nf_cm) - Fp::from(spendable_cm),
             "SpendBind: derived range does not match note",
         )?;
+        enforce_equal_point(
+            Eq::from(nf_seq.commit()),
+            Eq::from(nf_commit),
+            "SpendBind: covering sequence does not match header",
+        )?;
 
-        // Bind the published nullifiers to the range's genuine boundary leaves.
+        // The 2-wide read at the lineage's epoch: the divisibility
+        // `nf_seq = present · next · complement` at a challenge absorbing the
+        // witnessed commitments and the scalar-binding point of the free
+        // `nf_next`; the present member is native from the spendable header,
+        // pinned by the recursive verification of the left PCD.
+        #[expect(clippy::expect_used, reason = "constant size")]
+        let &g0 = Pasta::host_generators(Pasta::baked())
+            .g()
+            .first()
+            .expect("at least one generator");
+        let z = ctx.derive_challenge(&[
+            nf_seq.commit().into(),
+            complement_seq.commit().into(),
+            g0 * Fp::from(nf_next),
+        ])?;
+        let nf_seq_at_z = nf_seq.eval(z);
+        let complement_at_z = complement_seq.eval(z);
+
+        #[expect(clippy::expect_used, reason = "nonzero")]
+        let pair_at_z = indexed_multiset::direct_eval(
+            NonZero::new((u32::from(spendable_epoch) + 1).into()).expect("nonzero"),
+            [present_nf.into(), nf_next.into()],
+            z,
+        );
         enforce_zero(
-            Fp::from(present_nf) - Fp::from(nf_start),
-            "SpendBind: present nullifier is not the range's start leaf",
+            nf_seq_at_z - pair_at_z * complement_at_z,
+            "SpendBind: nullifier pair does not match the derivation",
         )?;
-        enforce_zero(
-            Fp::from(nf_next) - Fp::from(nf_end),
-            "SpendBind: next nullifier is not the range's end leaf",
-        )?;
+        ctx.enforce_poly_query(nf_seq.commit().into(), z, nf_seq_at_z)?;
+        ctx.enforce_poly_query(complement_seq.commit().into(), z, complement_at_z)?;
 
         // A zero nullifier would collide with the note's own cm tachygram.
         enforce_nonzero(

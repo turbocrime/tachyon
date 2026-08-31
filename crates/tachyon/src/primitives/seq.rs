@@ -1,33 +1,39 @@
 extern crate alloc;
 
-use alloc::vec::Vec;
-use core::iter;
+use core::{num::NonZero, ops::Mul};
 
 use derive_more::{AsRef, Debug, Eq as TotalEq, From, Into, PartialEq};
 use ff::Field as _;
 use pasta_curves::{Eq, Fp};
 use ragu::Polynomial;
 
-use crate::nullifier::Nullifier;
+use crate::{
+    collections::{indexed_multiset, poly_mul},
+    nullifier::Nullifier,
+    primitives::EpochIndex,
+};
 
-/// Pedersen commitment to a nullifier sequence $N$.
+/// Pedersen commitment to a nullifier sequence.
 #[derive(Clone, Copy, Debug, From, Into, PartialEq, TotalEq)]
 pub struct NfSeqCommit(Eq);
 
-/// Witness polynomial for a nullifier sequence $N$: members encoded as
-/// coefficients ordered by ascending degree, terminated by a sentinel
-/// coefficient $1$ one degree above the members.
-///
-/// The sentinel makes the polynomial nonzero for every sequence (the empty
-/// sequence is the constant $1$), so the commitment is never the identity
-/// point, which the in-circuit point representation cannot hold. It also pins
-/// the sequence's exact length: commit-equality alone bounds rank only from
-/// above (trailing zeros are invisible), while the sentinel fixes the top
-/// coefficient at the statement's span.
+/// Witness polynomial for a nullifier sequence: the product of its members'
+/// encodings, one per member.
 #[derive(AsRef, Clone, Debug, From, Into)]
 pub struct NfSeqPoly(Polynomial);
 
 impl NfSeqPoly {
+    /// Build the sequence polynomial for one contiguous run: the members of
+    /// the consecutive epochs starting at `epoch_start`.
+    #[must_use]
+    pub fn new(epoch_start: EpochIndex, nfs: &[Nullifier]) -> Self {
+        #[expect(clippy::expect_used, reason = "nonzero")]
+        Self(indexed_multiset::encode(
+            NonZero::new((u32::from(epoch_start) + 1).into()).expect("nonzero"),
+            nfs.iter().copied().map(Fp::from),
+        ))
+    }
+
     /// Deterministic (untrapdoored) commitment to the sequence polynomial.
     #[must_use]
     pub fn commit(&self) -> NfSeqCommit {
@@ -41,29 +47,21 @@ impl NfSeqPoly {
     }
 }
 
-impl FromIterator<Nullifier> for NfSeqPoly {
-    fn from_iter<I: IntoIterator<Item = Nullifier>>(iter: I) -> Self {
-        let coeffs: Vec<Fp> = iter
-            .into_iter()
-            .map(Fp::from)
-            .chain(iter::once(Fp::ONE))
-            .collect();
-        Self(Polynomial::from_coeffs(coeffs))
+impl Default for NfSeqPoly {
+    fn default() -> Self {
+        Self(Polynomial::from_coeffs(alloc::vec![Fp::ONE]))
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use group::Group as _;
+impl Mul for NfSeqPoly {
+    type Output = Self;
 
-    use super::*;
-
-    /// The empty sequence commits to the sentinel constant $1$, never the
-    /// identity point.
-    #[test]
-    fn empty_sequence_commit_is_not_identity() {
-        let empty: NfSeqPoly = iter::empty().collect();
-        assert_eq!(empty.eval(Fp::ZERO), Fp::ONE);
-        assert_ne!(Eq::from(empty.commit()), Eq::identity());
+    /// Multiset union: the product of two sequences' member multisets.
+    ///
+    /// # Panics
+    ///
+    /// If the product exceeds the polynomial coefficient cap.
+    fn mul(self, rhs: Self) -> Self {
+        Self(poly_mul(&self.0, &rhs.0))
     }
 }

@@ -1,5 +1,6 @@
 #![allow(
     clippy::as_conversions,
+    clippy::cast_possible_truncation,
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::integer_division_remainder_used,

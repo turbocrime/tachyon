@@ -63,7 +63,7 @@ These are all Tachyon-specific digests, performed in-circuit.
 | Nullifier master key | `Tachyon-NfMaster` |
 | Nullifier derivation | `Tachyon-NfDerive` |
 | Note commitment | `Tachyon-CmDerive` |
-| Output padding tachygram | `Tachyon-PadDeriv` |
+| Output padding tachygram | `Tachyon-CmOutPad` |
 | Action digest | `Tachyon-ActionDg` |
 | Payment key derivation | `Tachyon-PkDerive` |
 | Anchor stamp step | `Tachyon-AnchorSt` |

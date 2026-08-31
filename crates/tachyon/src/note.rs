@@ -19,9 +19,8 @@
 //!
 //! ## Nullifier Derivation
 //!
-//! $mk = \text{KDF}(\psi, nk)$, then $nf = F_{mk}(\text{epoch})$ via a
-//! Poseidon sponge keyed on $mk$ and the epoch's group start. The epoch is
-//! the point at which the nullifier is revealed.
+//! $mk = \text{KDF}(\psi, nk)$, then $nf_e$ is one squeeze of a Poseidon
+//! sponge keyed on $mk$ and the epoch's group start.
 //!
 //! Evaluated natively by wallets; the sync service handles only opaque
 //! nullifier values. The Ragu circuit constrains that each consumed

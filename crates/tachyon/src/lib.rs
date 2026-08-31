@@ -24,6 +24,7 @@ pub mod stamp;
 pub mod value;
 pub mod witness;
 
+mod collections;
 mod primitives;
 mod relations;
 mod serialization;

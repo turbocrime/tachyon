@@ -1,15 +1,13 @@
-extern crate alloc;
-
-use alloc::vec::Vec;
+use core::iter;
 
 use corez::io::{self, Read, Write};
 use derive_more::{AsRef, Debug, Eq as TotalEq, From, Into, PartialEq};
 use group::Curve as _;
 use pasta_curves::{Eq, Fp};
-use ragu::{Polynomial, poly_with_roots};
+use ragu::Polynomial;
 
 use super::{ActionDigest, Tachygram};
-use crate::serialization;
+use crate::{collections::multiset, serialization};
 
 /// Pedersen commitment to a stamp's tachygram set.
 #[derive(AsRef, Clone, Copy, Debug, From, Into, PartialEq, TotalEq)]
@@ -32,7 +30,7 @@ impl TachygramSetCommit {
 impl Default for TachygramSetCommit {
     /// A commitment to an empty set.
     fn default() -> Self {
-        Self(Polynomial::from_coeffs(poly_with_roots(&[])).commit())
+        Self(multiset::encode(iter::empty()).commit())
     }
 }
 
@@ -57,7 +55,7 @@ impl ActionSetCommit {
 impl Default for ActionSetCommit {
     /// A commitment to an empty set.
     fn default() -> Self {
-        Self(Polynomial::from_coeffs(poly_with_roots(&[])).commit())
+        Self(multiset::encode(iter::empty()).commit())
     }
 }
 
@@ -100,14 +98,12 @@ impl ActionSetPoly {
 
 impl FromIterator<ActionDigest> for ActionSetPoly {
     fn from_iter<I: IntoIterator<Item = ActionDigest>>(iter: I) -> Self {
-        let roots: Vec<Fp> = iter.into_iter().map(Fp::from).collect();
-        Self(Polynomial::from_coeffs(poly_with_roots(&roots)))
+        Self(multiset::encode(iter.into_iter().map(Fp::from)))
     }
 }
 
 impl FromIterator<Tachygram> for TachygramSetPoly {
     fn from_iter<I: IntoIterator<Item = Tachygram>>(iter: I) -> Self {
-        let roots: Vec<Fp> = iter.into_iter().map(Fp::from).collect();
-        Self(Polynomial::from_coeffs(poly_with_roots(&roots)))
+        Self(multiset::encode(iter.into_iter().map(Fp::from)))
     }
 }

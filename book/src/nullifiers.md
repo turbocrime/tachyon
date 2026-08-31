@@ -2,64 +2,79 @@
 
 A nullifier is a secret bound at note creation, and published later to destroy the note. Each note has a distinct nullifier per epoch.
 
-To spend a note, a transaction author must prove that no valid nullifier for it has been published in the pool between the note's creation and some anchor[^anchor]. Spending a note publishes two of its nullifiers to the pool, for the anchor epoch and the next epoch, making such a proof impossible to produce afterward.
+To spend a note, a transaction author must prove that no valid nullifier for the note has been published in the pool between the note's creation and some anchor[^anchor].
+Spending a note publishes two of its nullifiers to the pool, for the anchor epoch and the next epoch, making such a proof impossible to produce for later anchors.
 
 Pool state is likely to advance between proof creation and mining, so consensus closes the gap by confirming the nullifiers did not enter the pool in the interim.[^tachygrams] The second nullifier allows consensus to tolerate an epoch transition in that interim.
 
 ## Derivation
 
-The note's master key $\mathsf{mk}$ is derived from the note's trapdoor $\psi$ and the wallet's nullifier key $\mathsf{nk}$, and should be kept secret.
+A nullifier is the output of a Poseidon sponge. Abstractly,
 
 $$
-\mathsf{mk} =
-    \mathsf{Poseidon}_\texttt{Tachyon-NfMaster}\!(
-        \psi, \mathsf{nk}
-    )
+  \mathsf{nf}_e = \mathsf{PRF}^{\mathsf{nfTachyon}}_{\mathsf{mk}}(e)
 $$
 
-Nullifiers come in groups of the sponge rate $r$: one sponge keyed on $\mathsf{mk}$ and the window start $w = e - (e \bmod r)$ squeezes the $r$ consecutive nullifiers starting at epoch $w$.
+Because $\mathsf{nf}_e$ is the output of a pseudo-random function of master key $\mathsf{mk}$ and epoch $e$, distinct epochs have unrelated nullifiers.
+
+Epochs are grouped at sponge rate $r$ for proof efficiency.
+One sponge squeezes $r$ consecutive nullifiers starting at base epoch $w = e - (e \bmod r)$
 
 $$
-\mathsf{Poseidon}_\texttt{Tachyon-NfDerive}\!\left(
-    \mathsf{mk},\ w
-\right) = (\mathsf{nf}_{w},\ \ldots,\ \mathsf{nf}_{w + r - 1})
+    \mathsf{Poseidon}_\texttt{Tachyon-NfDerive}\!(
+      \mathsf{mk}, w
+    ) = (\mathsf{nf}_w, \ldots,\ \mathsf{nf}_{w + r - 1})
 $$
 
-$\mathsf{nf}_e$ is the member at position $e - w$ in its group. Because $\mathsf{nf}_e$ is a pseudo-random function of $\mathsf{mk}$ and the epoch $e$, distinct epochs yield unrelated nullifiers, and an author cannot steer a nullifier toward a chosen value.
+So $\mathsf{nf}_e$ is the member at position $e - w$ in its group.
 
 ## Binding
 
-$\psi$ is carried in the note and digested into the note commitment $\mathsf{cm}$, alongside the payment key $\mathsf{pk}$, which itself pins $\mathsf{nk}$[^pk]. So $\mathsf{cm}$ fixes both $\psi$ and $\mathsf{nk}$, hence $\mathsf{mk}$, hence the entire nullifier sequence. A note has exactly one nullifier sequence, frozen when its commitment enters the pool as a tachygram.
+The master key $\mathsf{mk}$ is derived from the note trapdoor $\psi$ and nullifier key $\mathsf{nk}$.
 
-The proof tree never trusts a freely witnessed nullifier. Wherever a nullifier is consumed, a derivation chain proves in-circuit that it is a genuine sponge output of the note's $\mathsf{mk}$, and binds that derivation to the note by $\mathsf{cm}$.[^derive]
+The note commitment $\mathsf{cm}$ digests $\psi$ and the payment key $\mathsf{pk}$, which transitively binds $\mathsf{nk}$ via its own derivation, closing the circle with $\mathsf{mk}$.
 
-$\psi$ must be unique per note. Two notes that reuse the same $\psi$ share $\mathsf{mk}$ and therefore the same nullifier sequence, so spending one publishes the other's nullifiers.
+Distinct notes under the same $\mathsf{nk}$ should not re-use $\psi$ because the pair $(\psi, \mathsf{nk})$ produce an identical $\mathsf{mk}$ and identical sequence of nullifiers.
 
-### Spendable
+## Delegation
 
-A spendable tracks an unspent note as the pool advances. It carries the note's current nullifier, its pool anchor, and the note commitment:
+A delegate may observe pool state and prove the absence of nullifiers without holding key material or any information about a note.
 
-$$(\,\mathsf{nf}_e,\;\; \mathsf{anchor},\;\; \mathsf{cm}\,)$$
+The delegate is provided an arbitrary sequence of values $\delta_{e..e+d}$ to prove absent from epochs $e..e+d$ and these tested values are committed as a contiguous sequence.
 
-$\mathsf{nf}_e$ is the nullifier the wallet would publish to spend now, at the lineage's current epoch $e$. Advancing the spendable (a lift) proves every nullifier from epoch $e$ up to the new epoch absent from the pool, then moves $\mathsf{nf}_e$ and the anchor forward together. $\mathsf{cm}$ rides along unchanged, binding the whole lineage to one note, and so to one value: the spend commits to the value inside $\mathsf{cm}$, which the creation stamp proved minted.
+$$
+  \Delta(X) =
+    \prod_{i = e}^{e+d} \Bigl(
+        ((i+1)X + \delta_{i})^3 - 2
+    \Bigr)
+$$
 
-A lift advances the current nullifier only to a genuine next derived nullifier, and the next lift's starting nullifier must equal the current one. Because both are PRF outputs, that equality forces the same note and the same epoch, so a lineage cannot skip an epoch or splice in another note.
+In parallel, $\mathsf{mk}$ proves derivation of a nullifier sequence for a range at least covering the delegated sequence.
 
-### Delegation
+$$
+  N(X) = \prod_{j} \Bigl(
+      ((j+1)X + \mathsf{nf}_{j})^3 - 2
+    \Bigr)
+$$
 
-The holder of $\mathsf{mk}$ can outsource the search for its nullifiers in the pool.[^delegation] It hands a delegate the next window of values $\Delta_{e..e+d}$, which should be the nullifiers $\mathsf{nf}_{e..e+d}$ but which the delegate treats as opaque. The delegate proves them absent from the pool across stamps and epochs, oblivious to $\mathsf{mk}$, $\psi$, $\mathsf{cm}$, and the note, and commits the sequence on the coefficient generators, terminated by a sentinel $1$ one position above the window:
+Witness material $ C = N \setminus \Delta $ is prepared for the expected complement.
 
-$$\delta = \sum_{i} [\Delta_{e+i}]\,\mathcal{G}_i + \mathcal{G}_d$$
+$$
+  C(X) = \prod_{j \notin e..e+d} \Bigl(
+      ((j+1)X + \mathsf{nf}_{j})^3 - 2
+    \Bigr)
+$$
 
-The sentinel keeps every committed sequence nonzero (an empty window is the constant $1$), so $\delta$ is never the identity point, and it pins the window's exact length.
+The delegate returns its proof of absence, and the relationship is verified by challenge.
 
-At the lift the wallet binds $\delta$ to genuine derived nullifiers: it proves a contiguous derived range commits to the same sequence, so each $\Delta_{e+i}$ is the real $\mathsf{nf}_{e+i}$. The window is measured in epoch-boundary crossings: $d$ is the crossing count and $\delta$ holds one nullifier per crossing, plus the nullifier of the epoch in progress at the span's tip, which is carried separately because that epoch is not yet complete. The wallet binds the tip too, so the lineage's new current nullifier is itself a genuine derived nullifier rather than a free value.
+$$
+  N = C \uplus \Delta
+   \quad \iff \quad
+  N(X) = C(X) \cdot \Delta(X)
+$$
 
-Re-basing is what lets a window be arbitrary. Any run of nullifiers shifts down to a degree-zero polynomial that stands as a witness on its own, so the wallet can delegate any window from any epoch, and only the wallet, holding the note, can fold the proven absence into the lineage.[^lift]
+The delegate's values are arbitrary until bound to a proven derivation. If the delegate constructed a proof diverging from the correct sequence, no relationship can be established with $N$ and the delegate's proof is useless.
 
 [^anchor]: [Anchor](./anchor.md) describes the pool state commitment.
+
 [^tachygrams]: See [Tachygrams](./tachygrams.md) for the unified consensus rule covering all published tachygrams.
-[^pk]: $\mathsf{pk} = \mathrm{Poseidon}(\text{PK\_DOMAIN}, \mathsf{ak}_x, \mathsf{nk})$ binds $\mathsf{nk}$ into the commitment, so a wrong $\mathsf{nk}$ yields a wrong $\mathsf{cm}$.
-[^derive]: The derivation chain and its consumers; see [Proof Tree](./proof-tree.md).
-[^delegation]: The delegate composes the absence proofs the wallet later lifts onto its own lineage; see [Proof Tree](./proof-tree.md).
-[^lift]: This fold is the `SpendableLift` proof step; see [Proof Tree](./proof-tree.md).

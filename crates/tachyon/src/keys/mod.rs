@@ -71,6 +71,9 @@
 //! $\mathsf{nf}_e$ depends on $(\mathsf{mk}, e)$ alone and overlapping
 //! derivation windows agree on the epochs they share; start epochs are
 //! group-aligned.
+//!
+//! `mk` evaluates the whole epoch space; delegation carries proven value
+//! windows.
 
 pub mod private;
 pub mod public;
@@ -158,12 +161,12 @@ mod tests {
     }
 
     #[test]
-    fn group_matches_per_epoch_derivation() {
+    fn window_matches_per_epoch_derivation() {
         let mk = NoteMasterKey(Fp::random(&mut StdRng::seed_from_u64(0)));
         let epoch_start = EpochIndex(96);
 
         let epochs = (epoch_start.0..).map(EpochIndex);
-        for (epoch, nf) in epochs.zip(mk.derive_group(epoch_start)) {
+        for (epoch, nf) in epochs.zip(mk.derive_window(epoch_start)) {
             assert_eq!(nf, mk.derive_nullifier(epoch), "epoch {}", epoch.0);
         }
     }
