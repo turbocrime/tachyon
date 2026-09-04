@@ -485,12 +485,13 @@ pub fn qr_filter_descend(
     (side, recorded.into_iter().collect(), extended)
 }
 
-/// Prepare the witness for [`QrResidueAttest`]: `(nf, residue_filter,
-/// interpolant, quotient, elapsed_seq)`.
+/// Prepare the witness for [`QrResidueAttest`]: `(nf, nf_next,
+/// residue_filter, interpolant, quotient, elapsed_seq)`.
 #[must_use]
 pub fn qr_residue_attest(
     (filter, _right): (StepLeft<QrResidueAttest>, StepRight<QrResidueAttest>),
     nf: Nullifier,
+    nf_next: Nullifier,
 ) -> StepWitness<'static, QrResidueAttest> {
     let (epoch, terminal, profile, ..) = filter;
     let (residue, _non_residue) = profile.discriminants_by_side(terminal);
@@ -503,10 +504,11 @@ pub fn qr_residue_attest(
         .expect("a path's discriminants are distinct");
     (
         nf,
+        nf_next,
         residue.into_iter().collect(),
         interpolant,
         quotient,
-        NfSeqPoly::new(epoch, &[nf]),
+        NfSeqPoly::new(epoch, &[nf, nf_next]),
     )
 }
 
@@ -526,12 +528,10 @@ pub const fn qr_bucket_seal(
 /// interpolant, quotient, contents)`.
 #[must_use]
 pub fn qr_unspent_init(
-    (claim, bucket): (StepLeft<QrUnspentInit>, StepRight<QrUnspentInit>),
+    (claim, _bucket): (StepLeft<QrUnspentInit>, StepRight<QrUnspentInit>),
     bucket_members: &[Tachygram],
 ) -> StepWitness<'static, QrUnspentInit> {
     let (_epoch, terminal, profile, _next, nf, ..) = claim;
-    let (_bucket_epoch, _bucket_terminal, _start, _bucket_profile, _discriminant, _contents) =
-        bucket;
     let (_residue, non_residue) = profile.discriminants_by_side(terminal);
     #[expect(
         clippy::expect_used,

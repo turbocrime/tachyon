@@ -187,10 +187,12 @@ A layer splits every intake, then merges same-profile neighbours while the produ
 
 `QrBucketSeal` turns a fully routed intake into a `QrBucket`, requiring
 
-$$\mathsf{start} = H_\mathsf{ep}(\mathsf{prev\_last}, \mathsf{epoch}), \qquad \mathsf{end} = \mathsf{terminal}.$$
+$$\mathsf{start} = H_\mathsf{ep}(\mathsf{prev\_last}, \mathsf{epoch}), \qquad \mathsf{end} = \mathsf{terminal},$$
 
+and closing the bucket at the next epoch's opening anchor $H_\mathsf{ep}(\mathsf{terminal}, \mathsf{epoch} + 1)$, folded natively.
 Only an epoch transition produces an anchor in the epoch domain, so `start` is an epoch's opening anchor and a partially routed intake cannot seal.
 Epoch zero's opening anchor is this rule at $\mathsf{prev\_last} = 0$.
+`terminal` is free at every root; one short of the epoch's last anchor folds to an anchor off the chain, which no honest segment continues, so the consuming lineage never reaches consensus.
 `QrBucketSeal` is the only step that produces a `QrBucket`, and `QrUnspentInit` consumes nothing else.
 
 `QrFilter` records a profile's path as the discriminants it classified on, sorted by side, one lineage per profile.
@@ -201,10 +203,10 @@ The consumer reads the same identity the other way, with the path's discriminant
 
 $$g(y)^2 - (\mathsf{nf} + y) = P_\mathsf{res}(y)\, h_\mathsf{res}(y)$$
 
-at one challenge, which settles $g(R_j)^2 = \mathsf{nf} + R_j$ at every root $R_j$ of $P_\mathsf{res}$, at any depth.
+at one challenge, which settles $g(R_j)^2 = \mathsf{nf} + R_j$ at every root $R_j$ of $P_\mathsf{res}$, at any depth, and binds the two-member `elapsed` of $(e, \mathsf{nf})$ and $(e + 1, \mathsf{nf\_next})$.
 `QrUnspentInit` proves the non-residue half the same way, opens $P_\mathsf{non}$ nonzero at $-\mathsf{nf}$ so the exceptional discriminant stays residue-side, and opens the bucket at $\mathsf{nf}$.
 The nullifier's class is then fixed at every level of the bucket's path, so no other bucket of the epoch can hold it.
-The consumer checks that claim and bucket agree on epoch, terminal, profile and discriminant; `start` closes through the lineage that consumes the emitted segment.
+The consumer checks that claim and bucket agree on epoch, terminal, profile and discriminant, and emits the bucket's span as a crossing segment, so consecutive epochs' segments fuse at the junction epoch with no boundary link between them; `start` closes through the lineage that consumes the emitted segment.
 
 ### Derivation window
 
@@ -420,9 +422,9 @@ flowchart LR
 | Summary | (epoch, anchor_prev, anchor_last, acc_commit) |
 | QrIntake | (epoch, terminal, start, end, profile, discriminant, contents) |
 | QrIntakeSides | (epoch, terminal, start, end, profile, discriminant, residue, non_residue) |
-| QrBucket | (epoch, terminal, start, profile, discriminant, contents) |
+| QrBucket | (epoch, terminal, start, end, profile, discriminant, contents) |
 | QrFilter | (epoch, terminal, profile, next, residue_filter, non_residue_filter) |
-| QrProfileClaim | (epoch, terminal, profile, next, nf, non_residue_filter, elapsed) |
+| QrProfileClaim | (epoch, terminal, profile, next, nf, nf_next, non_residue_filter, elapsed) |
 | ArbitraryUnspent | (anchor_prev, (epoch_start, nf_start), elapsed, (epoch_last, nf_last), anchor_last) |
 | Unspent | (cm, anchor_prev, (epoch_start, nf_start), (epoch_last, nf_last), anchor_last) |
 | NfMasterHeader | (cm, mk) |
@@ -450,7 +452,7 @@ flowchart LR
 | QrBucketSeal | QrIntake | — | prev_last | QrBucket |
 | QrFilterSeed | — | — | epoch, terminal | QrFilter |
 | QrFilterDescend | QrFilter | — | bit, side_filter, extended | QrFilter |
-| QrResidueAttest | QrFilter | — | nf, residue_filter, interpolant, quotient, elapsed_seq | QrProfileClaim |
+| QrResidueAttest | QrFilter | — | nf, nf_next, residue_filter, interpolant, quotient, elapsed_seq | QrProfileClaim |
 | QrUnspentInit | QrProfileClaim | QrBucket | non_residue_filter, interpolant, quotient, contents | ArbitraryUnspent |
 | UnspentSeed | — | — | anchor_prev, (epoch, nf), stamp_tg_set, elapsed_seq | ArbitraryUnspent |
 | EndEpochUnspentSeed | — | — | anchor_prev, (epoch_prev, nf_prev), nf, elapsed_seq | ArbitraryUnspent |

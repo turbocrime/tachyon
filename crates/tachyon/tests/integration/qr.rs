@@ -14,13 +14,14 @@ use zcash_tachyon::{
     Anchor, BlockHeight, EpochIndex, NfSeqPoly, QrDiscriminant, QrFilterPoly, QrProfile, Tachygram,
     TachygramSetPoly,
     nullifier::Nullifier,
-    stamp::proof::{PROOF_SYSTEM, qr, summary},
+    stamp::proof::{PROOF_SYSTEM, pool::UnspentFuse, qr, summary},
     witness,
 };
 
 use crate::fixtures::{
-    PoolSim, QrIntakeEntry, build_qr_filter_pcd, build_qr_partition, build_summary_pcd,
-    qr_profile_of, random_block, seal_qr_intake, seed_qr_stamp_intake, split_qr_intake,
+    PoolSim, QrBucketEntry, QrIntakeEntry, build_qr_filter_pcd, build_qr_partition,
+    build_summary_pcd, qr_profile_of, random_block, seal_qr_intake, seed_qr_stamp_intake,
+    split_qr_intake,
 };
 
 #[test]
@@ -202,11 +203,12 @@ fn qr_stamp_rooted_intakes_merge_and_seal_with_summary_rooted_ones() {
             EpochIndex(0),
             terminal,
             Anchor::default(),
+            terminal.next_epoch(EpochIndex(1)).unwrap(),
             QrProfile::ROOT,
             QrDiscriminant::of(terminal),
             contents
         ),
-        "the joined span runs the epoch's opening anchor to its terminal"
+        "the joined span runs the epoch's opening anchor to the next epoch's"
     );
 }
 
@@ -1345,8 +1347,16 @@ fn qr_bucket_seal_seals_a_fully_routed_intake() {
 
     assert_eq!(
         *bucket.pcd.data(),
-        (epoch, terminal, start, profile, discriminant, contents),
-        "sealing keeps every field and drops the redundant end"
+        (
+            epoch,
+            terminal,
+            start,
+            terminal.next_epoch(epoch.next()).unwrap(),
+            profile,
+            discriminant,
+            contents
+        ),
+        "sealing keeps every field and folds the end onto the next epoch's opening anchor"
     );
     assert_eq!(
         start,
@@ -1433,6 +1443,7 @@ fn qr_unspent_init_clears_an_absent_nullifier_against_its_bucket() {
     let terminal = pool.block(pool.height()).anchor();
     let epoch = BlockHeight(0).epoch();
     let nf = Nullifier::from(Fp::random(&mut *rng));
+    let nf_next = Nullifier::from(Fp::random(&mut *rng));
 
     let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), terminal, 24, 2);
     let profile = qr_profile_of(Fp::from(nf), terminal, 2);
@@ -1454,7 +1465,7 @@ fn qr_unspent_init_clears_an_absent_nullifier_against_its_bucket() {
         .fuse(
             rng,
             qr::QrResidueAttest,
-            witness::qr_residue_attest((*filter.data(), ()), nf),
+            witness::qr_residue_attest((*filter.data(), ()), nf, nf_next),
             filter,
             Proof::trivial().carry::<()>(()),
         )
@@ -1470,10 +1481,93 @@ fn qr_unspent_init_clears_an_absent_nullifier_against_its_bucket() {
         Anchor::default(),
         "the segment opens where the partition's span does"
     );
-    assert_eq!(anchor_last, terminal, "and closes at the epoch's terminal");
+    assert_eq!(
+        anchor_last,
+        terminal.next_epoch(epoch.next()).unwrap(),
+        "and closes at the next epoch's opening anchor"
+    );
     assert_eq!(first, (epoch, nf));
-    assert_eq!(last, (epoch, nf));
-    assert_eq!(elapsed, NfSeqPoly::new(epoch, &[nf]).commit());
+    assert_eq!(last, (epoch.next(), nf_next));
+    assert_eq!(elapsed, NfSeqPoly::new(epoch, &[nf, nf_next]).commit());
+}
+
+/// Two consecutive epochs' segments meet at the junction epoch: the first
+/// closes at the next epoch's opening anchor holding that epoch's nullifier,
+/// so `UnspentFuse` joins them with no boundary link between.
+#[test]
+fn qr_unspent_segments_of_consecutive_epochs_fuse_directly() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let epoch0 = EpochIndex(0);
+    let epoch1 = epoch0.next();
+    let epoch2 = epoch1.next();
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
+    // Fill epoch zero and open epoch one, one stamp per block.
+    pool.advance(epoch1.first_block().0 + 1, |_| random_block(rng, 1, 1));
+    let [nf0, nf1, nf2] = array::from_fn(|_| Nullifier::from(Fp::random(&mut *rng)));
+
+    let mut seal_epoch = |(start, terminal): (Anchor, Anchor), prev_last: Anchor| {
+        let (summary, members) = build_summary_pcd(rng, &pool, (start, terminal));
+        let (root, ()) = PROOF_SYSTEM
+            .fuse(
+                rng,
+                qr::QrSummaryIntakeInit,
+                witness::qr_summary_intake_init((*summary.data(), ()), terminal),
+                summary,
+                Proof::trivial().carry::<()>(()),
+            )
+            .expect("QrSummaryIntakeInit");
+        seal_qr_intake(rng, QrIntakeEntry { pcd: root, members }, prev_last)
+    };
+    let terminal0 = pool.block(epoch0.last_block()).anchor();
+    let bucket0 = seal_epoch((Anchor::default(), terminal0), Anchor::from(Fp::ZERO));
+    let bucket1 = seal_epoch(
+        (pool.block(epoch1.first_block()).prev, pool.anchor()),
+        terminal0,
+    );
+    let (_, _, _, end1, ..) = *bucket1.pcd.data();
+
+    let mut segment = |bucket: QrBucketEntry, nf: Nullifier, nf_next: Nullifier| {
+        let (epoch, terminal, ..) = *bucket.pcd.data();
+        let filter = build_qr_filter_pcd(rng, epoch, terminal, QrProfile::ROOT);
+        let (claim, ()) = PROOF_SYSTEM
+            .fuse(
+                rng,
+                qr::QrResidueAttest,
+                witness::qr_residue_attest((*filter.data(), ()), nf, nf_next),
+                filter,
+                Proof::trivial().carry::<()>(()),
+            )
+            .expect("QrResidueAttest");
+        let witness =
+            witness::qr_unspent_init((*claim.data(), *bucket.pcd.data()), &bucket.members);
+        let (unspent, ()) = PROOF_SYSTEM
+            .fuse(rng, qr::QrUnspentInit, witness, claim, bucket.pcd)
+            .expect("QrUnspentInit");
+        unspent
+    };
+    let left = segment(bucket0, nf0, nf1);
+    let right = segment(bucket1, nf1, nf2);
+
+    let (fused, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            UnspentFuse,
+            witness::unspent_fuse((*left.data(), *right.data()), &[nf0, nf1], &[nf1, nf2]),
+            left,
+            right,
+        )
+        .expect("UnspentFuse");
+
+    let (anchor_prev, first, elapsed, last, anchor_last) = *fused.data();
+    assert_eq!(anchor_prev, Anchor::default());
+    assert_eq!(first, (epoch0, nf0));
+    assert_eq!(last, (epoch2, nf2));
+    assert_eq!(anchor_last, end1);
+    assert_eq!(
+        elapsed,
+        NfSeqPoly::new(epoch0, &[nf0, nf1, nf2]).commit(),
+        "the junction epoch's member is shared, not repeated"
+    );
 }
 
 #[test]
@@ -1493,6 +1587,7 @@ fn qr_unspent_init_rejects_a_published_nullifier() {
         .expect("some intake holds a member");
     let published = *intake.members.first().expect("a member");
     let nf = Nullifier::from(Fp::from(published));
+    let nf_next = Nullifier::from(Fp::random(&mut *rng));
     let (_, _, _, _, profile, ..) = *intake.pcd.data();
     let bucket = seal_qr_intake(rng, intake, Anchor::from(Fp::ZERO));
 
@@ -1501,7 +1596,7 @@ fn qr_unspent_init_rejects_a_published_nullifier() {
         .fuse(
             rng,
             qr::QrResidueAttest,
-            witness::qr_residue_attest((*filter.data(), ()), nf),
+            witness::qr_residue_attest((*filter.data(), ()), nf, nf_next),
             filter,
             Proof::trivial().carry::<()>(()),
         )
@@ -1530,6 +1625,7 @@ fn qr_unspent_init_rejects_a_foreign_bucket() {
     let terminal = pool.block(pool.height()).anchor();
     let epoch = BlockHeight(0).epoch();
     let nf = Nullifier::from(Fp::random(&mut *rng));
+    let nf_next = Nullifier::from(Fp::random(&mut *rng));
 
     let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), terminal, 24, 2);
     let profile = qr_profile_of(Fp::from(nf), terminal, 2);
@@ -1544,7 +1640,7 @@ fn qr_unspent_init_rejects_a_foreign_bucket() {
         .fuse(
             rng,
             qr::QrResidueAttest,
-            witness::qr_residue_attest((*filter.data(), ()), nf),
+            witness::qr_residue_attest((*filter.data(), ()), nf, nf_next),
             filter,
             Proof::trivial().carry::<()>(()),
         )
@@ -1569,11 +1665,12 @@ fn qr_residue_attest_rejects_a_foreign_interpolant() {
     let epoch = EpochIndex(3);
     let terminal = Anchor::from(Fp::random(&mut *rng));
     let nf = Nullifier::from(Fp::random(&mut *rng));
+    let nf_next = Nullifier::from(Fp::random(&mut *rng));
     let profile = qr_profile_of(Fp::from(nf), terminal, 3);
 
     let filter = build_qr_filter_pcd(rng, epoch, terminal, profile);
-    let (_, residue_filter, _interpolant, quotient, elapsed_seq) =
-        witness::qr_residue_attest((*filter.data(), ()), nf);
+    let (_, _, residue_filter, _interpolant, quotient, elapsed_seq) =
+        witness::qr_residue_attest((*filter.data(), ()), nf, nf_next);
 
     // A decomposition exists only along the value's own path, so the forgery
     // has to come from another nullifier's attestation.
@@ -1584,8 +1681,8 @@ fn qr_residue_attest_rejects_a_foreign_interpolant() {
         terminal,
         qr_profile_of(Fp::from(foreign), terminal, 3),
     );
-    let (_, _, foreign_interpolant, ..) =
-        witness::qr_residue_attest((*foreign_filter.data(), ()), foreign);
+    let (_, _, _, foreign_interpolant, ..) =
+        witness::qr_residue_attest((*foreign_filter.data(), ()), foreign, nf_next);
 
     let err = PROOF_SYSTEM
         .fuse(
@@ -1593,6 +1690,7 @@ fn qr_residue_attest_rejects_a_foreign_interpolant() {
             qr::QrResidueAttest,
             (
                 nf,
+                nf_next,
                 residue_filter,
                 foreign_interpolant,
                 quotient,
