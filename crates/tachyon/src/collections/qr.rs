@@ -34,9 +34,6 @@ use ragu_arithmetic as arithmetic;
 /// the cubic non-residue the sequence encoding uses.
 pub(crate) const QUADRATIC_NON_RESIDUE: Fp = Fp::from_raw([5, 0, 0, 0]);
 
-/// Maximum bucket size $B$.
-pub(crate) const MAX_BUCKET_SIZE: usize = 8096;
-
 /// The class multiplier $c$ of a side: $1$ on the residue side, the quadratic
 /// non-residue otherwise.
 pub(crate) const fn class_multiplier(side: bool) -> Fp {
@@ -312,11 +309,11 @@ mod tests {
     }
 
     #[test]
-    fn the_decomposition_holds_at_the_maximum_bucket_size() {
+    fn the_decomposition_holds_at_the_polynomial_capacity() {
         let rng = &mut StdRng::seed_from_u64(26);
         let discriminant = Fp::random(&mut *rng);
         let values: Vec<Fp> = iter::repeat_with(|| Fp::random(&mut *rng))
-            .take(MAX_BUCKET_SIZE)
+            .take((1 << Polynomial::R) - 1)
             .collect();
         let (residue, non_residue) = split(values, discriminant);
         for (points, class) in [

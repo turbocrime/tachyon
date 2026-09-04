@@ -376,20 +376,12 @@ pub fn qr_stamp_intake_seed(
 
 /// Prepare the witness for [`QrIntakeMerge`]: `(left_contents,
 /// right_contents, merged)`.
-///
-/// # Panics
-///
-/// Panics when the union exceeds the bucket cap.
 #[must_use]
 pub fn qr_intake_merge(
     (_left, _right): (StepLeft<QrIntakeMerge>, StepRight<QrIntakeMerge>),
     left_tgs: &[Tachygram],
     right_tgs: &[Tachygram],
 ) -> StepWitness<'static, QrIntakeMerge> {
-    assert!(
-        left_tgs.len() + right_tgs.len() <= collections::qr::MAX_BUCKET_SIZE,
-        "merged bucket exceeds the cap"
-    );
     (
         left_tgs.iter().copied().collect::<TachygramSetPoly>(),
         right_tgs.iter().copied().collect::<TachygramSetPoly>(),
