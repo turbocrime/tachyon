@@ -175,11 +175,12 @@ A value takes the residue side at depth $j$ when $x + R_j$ is a square or zero.
 A profile is the string of sides on the path to a bucket.
 
 `QrSummaryIntakeInit` starts a `QrIntake` from a `Summary` at depth zero, `QrStampIntakeSeed` starts one from a single stamp too large to summarize, and `QrIntakeMerge` joins two same-profile intakes whose spans meet, so spans compose as anchor segments do.
-`QrIntakeSplit` factors an intake's contents into two sides as `QrIntakeSides`, and `QrSideDescend` attests one side at its class multiplier $c$:
+`QrIntakeSplit` factors an intake's contents into two sides as `QrIntakeSides`, and `QrSideDescend` extracts one side while attesting the other at its class multiplier $c$:
 
-$$g(X)^2 - c\,(X + R) = q(X)\, h(X)$$
+$$g(X)^2 - c\,(X + R) = s(X)\, h(X)$$
 
-holds only when every root of $q$ takes that side at $R$, since each root leaves $g(x)^2 = c\,(x + R)$.
+holds only when every root of the sibling $s$ takes its side at $R$, since each root leaves $g(x)^2 = c\,(x + R)$; with the split's product, every member of the extracted class is then in the child.
+A child may carry a stray member of the other class, which only tightens the openings its consumers make, but it cannot lack a member of its own.
 The exceptional value $-R$ has root $0$ under either class, so the split also opens the non-residue side nonzero at $-R$.
 Each descend requires the parent's depth below 64, the width of the profile's side register, so $\mathsf{bits} < 2^{64} < p$ and two paths never share a profile.
 A layer splits every intake, then merges same-profile neighbours while the product fits one polynomial.

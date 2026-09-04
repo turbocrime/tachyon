@@ -80,8 +80,8 @@ impl Header for QrIntake {
     }
 }
 
-/// One intake's members partitioned at its discriminant, before either side
-/// is attested.
+/// One intake's members partitioned at its discriminant. Extracting either
+/// side attests the other.
 #[derive(Clone, Debug)]
 pub struct QrIntakeSides;
 
@@ -309,7 +309,7 @@ impl Step for QrIntakeMerge {
 /// # Soundness
 ///
 /// The product pins the two sides to a factorization of the contents;
-/// [`QrSideDescend`] attests each side's class. The exceptional value $-R$
+/// [`QrSideDescend`] attests each child's sibling. The exceptional value $-R$
 /// has root $0$ under either class, so the non-residue side must open nonzero
 /// there.
 #[derive(Debug)]
@@ -373,28 +373,34 @@ impl Step for QrIntakeSplit {
     }
 }
 
-/// Attest one side of a partition and carry it down one level.
+/// Extract one side of a partition and carry it down one level, attesting
+/// the other side's class.
 ///
-/// With $q$ the side, $g$ its interpolant and $h$ the quotient,
+/// With $s$ the sibling, $g$ its interpolant and $h$ the quotient,
 ///
 /// $$
-///   g(X)^2 - c\,(X + R) = q(X)\, h(X)
+///   g(X)^2 - c\,(X + R) = s(X)\, h(X)
 /// $$
 ///
-/// at the side's class $c$ holds only if every root of $q$ takes that side at
-/// $R$, since each root leaves $g(x)^2 = c\,(x + R)$.
+/// at the sibling's class $c$ holds only if every root of $s$ takes that
+/// side at $R$, since each root leaves $g(x)^2 = c\,(x + R)$. With the
+/// split's product, every member of the extracted class is then in the
+/// child.
 ///
-/// Committed polynomials: the side, its interpolant, its quotient; three
+/// Committed polynomials: the sibling, its interpolant, its quotient; three
 /// oracles.
 ///
 /// # Soundness
 ///
-/// The side is pinned to the header by commit-equality, and the challenge
-/// absorbs all three commitments. The header commitment is selected by point
-/// arithmetic on `bit`, and both class identities are computed with the
-/// selected one gated in, so no constraint branches on the witness. The
-/// parent's depth is checked below `u64::BITS`, so `bits` stays below
-/// $2^{64} < p$ and distinct paths of one depth never share a profile.
+/// The child needs completeness, not purity: a consumer opens it nonzero at
+/// a value of the child's own profile, and a stray member of the other class
+/// only tightens that opening. The sibling is pinned to the header by
+/// commit-equality and the challenge absorbs all three commitments; the
+/// child's commitment is read off the header. Both header commitments are
+/// selected by point arithmetic on `bit`, and both class identities are
+/// computed with the sibling's gated in, so no constraint branches on the
+/// witness. The parent's depth is checked below `u64::BITS`, so `bits` stays
+/// below $2^{64} < p$ and distinct paths of one depth never share a profile.
 #[derive(Debug)]
 pub struct QrSideDescend;
 
@@ -403,7 +409,7 @@ impl Step for QrSideDescend {
     type Left = QrIntakeSides;
     type Output = QrIntake;
     type Right = ();
-    /// `(bit, side_contents, interpolant, quotient)`.
+    /// `(bit, sibling_contents, interpolant, quotient)`.
     type Witness<'source> = (bool, TachygramSetPoly, QrInterpolantPoly, QrQuotientPoly);
 
     const INDEX: Index = Index::new(24);
@@ -411,7 +417,7 @@ impl Step for QrSideDescend {
     fn witness<'source>(
         &self,
         ctx: &mut ragu::StepCtx<'_>,
-        (bit, side_contents, interpolant, quotient): Self::Witness<'source>,
+        (bit, sibling_contents, interpolant, quotient): Self::Witness<'source>,
         (epoch, terminal, start, end, profile, discriminant, residue, non_residue): <Self::Left as Header>::Data,
         _right: <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
@@ -424,41 +430,43 @@ impl Step for QrSideDescend {
         }
         // TODO: a real circuit must constrain `bit` boolean; the type carries it
         // under mock ragu.
-        let side_commit = side_contents.commit();
+        let sibling_commit = sibling_contents.commit();
+        let sibling = Eq::from(residue)
+            + (Eq::from(non_residue) - Eq::from(residue)) * Fp::from(u64::from(bit));
+        enforce_equal_point(
+            Eq::from(sibling_commit),
+            sibling,
+            "QrSideDescend: sibling does not match the header",
+        )?;
         let selected = Eq::from(non_residue)
             + (Eq::from(residue) - Eq::from(non_residue)) * Fp::from(u64::from(bit));
-        enforce_equal_point(
-            Eq::from(side_commit),
-            selected,
-            "QrSideDescend: side does not match the selected child",
-        )?;
 
         let interpolant_commit = interpolant.commit();
         let quotient_commit = quotient.commit();
         let z = ctx.derive_challenge(&[
-            side_commit.into(),
+            sibling_commit.into(),
             interpolant_commit.into(),
             quotient_commit.into(),
         ])?;
-        let side_at_z = side_contents.eval(z);
+        let sibling_at_z = sibling_contents.eval(z);
         let interpolant_at_z = interpolant.eval(z);
         let quotient_at_z = quotient.eval(z);
-        ctx.enforce_poly_query(side_commit.into(), z, side_at_z)?;
+        ctx.enforce_poly_query(sibling_commit.into(), z, sibling_at_z)?;
         ctx.enforce_poly_query(interpolant_commit.into(), z, interpolant_at_z)?;
         ctx.enforce_poly_query(quotient_commit.into(), z, quotient_at_z)?;
         let shifted = z + Fp::from(discriminant);
-        let class_residual = interpolant_at_z.square() - side_at_z * quotient_at_z;
+        let class_residual = interpolant_at_z.square() - sibling_at_z * quotient_at_z;
         conditional_enforce_equal(
             bit,
             class_residual,
-            shifted,
-            "QrSideDescend: the side fails the residue class decomposition",
+            QUADRATIC_NON_RESIDUE * shifted,
+            "QrSideDescend: the sibling fails the non-residue class decomposition",
         )?;
         conditional_enforce_equal(
             !bit,
             class_residual,
-            QUADRATIC_NON_RESIDUE * shifted,
-            "QrSideDescend: the side fails the non-residue class decomposition",
+            shifted,
+            "QrSideDescend: the sibling fails the residue class decomposition",
         )?;
 
         Ok((
@@ -469,7 +477,7 @@ impl Step for QrSideDescend {
                 end,
                 profile.descend(bit),
                 discriminant.next(),
-                side_commit,
+                TachygramSetCommit::from(selected),
             ),
             (),
         ))

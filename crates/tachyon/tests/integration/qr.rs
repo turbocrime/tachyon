@@ -465,7 +465,7 @@ fn qr_side_descend_carries_each_side_one_level_down() {
 }
 
 #[test]
-fn qr_side_descend_rejects_a_foreign_side() {
+fn qr_side_descend_rejects_a_foreign_sibling() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
     let start = Anchor::from(Fp::random(&mut *rng));
@@ -498,14 +498,14 @@ fn qr_side_descend_rejects_a_foreign_side() {
         )
         .expect("QrIntakeSplit");
 
-    let (_, non_residue_side, ..) = witness::qr_side_descend((*split.data(), ()), &members, false);
+    let (_, foreign_sibling, ..) = witness::qr_side_descend((*split.data(), ()), &members, false);
     let (_, _, interpolant, quotient) =
         witness::qr_side_descend((*split.data(), ()), &members, true);
     let err = PROOF_SYSTEM
         .fuse(
             rng,
             qr::QrSideDescend,
-            (true, non_residue_side, interpolant, quotient),
+            (true, foreign_sibling, interpolant, quotient),
             split,
             Proof::trivial().carry::<()>(()),
         )
@@ -516,7 +516,7 @@ fn qr_side_descend_rejects_a_foreign_side() {
     };
     assert_eq!(
         inner.to_string(),
-        "QrSideDescend: side does not match the selected child"
+        "QrSideDescend: sibling does not match the header"
     );
 }
 
@@ -554,7 +554,7 @@ fn qr_side_descend_rejects_a_foreign_interpolant() {
         )
         .expect("QrIntakeSplit");
 
-    let (bit, side_contents, _interpolant, quotient) =
+    let (bit, sibling_contents, _interpolant, quotient) =
         witness::qr_side_descend((*split.data(), ()), &members, true);
     let (_, _, foreign_interpolant, _) =
         witness::qr_side_descend((*split.data(), ()), &members, false);
@@ -562,7 +562,7 @@ fn qr_side_descend_rejects_a_foreign_interpolant() {
         .fuse(
             rng,
             qr::QrSideDescend,
-            (bit, side_contents, foreign_interpolant, quotient),
+            (bit, sibling_contents, foreign_interpolant, quotient),
             split,
             Proof::trivial().carry::<()>(()),
         )
@@ -573,7 +573,7 @@ fn qr_side_descend_rejects_a_foreign_interpolant() {
     };
     assert_eq!(
         inner.to_string(),
-        "QrSideDescend: the side fails the residue class decomposition"
+        "QrSideDescend: the sibling fails the non-residue class decomposition"
     );
 }
 
@@ -611,7 +611,7 @@ fn qr_side_descend_rejects_a_foreign_interpolant_on_the_non_residue_side() {
         )
         .expect("QrIntakeSplit");
 
-    let (bit, side_contents, _interpolant, quotient) =
+    let (bit, sibling_contents, _interpolant, quotient) =
         witness::qr_side_descend((*split.data(), ()), &members, false);
     let (_, _, foreign_interpolant, _) =
         witness::qr_side_descend((*split.data(), ()), &members, true);
@@ -619,7 +619,7 @@ fn qr_side_descend_rejects_a_foreign_interpolant_on_the_non_residue_side() {
         .fuse(
             rng,
             qr::QrSideDescend,
-            (bit, side_contents, foreign_interpolant, quotient),
+            (bit, sibling_contents, foreign_interpolant, quotient),
             split,
             Proof::trivial().carry::<()>(()),
         )
@@ -630,7 +630,115 @@ fn qr_side_descend_rejects_a_foreign_interpolant_on_the_non_residue_side() {
     };
     assert_eq!(
         inner.to_string(),
-        "QrSideDescend: the side fails the non-residue class decomposition"
+        "QrSideDescend: the sibling fails the residue class decomposition"
+    );
+}
+
+#[test]
+fn qr_side_descend_rejects_a_child_short_of_a_member() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let epoch = EpochIndex(3);
+    let start = Anchor::from(Fp::random(&mut *rng));
+    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let members: [Tachygram; 12] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
+
+    let (summary, ()) = PROOF_SYSTEM
+        .seed(
+            rng,
+            summary::SummarySeed,
+            witness::summary_seed(((), ()), start, epoch, &members),
+        )
+        .expect("SummarySeed");
+    let (root, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            qr::QrSummaryIntakeInit,
+            witness::qr_summary_intake_init((*summary.data(), ()), terminal),
+            summary,
+            Proof::trivial().carry::<()>(()),
+        )
+        .expect("QrSummaryIntakeInit");
+
+    // File one residue-class member on the non-residue side. The product
+    // still holds, so the split accepts the misfiled partition.
+    let discriminant = QrDiscriminant::of(terminal);
+    let (mut short_residue, mut padded_non_residue): (Vec<Tachygram>, Vec<Tachygram>) = members
+        .iter()
+        .copied()
+        .partition(|&member| qr::classify(Fp::from(member), Fp::from(discriminant)).0);
+    let smuggled = short_residue
+        .pop()
+        .expect("twelve random members reach the residue class");
+    padded_non_residue.push(smuggled);
+    let (contents, ..) = witness::qr_intake_split((*root.data(), ()), &members);
+    let (sides, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            qr::QrIntakeSplit,
+            (
+                contents,
+                short_residue.iter().copied().collect(),
+                padded_non_residue.iter().copied().collect(),
+            ),
+            root,
+            Proof::trivial().carry::<()>(()),
+        )
+        .expect("QrIntakeSplit");
+
+    // Extracting the short residue child attests the padded sibling, which
+    // holds a residue-class root and so has no non-residue decomposition; the
+    // honest sibling's decomposition is the best a prover can offer.
+    let (_, _, interpolant, quotient) =
+        witness::qr_side_descend((*sides.data(), ()), &members, true);
+    let err = PROOF_SYSTEM
+        .fuse(
+            rng,
+            qr::QrSideDescend,
+            (
+                true,
+                padded_non_residue.iter().copied().collect(),
+                interpolant,
+                quotient,
+            ),
+            sides.clone(),
+            Proof::trivial().carry::<()>(()),
+        )
+        .err()
+        .unwrap();
+    let ragu::Error::InvalidWitness(inner) = err else {
+        panic!("expected InvalidWitness, got {err:?}");
+    };
+    assert_eq!(
+        inner.to_string(),
+        "QrSideDescend: the sibling fails the non-residue class decomposition"
+    );
+
+    // The padded child is complete for its class, merely impure: its short
+    // sibling is pure, so the extraction passes and carries the stray member.
+    let members_without_smuggled: Vec<Tachygram> = members
+        .iter()
+        .copied()
+        .filter(|&member| member != smuggled)
+        .collect();
+    let (child, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            qr::QrSideDescend,
+            witness::qr_side_descend((*sides.data(), ()), &members_without_smuggled, false),
+            sides,
+            Proof::trivial().carry::<()>(()),
+        )
+        .expect("QrSideDescend");
+    let (.., child_profile, _, child_contents) = *child.data();
+    assert_eq!(child_profile, QrProfile::ROOT.descend(false));
+    assert_eq!(
+        child_contents,
+        padded_non_residue
+            .iter()
+            .copied()
+            .collect::<TachygramSetPoly>()
+            .commit(),
+        "the impure child carries the stray member"
     );
 }
 

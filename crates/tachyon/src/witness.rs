@@ -418,11 +418,12 @@ pub fn qr_intake_split(
     )
 }
 
-/// Prepare the witness for [`QrSideDescend`]: `(bit, side_contents,
+/// Prepare the witness for [`QrSideDescend`]: `(bit, sibling_contents,
 /// interpolant, quotient)`.
 ///
 /// `members` is the whole membership [`qr_intake_split`] partitioned; `side`
-/// is the residue side when set.
+/// is the residue side when set. The decomposition is the sibling's, at the
+/// sibling's class multiplier.
 #[must_use]
 pub fn qr_side_descend(
     (sides, _right): (StepLeft<QrSideDescend>, StepRight<QrSideDescend>),
@@ -434,17 +435,17 @@ pub fn qr_side_descend(
         members.iter().copied().map(Fp::from),
         Fp::from(discriminant),
     );
-    let points = if side { residue } else { non_residue };
+    let sibling = if side { non_residue } else { residue };
     #[expect(clippy::expect_used, reason = "members of a split are distinct")]
     let (interpolant, quotient) = collections::qr::decomposition(
-        &points,
-        collections::qr::class_multiplier(side),
+        &sibling,
+        collections::qr::class_multiplier(!side),
         Fp::from(discriminant),
     )
     .expect("members of a split are distinct");
     (
         side,
-        points
+        sibling
             .iter()
             .map(|&(member, _root)| Tachygram::from(member))
             .collect(),
