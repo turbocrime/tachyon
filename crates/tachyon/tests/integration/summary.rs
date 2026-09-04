@@ -86,27 +86,25 @@ fn summary_advance_folds_stamp_into_accumulator_and_anchor() {
 }
 
 #[test]
-fn summary_over_a_block_range_matches_the_pool() {
+fn summary_over_an_anchor_span_matches_the_pool() {
     let rng = &mut StdRng::seed_from_u64(0);
     let mut pool = PoolSim::genesis_with(random_block(rng, 2, 2));
     pool.mine(random_block(rng, 2, 2));
     pool.mine(random_block(rng, 2, 2));
-    let start = BlockHeight(0);
-    let end = pool.height();
 
-    let (pcd, members) = build_summary_pcd(rng, &pool, start..=end);
+    let (pcd, members) = build_summary_pcd(rng, &pool, (Anchor::default(), pool.anchor()));
     let (epoch, anchor_prev, anchor_last, acc_commit) = *pcd.data();
 
-    assert_eq!(epoch, start.epoch());
+    assert_eq!(epoch, EpochIndex(0));
     assert_eq!(
         anchor_prev,
-        pool.block(start).prev,
-        "the summary opens at the range's block-start anchor"
+        Anchor::default(),
+        "the summary opens at the span's start anchor"
     );
     assert_eq!(
         anchor_last,
-        pool.block(end).anchor(),
-        "the summary closes at the range's terminal anchor"
+        pool.anchor(),
+        "the summary closes at the span's end anchor"
     );
 
     let acc = members.iter().copied().collect::<TachygramSetPoly>();
@@ -250,9 +248,7 @@ fn summary_unspent_init_clears_the_whole_run() {
     let mut pool = PoolSim::genesis_with(random_block(rng, 2, 2));
     pool.mine(random_block(rng, 2, 2));
     pool.mine(random_block(rng, 2, 2));
-    let start = BlockHeight(0);
-    let end = pool.height();
-    let (pcd, members) = build_summary_pcd(rng, &pool, start..=end);
+    let (pcd, members) = build_summary_pcd(rng, &pool, (Anchor::default(), pool.anchor()));
     let (epoch, anchor_prev, anchor_last, _) = *pcd.data();
     let nf = Nullifier::from(Fp::random(&mut *rng));
 
@@ -285,7 +281,7 @@ fn summary_unspent_init_rejects_a_published_nullifier() {
     let mut pool = PoolSim::genesis_with(random_block(rng, 2, 2));
     pool.mine(random_block(rng, 2, 2));
     pool.mine(random_block(rng, 2, 2));
-    let (pcd, members) = build_summary_pcd(rng, &pool, BlockHeight(0)..=pool.height());
+    let (pcd, members) = build_summary_pcd(rng, &pool, (Anchor::default(), pool.anchor()));
     // A tachygram from a stamp in the middle of the run, not the seed's.
     let nf = Nullifier::from(Fp::from(members[7]));
 
@@ -314,7 +310,7 @@ fn summary_unspent_init_rejects_a_foreign_accumulator() {
     let mut pool = PoolSim::genesis_with(random_block(rng, 2, 2));
     pool.mine(random_block(rng, 2, 2));
     pool.mine(random_block(rng, 2, 2));
-    let (pcd, _members) = build_summary_pcd(rng, &pool, BlockHeight(0)..=pool.height());
+    let (pcd, _members) = build_summary_pcd(rng, &pool, (Anchor::default(), pool.anchor()));
     let nf = Nullifier::from(Fp::random(&mut *rng));
     let foreign: [Tachygram; 4] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
 
@@ -343,7 +339,8 @@ fn summary_unspent_init_fuses_with_a_per_stamp_segment() {
     let mut pool = PoolSim::genesis_with(random_block(rng, 2, 2));
     pool.mine(random_block(rng, 2, 2));
     pool.mine(random_block(rng, 2, 2));
-    let (pcd, members) = build_summary_pcd(rng, &pool, BlockHeight(0)..=pool.height().prev());
+    let end = pool.block(pool.height().prev()).anchor();
+    let (pcd, members) = build_summary_pcd(rng, &pool, (Anchor::default(), end));
     let (epoch, anchor_prev, anchor_last, _) = *pcd.data();
     let nf = Nullifier::from(Fp::random(&mut *rng));
 
@@ -394,7 +391,7 @@ fn summary_spendable_init_starts_a_spendable_from_a_summary() {
     let note = user.random_note(300);
     let mut pool = PoolSim::genesis_with(vec![vec![Tachygram::from(note.commitment())]]);
     pool.mine(random_block(rng, 2, 2));
-    let (summary_pcd, members) = build_summary_pcd(rng, &pool, BlockHeight(0)..=pool.height());
+    let (summary_pcd, members) = build_summary_pcd(rng, &pool, (Anchor::default(), pool.anchor()));
     let (epoch, _, anchor_last, _) = *summary_pcd.data();
     let deriv = user.derivation_pcd(rng, note, epoch, epoch.next());
 
@@ -437,7 +434,7 @@ fn summary_spendable_init_rejects_a_foreign_covering_sequence() {
     let other = user.random_note(700);
     let mut pool = PoolSim::genesis_with(vec![vec![Tachygram::from(note.commitment())]]);
     pool.mine(random_block(rng, 2, 2));
-    let (summary_pcd, members) = build_summary_pcd(rng, &pool, BlockHeight(0)..=pool.height());
+    let (summary_pcd, members) = build_summary_pcd(rng, &pool, (Anchor::default(), pool.anchor()));
     let (epoch, ..) = *summary_pcd.data();
     let deriv = user.derivation_pcd(rng, note, epoch, epoch.next());
     let foreign_deriv = user.derivation_pcd(rng, other, epoch, epoch.next());
@@ -474,7 +471,7 @@ fn summary_spendable_init_rejects_a_foreign_accumulator() {
     let note = user.random_note(300);
     let mut pool = PoolSim::genesis_with(vec![vec![Tachygram::from(note.commitment())]]);
     pool.mine(random_block(rng, 2, 2));
-    let (summary_pcd, _members) = build_summary_pcd(rng, &pool, BlockHeight(0)..=pool.height());
+    let (summary_pcd, _members) = build_summary_pcd(rng, &pool, (Anchor::default(), pool.anchor()));
     let (epoch, ..) = *summary_pcd.data();
     let deriv = user.derivation_pcd(rng, note, epoch, epoch.next());
     let foreign: [Tachygram; 4] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
@@ -510,7 +507,7 @@ fn summary_spendable_init_rejects_an_epoch_mismatch() {
     let note = user.random_note(300);
     let mut pool = PoolSim::genesis_with(vec![vec![Tachygram::from(note.commitment())]]);
     pool.mine(random_block(rng, 2, 2));
-    let (summary_pcd, members) = build_summary_pcd(rng, &pool, BlockHeight(0)..=pool.height());
+    let (summary_pcd, members) = build_summary_pcd(rng, &pool, (Anchor::default(), pool.anchor()));
     let (epoch, ..) = *summary_pcd.data();
     let claimed = epoch.next();
     let deriv = user.derivation_pcd(rng, note, epoch, EpochIndex(epoch.0 + 2));
@@ -546,7 +543,7 @@ fn summary_spendable_init_rejects_a_forged_nullifier() {
     let note = user.random_note(300);
     let mut pool = PoolSim::genesis_with(vec![vec![Tachygram::from(note.commitment())]]);
     pool.mine(random_block(rng, 2, 2));
-    let (summary_pcd, members) = build_summary_pcd(rng, &pool, BlockHeight(0)..=pool.height());
+    let (summary_pcd, members) = build_summary_pcd(rng, &pool, (Anchor::default(), pool.anchor()));
     let (epoch, ..) = *summary_pcd.data();
     let deriv = user.derivation_pcd(rng, note, epoch, epoch.next());
     let (creation_epoch, _genuine, nf_seq, complement_seq, summary_set) =
@@ -584,8 +581,7 @@ fn summary_spendable_init_rejects_an_absent_commitment() {
     let note = user.random_note(300);
     let mut pool = PoolSim::genesis_with(random_block(rng, 2, 2));
     pool.mine(random_block(rng, 2, 2));
-    let end = pool.height();
-    let (summary_pcd, members) = build_summary_pcd(rng, &pool, BlockHeight(0)..=end);
+    let (summary_pcd, members) = build_summary_pcd(rng, &pool, (Anchor::default(), pool.anchor()));
     let (epoch, ..) = *summary_pcd.data();
     let deriv = user.derivation_pcd(rng, note, epoch, epoch.next());
 
@@ -622,7 +618,7 @@ fn summary_spendable_init_rejects_a_published_nullifier() {
     let mut pool = PoolSim::genesis_with(vec![vec![Tachygram::from(note.commitment())]]);
     pool.mine(vec![vec![spent]]);
     pool.mine(random_block(rng, 2, 2));
-    let (summary_pcd, members) = build_summary_pcd(rng, &pool, BlockHeight(0)..=pool.height());
+    let (summary_pcd, members) = build_summary_pcd(rng, &pool, (Anchor::default(), pool.anchor()));
     let (epoch, ..) = *summary_pcd.data();
     let deriv = user.derivation_pcd(rng, note, epoch, epoch.next());
 

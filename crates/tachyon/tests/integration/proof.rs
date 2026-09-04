@@ -2664,7 +2664,7 @@ fn summary_spendable_syncs_to_a_spend() {
     let mut pool = PoolSim::genesis_with(vec![vec![Tachygram::from(note.commitment())]]);
     pool.mine(random_block(rng, 1, 2));
     pool.mine(random_block(rng, 1, 2));
-    let (summary_pcd, members) = build_summary_pcd(rng, &pool, BlockHeight(0)..=pool.height());
+    let (summary_pcd, members) = build_summary_pcd(rng, &pool, (Anchor::default(), pool.anchor()));
     let (epoch, _, anchor_last, _) = *summary_pcd.data();
     let deriv = user.derivation_pcd(rng, note, epoch, epoch.next());
 

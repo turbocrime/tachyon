@@ -280,10 +280,14 @@ pub fn random_block_with<RNG: CryptoRng>(
     stamps
 }
 
+/// A published stamp: the anchor its link opens at, its tachygrams, their
+/// commitment, and the anchor its link closes at.
+pub type StampEntry = (Anchor, Vec<Tachygram>, TachygramSetCommit, Anchor);
+
 #[derive(Clone, Debug)]
 pub struct PoolSimBlock {
     pub prev: Anchor,
-    pub stamps: Vec<(Anchor, Vec<Tachygram>, TachygramSetCommit, Anchor)>,
+    pub stamps: Vec<StampEntry>,
 }
 
 impl PoolSimBlock {
@@ -379,6 +383,47 @@ impl PoolSim {
         self.block(self.height()).anchor()
     }
 
+    /// The stamps whose anchor links run from `start` to `end`, in publication
+    /// order. Either endpoint may sit mid-block.
+    ///
+    /// The walk asserts the links chain, which is what keeps an epoch boundary
+    /// out of the span: a boundary tick advances the anchor without publishing
+    /// a stamp, so no run of stamps spans one.
+    pub fn stamps_between(&self, start: Anchor, end: Anchor) -> Vec<&StampEntry> {
+        // The cursor an endpoint opens: its block, and that block's first stamp
+        // the endpoint does not already cover. The span is that half-open
+        // interval of stamp slots, ordered by block and then by position.
+        let (start_height, start_inner) = self.anchor_index[&start];
+        let (end_height, end_inner) = self.anchor_index[&end];
+        let span = (start_height, start_inner)..(end_height, end_inner);
+
+        let entries: Vec<&StampEntry> = (start_height.0..=end_height.0)
+            .map(BlockHeight)
+            .flat_map(|height| {
+                self.block(height)
+                    .stamps
+                    .iter()
+                    .enumerate()
+                    .map(move |(position, entry)| ((height, position), entry))
+            })
+            .filter(|&(slot, _)| span.contains(&slot))
+            .map(|(_, entry)| entry)
+            .collect();
+
+        let (first, rest) = entries
+            .split_first()
+            .expect("anchor span must cover at least one stamp");
+        assert_eq!(first.0, start, "the span opens at its start anchor");
+        let mut cursor = first.3;
+        for entry in rest {
+            assert_eq!(entry.0, cursor, "the span's stamps chain without a gap");
+            cursor = entry.3;
+        }
+        assert_eq!(cursor, end, "the span closes at its end anchor");
+
+        entries
+    }
+
     pub fn advance(
         &mut self,
         count: u32,
@@ -460,57 +505,51 @@ pub(crate) fn build_anchor_chain_pcd<RNG: CryptoRng>(
     chain.expect("AnchorChain range must cover at least one stamp")
 }
 
-/// Build a [`Summary`](summary::Summary) covering blocks `range` in full,
-/// rooted at the block-start anchor of `*range.start()`, and return the
+/// Build a [`Summary`](summary::Summary) over the anchor span `(start, end)`,
+/// accumulating every stamp whose link falls inside it, and return the
 /// tachygrams it accumulates.
+///
+/// A summary is anchor-bound: it runs from one published anchor to another,
+/// carries whatever stamps lie between them, and holds them in a single
+/// polynomial. Block boundaries mean nothing to it, and the epoch boundary is
+/// excluded by [`PoolSim::stamps_between`].
 pub(crate) fn build_summary_pcd<RNG: CryptoRng>(
     rng: &mut RNG,
     pool: &PoolSim,
-    range: RangeInclusive<BlockHeight>,
+    (start, end): (Anchor, Anchor),
 ) -> (Pcd<summary::Summary>, Vec<Tachygram>) {
-    let start = *range.start();
-    let end = *range.end();
-    assert_eq!(start.epoch(), end.epoch(), "Summary single-epoch range");
-    assert!(start <= end);
+    let entries = pool.stamps_between(start, end);
+    let members: usize = entries.iter().map(|entry| entry.1.len()).sum();
+    assert!(members < 1 << Polynomial::R, "span exceeds one summary");
+    let epoch = pool.anchor_index[&start].0.epoch();
 
-    let mut stamps: Vec<Vec<Tachygram>> = Vec::new();
-    let mut height = start;
-    loop {
-        stamps.extend(pool.block(height).tachygrams());
-        if height >= end {
-            break;
-        }
-        height = height.next();
-    }
-    let members: usize = stamps.iter().map(Vec::len).sum();
-    assert!(members < 1 << Polynomial::R, "range exceeds one summary");
-
-    let (first, rest) = stamps
+    let (first, rest) = entries
         .split_first()
-        .expect("Summary range must cover at least one stamp");
+        .expect("anchor span must cover at least one stamp");
     let (seeded, ()) = PROOF_SYSTEM
         .seed(
             rng,
             summary::SummarySeed,
-            witness::summary_seed(((), ()), pool.block(start).prev, start.epoch(), first),
+            witness::summary_seed(((), ()), start, epoch, &first.1),
         )
         .expect("SummarySeed");
 
-    let mut acc = first.clone();
+    let mut acc = first.1.clone();
     let mut pcd = seeded;
-    for tgs in rest {
+    for entry in rest {
         let (advanced, ()) = PROOF_SYSTEM
             .fuse(
                 rng,
                 summary::SummaryAdvance,
-                witness::summary_advance((*pcd.data(), ()), &acc, tgs),
+                witness::summary_advance((*pcd.data(), ()), &acc, &entry.1),
                 pcd,
                 Proof::trivial().carry::<()>(()),
             )
             .expect("SummaryAdvance");
-        acc.extend(tgs.iter().copied());
+        acc.extend(entry.1.iter().copied());
         pcd = advanced;
     }
+    assert_eq!(pcd.data().2, end, "the summary closes at the span's end");
 
     (pcd, acc)
 }
