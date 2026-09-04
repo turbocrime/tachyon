@@ -26,6 +26,8 @@ mod fixtures;
 #[cfg(test)]
 mod proof;
 #[cfg(test)]
+mod qr;
+#[cfg(test)]
 mod stamp;
 #[cfg(test)]
 mod summary;

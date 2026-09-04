@@ -6,20 +6,27 @@
 //! ready to seed or fuse through `PROOF_SYSTEM`. Functions are named after the
 //! step they serve. Steps with an empty `()` witness need no utility.
 
+use pasta_curves::Fp;
 use ragu::{Header, Step};
 
 use crate::{
+    collections,
     keys::ProofAuthorizingKey,
     note::Note,
     nullifier::Nullifier,
     primitives::{
-        ActionDigest, ActionSetPoly, Anchor, EpochIndex, NfSeqPoly, Tachygram, TachygramSetPoly,
+        ActionDigest, ActionSetPoly, Anchor, EpochIndex, NfSeqPoly, QrFilterPoly, Tachygram,
+        TachygramSetPoly,
     },
     stamp::proof::{
         delegation::{NfDerive, NfMasterSeed, NullifierFuse},
         pool::{
             AnchorSeed, EndEpochUnspentSeed, SummaryUnspentInit, UnspentBind, UnspentFuse,
             UnspentSeed,
+        },
+        qr::{
+            QrBucketSeal, QrFilterDescend, QrFilterSeed, QrIntakeMerge, QrIntakeSplit,
+            QrResidueAttest, QrSideDescend, QrStampIntakeSeed, QrSummaryIntakeInit, QrUnspentInit,
         },
         spend::SpendBind,
         spendable::{SpendableInit, SummarySpendableInit},
@@ -334,6 +341,217 @@ pub fn summary_spendable_init(
         NfSeqPoly::new(deriv_start, window),
         complement_seq,
         summary_tgs.iter().copied().collect::<TachygramSetPoly>(),
+    )
+}
+
+/// Prepare the witness for [`QrSummaryIntakeInit`]: `(terminal)`.
+#[must_use]
+pub const fn qr_summary_intake_init(
+    (_left, _right): (
+        StepLeft<QrSummaryIntakeInit>,
+        StepRight<QrSummaryIntakeInit>,
+    ),
+    terminal: Anchor,
+) -> StepWitness<'static, QrSummaryIntakeInit> {
+    (terminal,)
+}
+
+/// Prepare the witness for [`QrStampIntakeSeed`]: `(anchor_prev, epoch,
+/// terminal, stamp_commit)`.
+#[must_use]
+pub fn qr_stamp_intake_seed(
+    (_left, _right): (StepLeft<QrStampIntakeSeed>, StepRight<QrStampIntakeSeed>),
+    anchor_prev: Anchor,
+    epoch: EpochIndex,
+    terminal: Anchor,
+    tgs: &[Tachygram],
+) -> StepWitness<'static, QrStampIntakeSeed> {
+    (
+        anchor_prev,
+        epoch,
+        terminal,
+        tgs.iter().copied().collect::<TachygramSetPoly>().commit(),
+    )
+}
+
+/// Prepare the witness for [`QrIntakeMerge`]: `(left_contents,
+/// right_contents, merged)`.
+///
+/// # Panics
+///
+/// Panics when the union exceeds the bucket cap.
+#[must_use]
+pub fn qr_intake_merge(
+    (_left, _right): (StepLeft<QrIntakeMerge>, StepRight<QrIntakeMerge>),
+    left_tgs: &[Tachygram],
+    right_tgs: &[Tachygram],
+) -> StepWitness<'static, QrIntakeMerge> {
+    assert!(
+        left_tgs.len() + right_tgs.len() <= collections::qr::MAX_BUCKET_SIZE,
+        "merged bucket exceeds the cap"
+    );
+    (
+        left_tgs.iter().copied().collect::<TachygramSetPoly>(),
+        right_tgs.iter().copied().collect::<TachygramSetPoly>(),
+        left_tgs
+            .iter()
+            .chain(right_tgs)
+            .copied()
+            .collect::<TachygramSetPoly>(),
+    )
+}
+
+/// Prepare the witness for [`QrIntakeSplit`]: `(contents, residue,
+/// non_residue)`.
+#[must_use]
+pub fn qr_intake_split(
+    (intake, _right): (StepLeft<QrIntakeSplit>, StepRight<QrIntakeSplit>),
+    members: &[Tachygram],
+) -> StepWitness<'static, QrIntakeSplit> {
+    let (.., discriminant, _contents) = intake;
+    let (residue, non_residue) = collections::qr::split(
+        members.iter().copied().map(Fp::from),
+        Fp::from(discriminant),
+    );
+    (
+        members.iter().copied().collect::<TachygramSetPoly>(),
+        residue
+            .iter()
+            .map(|&(member, _root)| Tachygram::from(member))
+            .collect(),
+        non_residue
+            .iter()
+            .map(|&(member, _root)| Tachygram::from(member))
+            .collect(),
+    )
+}
+
+/// Prepare the witness for [`QrSideDescend`]: `(bit, side_contents,
+/// interpolant, quotient)`.
+///
+/// `members` is the whole membership [`qr_intake_split`] partitioned; `side`
+/// is the residue side when set.
+#[must_use]
+pub fn qr_side_descend(
+    (sides, _right): (StepLeft<QrSideDescend>, StepRight<QrSideDescend>),
+    members: &[Tachygram],
+    side: bool,
+) -> StepWitness<'static, QrSideDescend> {
+    let (.., discriminant, _residue, _non_residue) = sides;
+    let (residue, non_residue) = collections::qr::split(
+        members.iter().copied().map(Fp::from),
+        Fp::from(discriminant),
+    );
+    let points = if side { residue } else { non_residue };
+    #[expect(clippy::expect_used, reason = "members of a split are distinct")]
+    let (interpolant, quotient) = collections::qr::decomposition(
+        &points,
+        collections::qr::class_multiplier(side),
+        Fp::from(discriminant),
+    )
+    .expect("members of a split are distinct");
+    (
+        side,
+        points
+            .iter()
+            .map(|&(member, _root)| Tachygram::from(member))
+            .collect(),
+        interpolant.into(),
+        quotient.into(),
+    )
+}
+
+/// Prepare the witness for [`QrFilterSeed`]: `(epoch, terminal)`.
+#[must_use]
+pub const fn qr_filter_seed(
+    (_left, _right): (StepLeft<QrFilterSeed>, StepRight<QrFilterSeed>),
+    epoch: EpochIndex,
+    terminal: Anchor,
+) -> StepWitness<'static, QrFilterSeed> {
+    (epoch, terminal)
+}
+
+/// Prepare the witness for [`QrFilterDescend`]: `(bit, side_filter,
+/// extended)`.
+///
+/// The filters replay from the header's profile and terminal. `side` is the
+/// residue side when set.
+#[must_use]
+pub fn qr_filter_descend(
+    (filter, _right): (StepLeft<QrFilterDescend>, StepRight<QrFilterDescend>),
+    side: bool,
+) -> StepWitness<'static, QrFilterDescend> {
+    let (_epoch, terminal, profile, next, ..) = filter;
+    let (residue, non_residue) = profile.discriminants_by_side(terminal);
+    let recorded = if side { residue } else { non_residue };
+    let extended = recorded
+        .iter()
+        .copied()
+        .chain([next])
+        .collect::<QrFilterPoly>();
+    (side, recorded.into_iter().collect(), extended)
+}
+
+/// Prepare the witness for [`QrResidueAttest`]: `(nf, residue_filter,
+/// interpolant, quotient, elapsed_seq)`.
+#[must_use]
+pub fn qr_residue_attest(
+    (filter, _right): (StepLeft<QrResidueAttest>, StepRight<QrResidueAttest>),
+    nf: Nullifier,
+) -> StepWitness<'static, QrResidueAttest> {
+    let (epoch, terminal, profile, ..) = filter;
+    let (residue, _non_residue) = profile.discriminants_by_side(terminal);
+    #[expect(
+        clippy::expect_used,
+        reason = "a path's discriminants are distinct and each root is on its side"
+    )]
+    let (interpolant, quotient) = profile
+        .class_decomposition(terminal, true, Fp::from(nf))
+        .expect("a path's discriminants are distinct");
+    (
+        nf,
+        residue.into_iter().collect(),
+        interpolant,
+        quotient,
+        NfSeqPoly::new(epoch, &[nf]),
+    )
+}
+
+/// Prepare the witness for [`QrBucketSeal`]: `(prev_last)`.
+///
+/// `prev_last` is the last anchor of the preceding epoch, the zero anchor for
+/// epoch zero.
+#[must_use]
+pub const fn qr_bucket_seal(
+    (_left, _right): (StepLeft<QrBucketSeal>, StepRight<QrBucketSeal>),
+    prev_last: Anchor,
+) -> StepWitness<'static, QrBucketSeal> {
+    (prev_last,)
+}
+
+/// Prepare the witness for [`QrUnspentInit`]: `(non_residue_filter,
+/// interpolant, quotient, contents)`.
+#[must_use]
+pub fn qr_unspent_init(
+    (claim, bucket): (StepLeft<QrUnspentInit>, StepRight<QrUnspentInit>),
+    bucket_members: &[Tachygram],
+) -> StepWitness<'static, QrUnspentInit> {
+    let (_epoch, terminal, profile, _next, nf, ..) = claim;
+    let (_bucket_epoch, _bucket_terminal, _start, _bucket_profile, _discriminant, _contents) =
+        bucket;
+    let (_residue, non_residue) = profile.discriminants_by_side(terminal);
+    #[expect(
+        clippy::expect_used,
+        reason = "a path's discriminants are distinct and each root is on its side"
+    )]
+    let (interpolant, quotient) = profile
+        .class_decomposition(terminal, false, Fp::from(nf))
+        .expect("a path's discriminants are distinct");
+    (
+        non_residue.into_iter().collect(),
+        interpolant,
+        quotient,
+        bucket_members.iter().copied().collect(),
     )
 }
 

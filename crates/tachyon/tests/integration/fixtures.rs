@@ -1,7 +1,7 @@
 extern crate alloc;
 
 use alloc::{collections::BTreeMap, vec, vec::Vec};
-use core::{cell::RefCell, iter, ops::RangeInclusive};
+use core::{cell::RefCell, iter, mem, ops::RangeInclusive};
 
 use ff::{Field as _, PrimeField as _};
 use pasta_curves::Fp;
@@ -11,8 +11,8 @@ use ragu_pasta::PoseidonFp;
 use rand::{SeedableRng as _, rngs::StdRng};
 use rand_core::CryptoRng;
 use zcash_tachyon::{
-    ActionSetPoly, Anchor, BlockHeight, EpochIndex, Tachygram, TachygramSetCommit,
-    TachygramSetPoly,
+    ActionSetPoly, Anchor, BlockHeight, EpochIndex, QrDiscriminant, QrProfile, Tachygram,
+    TachygramSetCommit, TachygramSetPoly,
     action::{self, Action},
     bundle::{self, Bundle},
     digest::blake2b,
@@ -24,7 +24,7 @@ use zcash_tachyon::{
     stamp::{
         PointerStamp, ProofStamp, StampState,
         proof::{
-            PROOF_SYSTEM, delegation, pool, spendable,
+            PROOF_SYSTEM, delegation, pool, qr, spendable,
             stamp::{MergeStamp, StampHeader},
             summary,
         },
@@ -424,6 +424,11 @@ impl PoolSim {
         entries
     }
 
+    /// The epoch a stamp entered at `anchor` belongs to.
+    pub fn epoch_at(&self, anchor: Anchor) -> EpochIndex {
+        self.anchor_index[&anchor].0.epoch()
+    }
+
     pub fn advance(
         &mut self,
         count: u32,
@@ -552,6 +557,281 @@ pub(crate) fn build_summary_pcd<RNG: CryptoRng>(
     assert_eq!(pcd.data().2, end, "the summary closes at the span's end");
 
     (pcd, acc)
+}
+
+/// An intake with the members its contents commit.
+pub(crate) struct QrIntakeEntry {
+    pub pcd: Pcd<qr::QrIntake>,
+    pub members: Vec<Tachygram>,
+}
+
+/// A sealed bucket with the members its contents commit.
+pub(crate) struct QrBucketEntry {
+    pub pcd: Pcd<qr::QrBucket>,
+    pub members: Vec<Tachygram>,
+}
+
+/// Seal `intake`; `prev_last` is the last anchor of the preceding epoch.
+pub(crate) fn seal_qr_intake<RNG: CryptoRng>(
+    rng: &mut RNG,
+    intake: QrIntakeEntry,
+    prev_last: Anchor,
+) -> QrBucketEntry {
+    let witness = witness::qr_bucket_seal((*intake.pcd.data(), ()), prev_last);
+    let (pcd, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            qr::QrBucketSeal,
+            witness,
+            intake.pcd,
+            Proof::trivial().carry::<()>(()),
+        )
+        .expect("QrBucketSeal");
+    QrBucketEntry {
+        pcd,
+        members: intake.members,
+    }
+}
+
+/// Root an intake on one published stamp, which a summary need not be able to
+/// hold.
+pub(crate) fn seed_qr_stamp_intake<RNG: CryptoRng>(
+    rng: &mut RNG,
+    pool: &PoolSim,
+    stamp: &StampEntry,
+    terminal: Anchor,
+) -> QrIntakeEntry {
+    let (entry, members) = (stamp.0, stamp.1.clone());
+    let epoch = pool.epoch_at(entry);
+    let witness = witness::qr_stamp_intake_seed(((), ()), entry, epoch, terminal, &members);
+    let (pcd, ()) = PROOF_SYSTEM
+        .seed(rng, qr::QrStampIntakeSeed, witness)
+        .expect("QrStampIntakeSeed");
+    QrIntakeEntry { pcd, members }
+}
+
+/// Open root intakes over the anchor span `(start, end)`, each holding at most
+/// `capacity` members.
+///
+/// A run of consecutive stamps closes before the next stamp would carry it past
+/// `capacity`, and is rooted over its summary. A stamp that alone exceeds
+/// `capacity` is rooted on its own through
+/// [`QrStampIntakeSeed`](qr::QrStampIntakeSeed), which takes a stamp no summary
+/// could hold. Chunking counts members, and is indifferent to block boundaries.
+fn build_qr_roots<RNG: CryptoRng>(
+    rng: &mut RNG,
+    pool: &PoolSim,
+    (start, end): (Anchor, Anchor),
+    terminal: Anchor,
+    capacity: usize,
+) -> Vec<QrIntakeEntry> {
+    let mut runs: Vec<Vec<&StampEntry>> = Vec::new();
+    let mut open: Vec<&StampEntry> = Vec::new();
+    let mut held = 0;
+    for entry in pool.stamps_between(start, end) {
+        let size = entry.1.len();
+        if !open.is_empty() && held + size > capacity {
+            runs.push(mem::take(&mut open));
+            held = 0;
+        }
+        held += size;
+        open.push(entry);
+        if size > capacity {
+            runs.push(mem::take(&mut open));
+            held = 0;
+        }
+    }
+    if !open.is_empty() {
+        runs.push(open);
+    }
+
+    let mut roots = Vec::with_capacity(runs.len());
+    for run in runs {
+        let (first, last) = (
+            run.first().expect("nonempty run"),
+            run.last().expect("nonempty run"),
+        );
+        if run.len() == 1 && first.1.len() > capacity {
+            roots.push(seed_qr_stamp_intake(rng, pool, first, terminal));
+            continue;
+        }
+        let (summary, members) = build_summary_pcd(rng, pool, (first.0, last.3));
+        let witness = witness::qr_summary_intake_init((*summary.data(), ()), terminal);
+        let (pcd, ()) = PROOF_SYSTEM
+            .fuse(
+                rng,
+                qr::QrSummaryIntakeInit,
+                witness,
+                summary,
+                Proof::trivial().carry::<()>(()),
+            )
+            .expect("QrSummaryIntakeInit");
+        roots.push(QrIntakeEntry { pcd, members });
+    }
+    roots
+}
+
+/// Merge intakes left to right, closing the accumulator at a profile change or
+/// whenever the next merge would carry more than `capacity` members.
+///
+/// A layer holds its intakes grouped by profile and span-ordered within each
+/// group, so neighbours that share a profile are exactly the pairs whose spans
+/// meet.
+fn merge_qr_run<RNG: CryptoRng>(
+    rng: &mut RNG,
+    intakes: Vec<QrIntakeEntry>,
+    capacity: usize,
+) -> Vec<QrIntakeEntry> {
+    let joins = |left: &QrIntakeEntry, right: &QrIntakeEntry| {
+        left.pcd.data().4 == right.pcd.data().4
+            && left.members.len() + right.members.len() <= capacity
+    };
+
+    let mut merged: Vec<QrIntakeEntry> = Vec::new();
+    let mut acc: Option<QrIntakeEntry> = None;
+    for right in intakes {
+        acc = match acc {
+            None => Some(right),
+            Some(left) if !joins(&left, &right) => {
+                merged.push(left);
+                Some(right)
+            },
+            Some(left) => {
+                let witness = witness::qr_intake_merge(
+                    (*left.pcd.data(), *right.pcd.data()),
+                    &left.members,
+                    &right.members,
+                );
+                let members = left
+                    .members
+                    .iter()
+                    .chain(&right.members)
+                    .copied()
+                    .collect::<Vec<_>>();
+                let (pcd, ()) = PROOF_SYSTEM
+                    .fuse(rng, qr::QrIntakeMerge, witness, left.pcd, right.pcd)
+                    .expect("QrIntakeMerge");
+                Some(QrIntakeEntry { pcd, members })
+            },
+        };
+    }
+    merged.extend(acc);
+    merged
+}
+
+/// Split one intake and descend into both sides.
+pub(crate) fn split_qr_intake<RNG: CryptoRng>(
+    rng: &mut RNG,
+    intake: QrIntakeEntry,
+) -> (QrIntakeEntry, QrIntakeEntry) {
+    let (.., discriminant, _contents) = *intake.pcd.data();
+    let split_witness = witness::qr_intake_split((*intake.pcd.data(), ()), &intake.members);
+    let (sides, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            qr::QrIntakeSplit,
+            split_witness,
+            intake.pcd,
+            Proof::trivial().carry::<()>(()),
+        )
+        .expect("QrIntakeSplit");
+
+    let mut descend = |side: bool| {
+        let descend_witness = witness::qr_side_descend((*sides.data(), ()), &intake.members, side);
+        let members = intake
+            .members
+            .iter()
+            .copied()
+            .filter(|&member| qr::classify(Fp::from(member), Fp::from(discriminant)).0 == side)
+            .collect::<Vec<_>>();
+        let (pcd, ()) = PROOF_SYSTEM
+            .fuse(
+                rng,
+                qr::QrSideDescend,
+                descend_witness,
+                sides.clone(),
+                Proof::trivial().carry::<()>(()),
+            )
+            .expect("QrSideDescend");
+        QrIntakeEntry { pcd, members }
+    };
+    let residue = descend(true);
+    let non_residue = descend(false);
+    (residue, non_residue)
+}
+
+/// Route the anchor span `(start, end)`'s tachygrams to `depth`, over intakes
+/// holding at most `capacity` members each.
+///
+/// Each layer splits every intake, descends into both sides, and merges
+/// same-profile neighbours as far as `capacity` allows. A profile ends up as
+/// one intake only where the span's members at that profile fit one
+/// polynomial, and as a run of adjacent intakes otherwise.
+pub(crate) fn build_qr_partition<RNG: CryptoRng>(
+    rng: &mut RNG,
+    pool: &PoolSim,
+    (start, end): (Anchor, Anchor),
+    terminal: Anchor,
+    capacity: usize,
+    depth: u64,
+) -> Vec<QrIntakeEntry> {
+    let mut layer = build_qr_roots(rng, pool, (start, end), terminal, capacity);
+    for _ in 0..depth {
+        let mut residue = Vec::new();
+        let mut non_residue = Vec::new();
+        for intake in layer {
+            let (left, right) = split_qr_intake(rng, intake);
+            residue.push(left);
+            non_residue.push(right);
+        }
+        layer = merge_qr_run(rng, residue, capacity);
+        layer.extend(merge_qr_run(rng, non_residue, capacity));
+    }
+    layer
+}
+
+/// Build `profile`'s [`QrFilter`](qr::QrFilter): a seed, then one descent per
+/// bit of the path.
+pub(crate) fn build_qr_filter_pcd<RNG: CryptoRng>(
+    rng: &mut RNG,
+    epoch: EpochIndex,
+    terminal: Anchor,
+    profile: QrProfile,
+) -> Pcd<qr::QrFilter> {
+    let (seeded, ()) = PROOF_SYSTEM
+        .seed(
+            rng,
+            qr::QrFilterSeed,
+            witness::qr_filter_seed(((), ()), epoch, terminal),
+        )
+        .expect("QrFilterSeed");
+
+    let mut pcd = seeded;
+    for side in profile.path() {
+        let witness = witness::qr_filter_descend((*pcd.data(), ()), side);
+        let (descended, ()) = PROOF_SYSTEM
+            .fuse(
+                rng,
+                qr::QrFilterDescend,
+                witness,
+                pcd,
+                Proof::trivial().carry::<()>(()),
+            )
+            .expect("QrFilterDescend");
+        pcd = descended;
+    }
+    pcd
+}
+
+/// The profile a value takes at `depth` levels of an epoch's discriminants.
+pub(crate) fn qr_profile_of(value: Fp, terminal: Anchor, depth: u64) -> QrProfile {
+    let mut profile = QrProfile::ROOT;
+    let mut discriminant = QrDiscriminant::of(terminal);
+    for _ in 0..depth {
+        profile = profile.descend(qr::classify(value, Fp::from(discriminant)).0);
+        discriminant = discriminant.next();
+    }
+    profile
 }
 
 pub(crate) fn build_unspent_seed_pcd<RNG: CryptoRng>(

@@ -3,6 +3,7 @@ mod anchor;
 mod block_height;
 pub mod effect;
 mod epoch;
+mod qr;
 mod seq;
 mod sets;
 mod tachygram;
@@ -12,6 +13,10 @@ pub use anchor::{Anchor, AnchorError};
 pub use block_height::BlockHeight;
 pub use effect::Effect;
 pub use epoch::{EpochDiff, EpochIndex};
+pub use qr::{
+    QrDiscriminant, QrFilterCommit, QrFilterPoly, QrInterpolantCommit, QrInterpolantPoly,
+    QrProfile, QrQuotientCommit, QrQuotientPoly,
+};
 pub use seq::{NfSeqCommit, NfSeqPoly};
 pub use sets::{ActionSetCommit, ActionSetPoly, TachygramSetCommit, TachygramSetPoly};
 pub use tachygram::Tachygram;
