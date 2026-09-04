@@ -24,7 +24,7 @@ use ragu::{
     constraint::{conditional_enforce_equal, enforce_equal_point, enforce_nonzero, enforce_zero},
 };
 
-use super::delegation::NullifierDerivation;
+use super::{delegation::NullifierDerivation, summary::Summary};
 use crate::{
     collections::indexed_multiset,
     note::{self},
@@ -623,6 +623,78 @@ impl Step for UnspentBind {
                 (unspent_epoch_start, unspent_nf_start),
                 (unspent_epoch_last, unspent_nf_last),
                 unspent_anchor_last,
+            ),
+            (),
+        ))
+    }
+}
+
+/// Start an [`ArbitraryUnspent`] from a [`Summary`]: [`UnspentSeed`] with one
+/// exclusion query over the whole run.
+///
+/// Committed polynomials: `summary_set`, `elapsed_seq`; two oracles.
+///
+/// # Soundness
+///
+/// `summary_set` is pinned to the header by commit-equality; epoch and anchors
+/// are threaded. `nf` is free, pinned by absorbing $G_0 \cdot \mathsf{nf}$, so
+/// the identity forces the one-member `elapsed` to the emitted pair.
+#[derive(Debug)]
+pub struct SummaryUnspentInit;
+
+impl Step for SummaryUnspentInit {
+    type Aux<'source> = ();
+    type Left = Summary;
+    type Output = ArbitraryUnspent;
+    type Right = ();
+    /// `(nf, summary_set, elapsed_seq)`.
+    type Witness<'source> = (Nullifier, TachygramSetPoly, NfSeqPoly);
+
+    const INDEX: Index = Index::new(19);
+
+    fn witness<'source>(
+        &self,
+        ctx: &mut ragu::StepCtx<'_>,
+        (nf, summary_set, elapsed_seq): Self::Witness<'source>,
+        (summary_epoch, summary_anchor_prev, summary_anchor_last, summary_acc_commit): <Self::Left as Header>::Data,
+        _right: <Self::Right as Header>::Data,
+    ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
+        enforce_equal_point(
+            Eq::from(summary_set.commit()),
+            Eq::from(summary_acc_commit),
+            "SummaryUnspentInit: accumulator does not match header",
+        )?;
+
+        let tested = Fp::from(nf);
+        let eval = summary_set.eval(tested);
+        ctx.enforce_poly_query(summary_set.commit().into(), tested, eval)?;
+        enforce_nonzero(eval, "SummaryUnspentInit: found nullifier in summary")?;
+        enforce_nonzero(tested, "SummaryUnspentInit: tested nullifier is zero")?;
+
+        #[expect(clippy::expect_used, reason = "constant size")]
+        let &g0 = Pasta::host_generators(Pasta::baked())
+            .g()
+            .first()
+            .expect("at least one generator");
+        let elapsed_commit = elapsed_seq.commit();
+        let z = ctx.derive_challenge(&[elapsed_commit.into(), g0 * tested])?;
+        let elapsed_at_z = elapsed_seq.eval(z);
+
+        let member_at_z = indexed_multiset::direct_eval([(summary_epoch.into(), nf.into())], z);
+
+        enforce_zero(
+            elapsed_at_z - member_at_z,
+            "SummaryUnspentInit: elapsed does not match the tested pair",
+        )?;
+        ctx.enforce_poly_query(elapsed_commit.into(), z, elapsed_at_z)?;
+
+        Ok((
+            (
+                summary_anchor_prev,
+                (summary_epoch, nf),
+                elapsed_commit,
+                (summary_epoch, nf),
+                summary_anchor_last,
             ),
             (),
         ))

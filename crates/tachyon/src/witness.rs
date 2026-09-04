@@ -17,10 +17,14 @@ use crate::{
     },
     stamp::proof::{
         delegation::{NfDerive, NfMasterSeed, NullifierFuse},
-        pool::{AnchorSeed, EndEpochUnspentSeed, UnspentBind, UnspentFuse, UnspentSeed},
+        pool::{
+            AnchorSeed, EndEpochUnspentSeed, SummaryUnspentInit, UnspentBind, UnspentFuse,
+            UnspentSeed,
+        },
         spend::SpendBind,
-        spendable::SpendableInit,
+        spendable::{SpendableInit, SummarySpendableInit},
         stamp::MergeStamp,
+        summary::{SummaryAdvance, SummarySeed},
     },
 };
 
@@ -248,6 +252,88 @@ pub fn anchor_seed(
         start,
         epoch,
         tgs.iter().copied().collect::<TachygramSetPoly>().commit(),
+    )
+}
+
+/// Prepare the witness for [`SummarySeed`]:
+/// `(anchor_prev, epoch, stamp_commit)`.
+#[must_use]
+pub fn summary_seed(
+    (_left, _right): (StepLeft<SummarySeed>, StepRight<SummarySeed>),
+    anchor_prev: Anchor,
+    epoch: EpochIndex,
+    tgs: &[Tachygram],
+) -> StepWitness<'static, SummarySeed> {
+    (
+        anchor_prev,
+        epoch,
+        tgs.iter().copied().collect::<TachygramSetPoly>().commit(),
+    )
+}
+
+/// Prepare the witness for [`SummaryAdvance`]: `(acc, extended, stamp)`.
+#[must_use]
+pub fn summary_advance(
+    (_left, _right): (StepLeft<SummaryAdvance>, StepRight<SummaryAdvance>),
+    acc_tgs: &[Tachygram],
+    stamp_tgs: &[Tachygram],
+) -> StepWitness<'static, SummaryAdvance> {
+    let extended = acc_tgs
+        .iter()
+        .chain(stamp_tgs.iter())
+        .copied()
+        .collect::<TachygramSetPoly>();
+    (
+        acc_tgs.iter().copied().collect::<TachygramSetPoly>(),
+        extended,
+        stamp_tgs.iter().copied().collect::<TachygramSetPoly>(),
+    )
+}
+
+/// Prepare the witness for [`SummaryUnspentInit`]:
+/// `(nf, summary_set, elapsed_seq)`.
+#[must_use]
+pub fn summary_unspent_init(
+    (summary, _right): (StepLeft<SummaryUnspentInit>, StepRight<SummaryUnspentInit>),
+    summary_tgs: &[Tachygram],
+    nf: Nullifier,
+) -> StepWitness<'static, SummaryUnspentInit> {
+    let (summary_epoch, ..) = summary;
+    (
+        nf,
+        summary_tgs.iter().copied().collect::<TachygramSetPoly>(),
+        NfSeqPoly::new(summary_epoch, &[nf]),
+    )
+}
+
+/// Prepare the witness for [`SummarySpendableInit`]: `(creation_epoch,
+/// present_nf, nf_seq, complement_seq, summary_set)`. `window` as at
+/// [`spendable_init`].
+#[must_use]
+#[expect(
+    clippy::indexing_slicing,
+    clippy::as_conversions,
+    reason = "the derivation header's range covers the window"
+)]
+pub fn summary_spendable_init(
+    (deriv, _summary): (
+        StepLeft<SummarySpendableInit>,
+        StepRight<SummarySpendableInit>,
+    ),
+    summary_tgs: &[Tachygram],
+    creation_epoch: EpochIndex,
+    window: &[Nullifier],
+) -> StepWitness<'static, SummarySpendableInit> {
+    let (_, deriv_start, ..) = deriv;
+    let lo = (creation_epoch.0 - deriv_start.0) as usize;
+    let complement_seq = NfSeqPoly::new(deriv_start, &window[..lo])
+        * NfSeqPoly::new(creation_epoch.next(), &window[lo + 1..]);
+    (
+        creation_epoch,
+        window[lo],
+        NfSeqPoly::new(deriv_start, window),
+        complement_seq,
+        summary_tgs.iter().copied().collect::<TachygramSetPoly>(),
     )
 }
 

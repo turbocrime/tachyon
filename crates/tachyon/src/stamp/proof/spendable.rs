@@ -4,7 +4,8 @@
 //! current epoch and its nullifier `F_mk(epoch)` there, its pool position,
 //! and the minted-note commitment binding the lineage (and its value) across
 //! lifts. [`SpendableInit`]
-//! bootstraps it from a minted note; [`SpendableLift`] advances it over
+//! bootstraps it from a minted note and [`SummarySpendableInit`] from a
+//! [`Summary`] covering the creation; [`SpendableLift`] advances it over
 //! [`Unspent`] segments.
 
 extern crate alloc;
@@ -14,10 +15,10 @@ use alloc::{vec, vec::Vec};
 use pasta_curves::{Ep, Eq, Fp, Fq};
 use ragu::{
     Cycle as _, FixedGenerators as _, Header, Index, Pasta, Step, Suffix,
-    constraint::{enforce_equal_point, enforce_zero},
+    constraint::{enforce_equal_point, enforce_nonzero, enforce_zero},
 };
 
-use super::{delegation::NullifierDerivation, pool::Unspent};
+use super::{delegation::NullifierDerivation, pool::Unspent, summary::Summary};
 use crate::{
     collections::indexed_multiset,
     note,
@@ -164,6 +165,108 @@ impl Step for SpendableInit {
             .map_err(|_e| ragu::Error::InvalidWitness("invalid anchor step".into()))?;
 
         Ok(((cm, (creation_epoch, present_nf), post_cm_anchor), ()))
+    }
+}
+
+/// Bootstrap a spendable from a [`Summary`] covering the note's creation.
+///
+/// [`SpendableInit`] with the summary in place of the creating stamp: `cm` is
+/// proven among the summarized tachygrams, `present_nf` absent from them, and
+/// the spendable emits at `anchor_last`. The same divisibility read forces
+/// `present_nf` to the window's member at the creation epoch.
+///
+/// Committed polynomials: `nf_seq`, `complement_seq`, `summary_set`; three
+/// oracles.
+///
+/// # Soundness
+///
+/// The summary's `epoch` is absorbed into every anchor link, so a wrong epoch
+/// brackets the summary off the published anchor sequence, and
+/// `summary_epoch == creation_epoch` carries that binding into the read.
+/// Stamps before the creation exclude `present_nf` vacuously, so one
+/// accumulator serves both openings.
+#[derive(Debug)]
+pub struct SummarySpendableInit;
+
+impl Step for SummarySpendableInit {
+    type Aux<'source> = ();
+    type Left = NullifierDerivation;
+    type Output = SpendableHeader;
+    type Right = Summary;
+    /// `(creation_epoch, present_nf, nf_seq, complement_seq, summary_set)`.
+    type Witness<'source> = (
+        EpochIndex,
+        Nullifier,
+        NfSeqPoly,
+        NfSeqPoly,
+        TachygramSetPoly,
+    );
+
+    const INDEX: Index = Index::new(20);
+
+    fn witness<'source>(
+        &self,
+        ctx: &mut ragu::StepCtx<'_>,
+        (creation_epoch, present_nf, nf_seq, complement_seq, summary_set): Self::Witness<'source>,
+        (cm, _, nf_commit, _): <Self::Left as Header>::Data,
+        (summary_epoch, _summary_anchor_prev, summary_anchor_last, summary_acc_commit): <Self::Right as Header>::Data,
+    ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
+        enforce_equal_point(
+            Eq::from(nf_seq.commit()),
+            Eq::from(nf_commit),
+            "SummarySpendableInit: covering sequence does not match header",
+        )?;
+        enforce_equal_point(
+            Eq::from(summary_set.commit()),
+            Eq::from(summary_acc_commit),
+            "SummarySpendableInit: accumulator does not match header",
+        )?;
+        enforce_zero(
+            Fp::from(summary_epoch) - Fp::from(creation_epoch),
+            "SummarySpendableInit: summary epoch must match the creation epoch",
+        )?;
+
+        // The 1-wide read at the creation epoch, as at `SpendableInit`.
+        #[expect(clippy::expect_used, reason = "constant size")]
+        let &g0 = Pasta::host_generators(Pasta::baked())
+            .g()
+            .first()
+            .expect("at least one generator");
+        let z = ctx.derive_challenge(&[
+            nf_seq.commit().into(),
+            complement_seq.commit().into(),
+            g0 * Fp::from(present_nf),
+        ])?;
+        let nf_seq_at_z = nf_seq.eval(z);
+        let complement_at_z = complement_seq.eval(z);
+
+        let read_at_z =
+            indexed_multiset::direct_eval([(creation_epoch.into(), present_nf.into())], z);
+        enforce_zero(
+            nf_seq_at_z - read_at_z * complement_at_z,
+            "SummarySpendableInit: nullifier does not match the derivation",
+        )?;
+        ctx.enforce_poly_query(nf_seq.commit().into(), z, nf_seq_at_z)?;
+        ctx.enforce_poly_query(complement_seq.commit().into(), z, complement_at_z)?;
+
+        // Inclusion: cm ∈ summary ⇔ the accumulator vanishes at cm.
+        let cm_in_summary = summary_set.eval(cm.into());
+        ctx.enforce_poly_query(summary_set.commit().into(), cm.into(), cm_in_summary)?;
+        enforce_zero(
+            cm_in_summary,
+            "SummarySpendableInit: commitment not in summary",
+        )?;
+
+        // Exclusion: nf ∉ summary ⇔ the accumulator is nonzero at nf.
+        let nf_point = Fp::from(present_nf);
+        let nf_in_summary = summary_set.eval(nf_point);
+        ctx.enforce_poly_query(summary_set.commit().into(), nf_point, nf_in_summary)?;
+        enforce_nonzero(
+            nf_in_summary,
+            "SummarySpendableInit: found nullifier in summary",
+        )?;
+
+        Ok(((cm, (creation_epoch, present_nf), summary_anchor_last), ()))
     }
 }
 
