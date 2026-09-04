@@ -5,7 +5,7 @@ use core::{cell::RefCell, iter, ops::RangeInclusive};
 
 use ff::{Field as _, PrimeField as _};
 use pasta_curves::Fp;
-use ragu::{Pcd, Proof};
+use ragu::{Pcd, Polynomial, Proof};
 use ragu_arithmetic::PoseidonPermutation as _;
 use ragu_pasta::PoseidonFp;
 use rand::{SeedableRng as _, rngs::StdRng};
@@ -26,6 +26,7 @@ use zcash_tachyon::{
         proof::{
             PROOF_SYSTEM, delegation, pool, spendable,
             stamp::{MergeStamp, StampHeader},
+            summary,
         },
     },
     value, witness,
@@ -457,6 +458,61 @@ pub(crate) fn build_anchor_chain_pcd<RNG: CryptoRng>(
     }
 
     chain.expect("AnchorChain range must cover at least one stamp")
+}
+
+/// Build a [`Summary`](summary::Summary) covering blocks `range` in full,
+/// rooted at the block-start anchor of `*range.start()`, and return the
+/// tachygrams it accumulates.
+pub(crate) fn build_summary_pcd<RNG: CryptoRng>(
+    rng: &mut RNG,
+    pool: &PoolSim,
+    range: RangeInclusive<BlockHeight>,
+) -> (Pcd<summary::Summary>, Vec<Tachygram>) {
+    let start = *range.start();
+    let end = *range.end();
+    assert_eq!(start.epoch(), end.epoch(), "Summary single-epoch range");
+    assert!(start <= end);
+
+    let mut stamps: Vec<Vec<Tachygram>> = Vec::new();
+    let mut height = start;
+    loop {
+        stamps.extend(pool.block(height).tachygrams());
+        if height >= end {
+            break;
+        }
+        height = height.next();
+    }
+    let members: usize = stamps.iter().map(Vec::len).sum();
+    assert!(members < 1 << Polynomial::R, "range exceeds one summary");
+
+    let (first, rest) = stamps
+        .split_first()
+        .expect("Summary range must cover at least one stamp");
+    let (seeded, ()) = PROOF_SYSTEM
+        .seed(
+            rng,
+            summary::SummarySeed,
+            witness::summary_seed(((), ()), pool.block(start).prev, start.epoch(), first),
+        )
+        .expect("SummarySeed");
+
+    let mut acc = first.clone();
+    let mut pcd = seeded;
+    for tgs in rest {
+        let (advanced, ()) = PROOF_SYSTEM
+            .fuse(
+                rng,
+                summary::SummaryAdvance,
+                witness::summary_advance((*pcd.data(), ()), &acc, tgs),
+                pcd,
+                Proof::trivial().carry::<()>(()),
+            )
+            .expect("SummaryAdvance");
+        acc.extend(tgs.iter().copied());
+        pcd = advanced;
+    }
+
+    (pcd, acc)
 }
 
 pub(crate) fn build_unspent_seed_pcd<RNG: CryptoRng>(

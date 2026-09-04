@@ -27,3 +27,5 @@ mod fixtures;
 mod proof;
 #[cfg(test)]
 mod stamp;
+#[cfg(test)]
+mod summary;

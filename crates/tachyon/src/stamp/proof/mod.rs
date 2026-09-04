@@ -11,6 +11,7 @@ pub mod pool;
 pub mod spend;
 pub mod spendable;
 pub mod stamp;
+pub mod summary;
 
 use lazy_static::lazy_static;
 pub use ragu::Proof;
@@ -35,6 +36,10 @@ fn make_app() -> Result<Application, ragu::Error> {
         .register(stamp::MergeStamp)?
         .register(stamp::StampLift)?
         .register(delegation::NullifierFuse)?
+        .register(summary::SummarySeed)?
+        .register(summary::SummaryAdvance)?
+        .register(pool::SummaryUnspentInit)?
+        .register(spendable::SummarySpendableInit)?
         .finalize()
 }
 

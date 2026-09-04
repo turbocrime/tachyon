@@ -26,8 +26,8 @@ use zcash_tachyon::{
 
 use crate::fixtures::{
     PoolSim, SyncSim, WalletSim, build_anchor_chain_pcd, build_output_plan, build_output_stamp,
-    build_unspent_pcd_between_anchors, build_unspent_pcd_between_blocks, build_unspent_seed_pcd,
-    random_block, random_block_with, shared_sk, spend_witness,
+    build_summary_pcd, build_unspent_pcd_between_anchors, build_unspent_pcd_between_blocks,
+    build_unspent_seed_pcd, random_block, random_block_with, shared_sk, spend_witness,
 };
 
 fn mine_cm_block(rng: &mut StdRng, pool: &mut PoolSim, cm: note::Commitment) -> BlockHeight {
@@ -2652,4 +2652,44 @@ fn one_window_serves_init_bind_and_spend() {
     let bind_pcd = honest_spend_bind(rng, &user, &note, spendable, epoch);
     assert_eq!(bind_pcd.data().1, user.nf_at(&note, epoch));
     assert_eq!(bind_pcd.data().2, user.nf_at(&note, epoch.next()));
+}
+
+/// A summary-started spendable lifts across the epoch boundary and binds to a
+/// spend like any other.
+#[test]
+fn summary_spendable_syncs_to_a_spend() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let user = WalletSim::new(shared_sk());
+    let note = user.random_note(300);
+    let mut pool = PoolSim::genesis_with(vec![vec![Tachygram::from(note.commitment())]]);
+    pool.mine(random_block(rng, 1, 2));
+    pool.mine(random_block(rng, 1, 2));
+    let (summary_pcd, members) = build_summary_pcd(rng, &pool, BlockHeight(0)..=pool.height());
+    let (epoch, _, anchor_last, _) = *summary_pcd.data();
+    let deriv = user.derivation_pcd(rng, note, epoch, epoch.next());
+
+    let (spendable, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            spendable::SummarySpendableInit,
+            witness::summary_spendable_init(
+                (*deriv.data(), *summary_pcd.data()),
+                &members,
+                epoch,
+                &user.covering_window(&note, &deriv),
+            ),
+            deriv,
+            summary_pcd,
+        )
+        .expect("SummarySpendableInit");
+    assert_eq!(spendable.data().2, anchor_last);
+
+    while pool.height().0 < EPOCH_SIZE {
+        pool.mine(random_block(rng, 1, 2));
+    }
+    let lifted = user.lift_to_epoch(rng, &pool, &note, spendable, EpochIndex(1));
+    let bind_pcd = honest_spend_bind(rng, &user, &note, lifted, EpochIndex(1));
+
+    assert_eq!(bind_pcd.data().1, user.nf_at(&note, EpochIndex(1)));
+    assert_eq!(bind_pcd.data().2, user.nf_at(&note, EpochIndex(2)));
 }

@@ -35,6 +35,9 @@ A block that publishes no stamp advances no anchor, so a stampless span needs no
 `EndEpochUnspentSeed` is the segment for the boundary itself: it folds the epoch tick from a witnessed epoch-terminal anchor, its two `elapsed` members being the epochs it leaves and enters, so `epoch_last == epoch_start + 1`.
 A boundary is therefore a link like any other, and `UnspentFuse` composes it with its neighbours on both sides; an epoch that published nothing is simply two crossings with no stamp segment between them.
 
+A `Summary` folds a run of one epoch's stamps into one accumulator alongside the anchor (`SummarySeed`, `SummaryAdvance`); summaries are note-independent, so anyone can build them.
+`SummaryUnspentInit` starts an `ArbitraryUnspent` from one with a single exclusion query, and `SummarySpendableInit` starts a wallet's spendable from one covering its note's creation.
+
 `UnspentBind` is wallet-side. It consumes the sync-built `ArbitraryUnspent` and a `NullifierDerivation`, and divides `elapsed` out of the derivation's sequence, so every factor of `elapsed` is a genuine nullifier of the note at its own epoch.
 It emits an `Unspent` carrying the span's boundary nullifiers, anchors and epochs, and the note's `cm`.
 
@@ -77,10 +80,10 @@ The aggregated stamp has the same shape as any other, so it is itself eligible f
 ## Roles
 
 The wallet runs every step that touches the note's commitment or master key.
-It derives its nullifier windows (`NfMasterSeed`, `NfDerive`, `NullifierFuse`), derives spendable status from its own derivation (`SpendableInit`), binds and lifts over sync-built segments (`UnspentBind`, `SpendableLift`), and produces spend and output stamps (`SpendBind`, `SpendStamp`, `OutputBind`, `OutputStamp`).
+It derives its nullifier windows (`NfMasterSeed`, `NfDerive`, `NullifierFuse`), derives spendable status from its own derivation (`SpendableInit`, `SummarySpendableInit`), binds and lifts over sync-built segments (`UnspentBind`, `SpendableLift`), and produces spend and output stamps (`SpendBind`, `SpendStamp`, `OutputBind`, `OutputStamp`).
 
 The sync service holds the per-epoch nullifier values the wallet shared and pool history.
-It produces the `ArbitraryUnspent` segments that carry the spendable forward (`UnspentSeed`, `EndEpochUnspentSeed`, `UnspentFuse`) and hands the composed segment to the wallet to bind and lift over; it never sees a note, `cm`, `psi`, or `mk`.
+It builds summaries (`SummarySeed`, `SummaryAdvance`) and produces the `ArbitraryUnspent` segments that carry the spendable forward (`SummaryUnspentInit`, `UnspentSeed`, `EndEpochUnspentSeed`, `UnspentFuse`) and hands the composed segment to the wallet to bind and lift over; it never sees a note, `cm`, `psi`, or `mk`.
 
 The aggregator works only with published `StampHeader`s.
 It aligns anchors with `StampLift` over `AnchorChain` segments (`AnchorSeed`, `AnchorFuse`) and fuses with `MergeStamp`.
@@ -89,6 +92,9 @@ It aligns anchors with `StampLift` over `AnchorChain` segments (`AnchorSeed`, `A
 | ---- | ------ | ------------ | ---------- |
 | AnchorSeed | possible | yes | yes |
 | AnchorFuse | possible | yes | yes |
+| SummarySeed | possible | yes | no |
+| SummaryAdvance | possible | yes | no |
+| SummaryUnspentInit | possible | yes | no |
 | UnspentSeed | possible | yes | no |
 | EndEpochUnspentSeed | possible | yes | no |
 | UnspentFuse | possible | yes | no |
@@ -97,6 +103,7 @@ It aligns anchors with `StampLift` over `AnchorChain` segments (`AnchorSeed`, `A
 | NullifierFuse | yes | no | no |
 | UnspentBind | yes | no | no |
 | SpendableInit | yes | no | no |
+| SummarySpendableInit | yes | no | no |
 | SpendableLift | yes | no | no |
 | SpendBind | yes | no | no |
 | OutputBind | yes | no | no |
@@ -111,7 +118,7 @@ The subsections below walk each subtree bottom-up.
 
 ### Anchor segments
 
-`AnchorSeed`, `UnspentSeed`, and `EndEpochUnspentSeed` each witness a predecessor anchor and prove one anchor step from it, and the fuses compose adjacent segments by checking endpoint equality.
+`AnchorSeed`, `SummarySeed`, `UnspentSeed`, and `EndEpochUnspentSeed` each witness a predecessor anchor and prove one anchor step from it, and the fuses compose adjacent segments by checking endpoint equality.
 A segment ties to real chain history only through a consensus-published stamp whose anchor matches an end-of-block value, emitted at `StampLift`. `SpendableInit`'s anchor closes the same way without a segment: the private spendable's anchor reaches consensus once it is spent into a stamp.
 
 ### ArbitraryUnspent composition
@@ -127,6 +134,19 @@ $$C(X) \cdot F_{\text{junction}}(X) = L(X) \cdot R(X)$$
 
 for the witnessed `combined` $C$, left $L$, and right $R$. Both halves hold the junction epoch's factor, and dividing it out leaves each epoch represented once. The recursive verification of the two input PCDs binds $L$ and $R$ before the challenge.
 The junction agreement (`left.nf_last == right.nf_start`) is well-formedness only, since a consistent pair of lies yields a wrong `elapsed` that `UnspentBind` rejects.
+
+### Summaries
+
+A `Summary` carries `(epoch, anchor_prev, anchor_last, acc_commit)`: a run of one epoch's stamps whose tachygram sets fold into one accumulator while the anchor absorbs the same commitments.
+`SummarySeed` is `AnchorSeed` with the stamp's set commitment carried on the header.
+`SummaryAdvance` binds the witnessed accumulator to the header by commit-equality, checks `extended = acc * stamp` at a challenge, and advances `anchor_last` by the same `stamp.commit()`.
+The product of two root polynomials is the root polynomial of the multiset union, and consensus forbids republishing a tachygram within two epochs, so the accumulator is square-free.
+Where a summary starts and stops is prover-chosen: a consumer splices summaries by anchor equality and passes through every stamp link regardless.
+
+`SummaryUnspentInit` starts an `ArbitraryUnspent` from a summary with one exclusion opening on the accumulator; the summary's bracket becomes the segment's anchors, and its one-member `elapsed` is pinned as at `UnspentSeed`.
+`SummarySpendableInit` starts a spendable from a summary covering the note's creation: `cm` opens to zero on the accumulator, `present_nf` opens nonzero, the read at the creation epoch is `SpendableInit`'s, and the spendable emits at the summary's terminal anchor.
+
+Summaries root unbound like every seed. A consuming lineage closes at its own spend, where consensus anchor membership forces every spliced link.
 
 ### Derivation window
 
@@ -339,6 +359,7 @@ flowchart LR
 | Header | Fields |
 | ------ | ------ |
 | AnchorChain | (start, end) |
+| Summary | (epoch, anchor_prev, anchor_last, acc_commit) |
 | ArbitraryUnspent | (anchor_prev, (epoch_start, nf_start), elapsed, (epoch_last, nf_last), anchor_last) |
 | Unspent | (cm, anchor_prev, (epoch_start, nf_start), (epoch_last, nf_last), anchor_last) |
 | NfMasterHeader | (cm, mk) |
@@ -354,6 +375,10 @@ flowchart LR
 | ---- | ---- | ----- | ------- | ------ |
 | AnchorSeed | — | — | start, epoch, stamp_commit | AnchorChain |
 | AnchorFuse | AnchorChain | AnchorChain | — | AnchorChain |
+| SummarySeed | — | — | anchor_prev, epoch, stamp_commit | Summary |
+| SummaryAdvance | Summary | — | acc, extended, stamp | Summary |
+| SummaryUnspentInit | Summary | — | nf, summary_set, elapsed_seq | ArbitraryUnspent |
+| SummarySpendableInit | NullifierDerivation | Summary | creation_epoch, present_nf, nf_seq, complement_seq, summary_set | SpendableHeader |
 | UnspentSeed | — | — | anchor_prev, (epoch, nf), stamp_tg_set, elapsed_seq | ArbitraryUnspent |
 | EndEpochUnspentSeed | — | — | anchor_prev, (epoch_prev, nf_prev), nf, elapsed_seq | ArbitraryUnspent |
 | UnspentFuse | ArbitraryUnspent | ArbitraryUnspent | left_elapsed_seq, combined_elapsed_seq, right_elapsed_seq | ArbitraryUnspent |
