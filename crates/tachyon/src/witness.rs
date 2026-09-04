@@ -29,7 +29,7 @@ use crate::{
             QrResidueAttest, QrSideDescend, QrStampIntakeSeed, QrSummaryIntakeInit, QrUnspentInit,
         },
         spend::SpendBind,
-        spendable::{SpendableInit, SummarySpendableInit},
+        spendable::{QrSpendableInit, SpendableInit, SummarySpendableInit},
         stamp::MergeStamp,
         summary::{SummaryAdvance, SummarySeed},
     },
@@ -342,6 +342,15 @@ pub fn summary_spendable_init(
         complement_seq,
         summary_tgs.iter().copied().collect::<TachygramSetPoly>(),
     )
+}
+
+/// Prepare the witness for [`QrSpendableInit`]: `(contents)`.
+#[must_use]
+pub fn qr_spendable_init(
+    (_unspent, _bucket): (StepLeft<QrSpendableInit>, StepRight<QrSpendableInit>),
+    bucket_members: &[Tachygram],
+) -> StepWitness<'static, QrSpendableInit> {
+    (bucket_members.iter().copied().collect(),)
 }
 
 /// Prepare the witness for [`QrSummaryIntakeInit`]: `(terminal)`.

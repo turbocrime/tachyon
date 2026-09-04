@@ -51,6 +51,7 @@ fn make_app() -> Result<Application, ragu::Error> {
         .register(qr::QrUnspentInit)?
         .register(qr::QrBucketSeal)?
         .register(qr::QrStampIntakeSeed)?
+        .register(spendable::QrSpendableInit)?
         .finalize()
 }
 

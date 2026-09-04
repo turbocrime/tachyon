@@ -41,6 +41,7 @@ A `Summary` folds a run of one epoch's stamps into one accumulator alongside the
 Summaries are also the roots of an epoch's QR evidence.
 Once per epoch a builder routes every published tachygram into buckets by quadratic-residue profile (`QrSummaryIntakeInit`, `QrStampIntakeSeed`, `QrIntakeSplit`, `QrSideDescend`, `QrIntakeMerge`, `QrBucketSeal`) and records each profile's path as a pair of filter polynomials (`QrFilterSeed`, `QrFilterDescend`).
 A nullifier has one profile, so it can have been published in only one bucket, and clearing it against that bucket clears the epoch (`QrResidueAttest`, `QrUnspentInit`).
+`QrSpendableInit` starts a wallet's spendable from the bucket holding its note's creation, over the note's own QR segment for that epoch.
 The evidence is note-independent and rebuildable from public data.
 
 `UnspentBind` is wallet-side. It consumes the sync-built `ArbitraryUnspent` and a `NullifierDerivation`, and divides `elapsed` out of the derivation's sequence, so every factor of `elapsed` is a genuine nullifier of the note at its own epoch.
@@ -85,7 +86,7 @@ The aggregated stamp has the same shape as any other, so it is itself eligible f
 ## Roles
 
 The wallet runs every step that touches the note's commitment or master key.
-It derives its nullifier windows (`NfMasterSeed`, `NfDerive`, `NullifierFuse`), derives spendable status from its own derivation (`SpendableInit`, `SummarySpendableInit`), binds and lifts over sync-built segments (`UnspentBind`, `SpendableLift`), and produces spend and output stamps (`SpendBind`, `SpendStamp`, `OutputBind`, `OutputStamp`).
+It derives its nullifier windows (`NfMasterSeed`, `NfDerive`, `NullifierFuse`), derives spendable status from its own derivation (`SpendableInit`, `SummarySpendableInit`, `QrSpendableInit`), binds and lifts over sync-built segments (`UnspentBind`, `SpendableLift`), and produces spend and output stamps (`SpendBind`, `SpendStamp`, `OutputBind`, `OutputStamp`).
 
 The sync service holds the per-epoch nullifier values the wallet shared and pool history.
 It builds summaries (`SummarySeed`, `SummaryAdvance`), routes each epoch's tachygrams into QR evidence (`QrSummaryIntakeInit`, `QrStampIntakeSeed`, `QrIntakeSplit`, `QrSideDescend`, `QrIntakeMerge`, `QrBucketSeal`, `QrFilterSeed`, `QrFilterDescend`), and produces the `ArbitraryUnspent` segments that carry the spendable forward (`QrResidueAttest` and `QrUnspentInit` over one bucket; `SummaryUnspentInit` over a summary; `UnspentSeed`, `EndEpochUnspentSeed`, `UnspentFuse` per stamp), then hands the composed segment to the wallet to bind and lift over; it never sees a note, `cm`, `psi`, or `mk`.
@@ -119,6 +120,7 @@ It aligns anchors with `StampLift` over `AnchorChain` segments (`AnchorSeed`, `A
 | UnspentBind | yes | no | no |
 | SpendableInit | yes | no | no |
 | SummarySpendableInit | yes | no | no |
+| QrSpendableInit | yes | no | no |
 | SpendableLift | yes | no | no |
 | SpendBind | yes | no | no |
 | OutputBind | yes | no | no |
@@ -207,6 +209,10 @@ at one challenge, which settles $g(R_j)^2 = \mathsf{nf} + R_j$ at every root $R_
 `QrUnspentInit` proves the non-residue half the same way, opens $P_\mathsf{non}$ nonzero at $-\mathsf{nf}$ so the exceptional discriminant stays residue-side, and opens the bucket at $\mathsf{nf}$.
 The nullifier's class is then fixed at every level of the bucket's path, so no other bucket of the epoch can hold it.
 The consumer checks that claim and bucket agree on epoch, terminal, profile and discriminant, and emits the bucket's span as a crossing segment, so consecutive epochs' segments fuse at the junction epoch with no boundary link between them; `start` closes through the lineage that consumes the emitted segment.
+
+`QrSpendableInit` bootstraps a spendable from the bucket holding the note's creation.
+Its left input is the note's `Unspent` over that epoch, the QR segment bound by `UnspentBind`, so `cm` and the whole-epoch absence of the nullifier arrive on the header; the step opens the bucket at $\mathsf{cm}$ for zero, requires the segment's span to equal the bucket's, and emits the spendable at the segment's tip.
+Membership needs no profile: every bucket divides the epoch's stamp polynomials, so a root of any bucket is a tachygram published in its span, and the span equality closes the bucket's anchors through the lineage the segment already joins.
 
 ### Derivation window
 
@@ -444,6 +450,7 @@ flowchart LR
 | SummaryAdvance | Summary | — | acc, extended, stamp | Summary |
 | SummaryUnspentInit | Summary | — | nf, summary_set, elapsed_seq | ArbitraryUnspent |
 | SummarySpendableInit | NullifierDerivation | Summary | creation_epoch, present_nf, nf_seq, complement_seq, summary_set | SpendableHeader |
+| QrSpendableInit | Unspent | QrBucket | contents | SpendableHeader |
 | QrSummaryIntakeInit | Summary | — | terminal | QrIntake |
 | QrStampIntakeSeed | — | — | anchor_prev, epoch, terminal, stamp_commit | QrIntake |
 | QrIntakeMerge | QrIntake | QrIntake | left_contents, right_contents, merged | QrIntake |

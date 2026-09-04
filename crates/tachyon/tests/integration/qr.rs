@@ -3,26 +3,87 @@
 
 extern crate alloc;
 
-use alloc::{string::ToString as _, vec::Vec};
+use alloc::{string::ToString as _, vec, vec::Vec};
 use core::{array, iter};
 
 use ff::{Field as _, PrimeField as _};
 use pasta_curves::Fp;
-use ragu::Proof;
+use ragu::{Pcd, Proof};
 use rand::{SeedableRng as _, rngs::StdRng};
 use zcash_tachyon::{
     Anchor, BlockHeight, EpochIndex, NfSeqPoly, QrDiscriminant, QrFilterPoly, QrProfile, Tachygram,
     TachygramSetPoly,
+    constants::EPOCH_SIZE,
+    note::Note,
     nullifier::Nullifier,
-    stamp::proof::{PROOF_SYSTEM, pool::UnspentFuse, qr, summary},
+    stamp::proof::{
+        PROOF_SYSTEM,
+        pool::{Unspent, UnspentFuse},
+        qr, spend, spendable, summary,
+    },
     witness,
 };
 
 use crate::fixtures::{
-    PoolSim, QrBucketEntry, QrIntakeEntry, build_qr_filter_pcd, build_qr_partition,
+    PoolSim, QrBucketEntry, QrIntakeEntry, WalletSim, build_qr_filter_pcd, build_qr_partition,
     build_summary_pcd, qr_profile_of, random_block, seal_qr_intake, seed_qr_stamp_intake,
-    split_qr_intake,
+    shared_sk, split_qr_intake,
 };
+
+/// The members an epoch holds in the pools these tests build: one tachygram
+/// per stamp and one stamp per block, so the whole epoch fits one polynomial
+/// and its partition reaches a bucket spanning it.
+const EPOCH_MEMBERS: usize = EPOCH_SIZE as usize;
+
+/// The sealed bucket holding `value` at `depth` levels of the anchor span
+/// `(start, terminal)`'s discriminants, sealed on `prev_last`.
+fn qr_bucket_for(
+    rng: &mut StdRng,
+    pool: &PoolSim,
+    (start, terminal): (Anchor, Anchor),
+    capacity: usize,
+    depth: u64,
+    value: Fp,
+    prev_last: Anchor,
+) -> QrBucketEntry {
+    let profile = qr_profile_of(value, terminal, depth);
+    let intake = build_qr_partition(rng, pool, (start, terminal), terminal, capacity, depth)
+        .into_iter()
+        .find(|intake| intake.pcd.data().4 == profile)
+        .expect("an intake carries the value's profile");
+    seal_qr_intake(rng, intake, prev_last)
+}
+
+/// The note's QR segment across a bucket's epoch, bound to the note. The
+/// filter descends the bucket's own path, which is the one the note's
+/// nullifier takes.
+fn qr_epoch_unspent(
+    rng: &mut StdRng,
+    user: &WalletSim,
+    note: &Note,
+    bucket: &QrBucketEntry,
+) -> Pcd<Unspent> {
+    let (epoch, terminal, _, _, profile, ..) = *bucket.pcd.data();
+    let filter = build_qr_filter_pcd(rng, epoch, terminal, profile);
+    let (claim, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            qr::QrResidueAttest,
+            witness::qr_residue_attest(
+                (*filter.data(), ()),
+                user.nf_at(note, epoch),
+                user.nf_at(note, epoch.next()),
+            ),
+            filter,
+            Proof::trivial().carry::<()>(()),
+        )
+        .expect("QrResidueAttest");
+    let witness = witness::qr_unspent_init((*claim.data(), *bucket.pcd.data()), &bucket.members);
+    let (arbitrary, ()) = PROOF_SYSTEM
+        .fuse(rng, qr::QrUnspentInit, witness, claim, bucket.pcd.clone())
+        .expect("QrUnspentInit");
+    user.unspent_bind(rng, arbitrary, note)
+}
 
 #[test]
 fn qr_summary_intake_init_starts_a_root_from_a_summary() {
@@ -1505,23 +1566,23 @@ fn qr_unspent_segments_of_consecutive_epochs_fuse_directly() {
     pool.advance(epoch1.first_block().0 + 1, |_| random_block(rng, 1, 1));
     let [nf0, nf1, nf2] = array::from_fn(|_| Nullifier::from(Fp::random(&mut *rng)));
 
-    let mut seal_epoch = |(start, terminal): (Anchor, Anchor), prev_last: Anchor| {
-        let (summary, members) = build_summary_pcd(rng, &pool, (start, terminal));
-        let (root, ()) = PROOF_SYSTEM
-            .fuse(
-                rng,
-                qr::QrSummaryIntakeInit,
-                witness::qr_summary_intake_init((*summary.data(), ()), terminal),
-                summary,
-                Proof::trivial().carry::<()>(()),
-            )
-            .expect("QrSummaryIntakeInit");
-        seal_qr_intake(rng, QrIntakeEntry { pcd: root, members }, prev_last)
-    };
     let terminal0 = pool.block(epoch0.last_block()).anchor();
-    let bucket0 = seal_epoch((Anchor::default(), terminal0), Anchor::from(Fp::ZERO));
-    let bucket1 = seal_epoch(
+    let bucket0 = qr_bucket_for(
+        rng,
+        &pool,
+        (Anchor::default(), terminal0),
+        EPOCH_MEMBERS,
+        0,
+        Fp::from(nf0),
+        Anchor::from(Fp::ZERO),
+    );
+    let bucket1 = qr_bucket_for(
+        rng,
+        &pool,
         (pool.block(epoch1.first_block()).prev, pool.anchor()),
+        EPOCH_MEMBERS,
+        0,
+        Fp::from(nf1),
         terminal0,
     );
     let (_, _, _, end1, ..) = *bucket1.pcd.data();
@@ -1567,6 +1628,183 @@ fn qr_unspent_segments_of_consecutive_epochs_fuse_directly() {
         elapsed,
         NfSeqPoly::new(epoch0, &[nf0, nf1, nf2]).commit(),
         "the junction epoch's member is shared, not repeated"
+    );
+}
+
+/// A note created in epoch zero bootstraps from the bucket holding its `cm`
+/// over its own QR segment, rests at epoch one's opening anchor, lifts over
+/// epoch one on ordinary segments, and binds a spend in epoch two.
+#[test]
+fn qr_spendable_init_starts_a_spendable_that_reaches_spend_bind() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let user = WalletSim::new(shared_sk());
+    let note = user.random_note(300);
+    let epoch0 = EpochIndex(0);
+    let epoch1 = epoch0.next();
+    let epoch2 = epoch1.next();
+    let mut pool = PoolSim::genesis_with(vec![vec![Tachygram::from(note.commitment())]]);
+    // Fill epochs zero and one and open epoch two, one stamp per block.
+    pool.advance(epoch2.first_block().0, |_| random_block(rng, 1, 1));
+
+    // Two levels down, the note's `cm` and its epoch-zero nullifier take
+    // different paths, so the spendable pairs one bucket against a segment
+    // built over another. Both span the epoch, which is what closes them.
+    let span = (Anchor::default(), pool.block(epoch0.last_block()).anchor());
+    let bucket = qr_bucket_for(
+        rng,
+        &pool,
+        span,
+        EPOCH_MEMBERS,
+        2,
+        Fp::from(Tachygram::from(note.commitment())),
+        Anchor::from(Fp::ZERO),
+    );
+    let nf_bucket = qr_bucket_for(
+        rng,
+        &pool,
+        span,
+        EPOCH_MEMBERS,
+        2,
+        Fp::from(user.nf_at(&note, epoch0)),
+        Anchor::from(Fp::ZERO),
+    );
+    assert_ne!(
+        bucket.pcd.data().4,
+        nf_bucket.pcd.data().4,
+        "the commitment and the nullifier route to different buckets"
+    );
+    let (_, _, _, end, ..) = *bucket.pcd.data();
+    let unspent = qr_epoch_unspent(rng, &user, &note, &nf_bucket);
+
+    let (spendable, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            spendable::QrSpendableInit,
+            witness::qr_spendable_init((*unspent.data(), *bucket.pcd.data()), &bucket.members),
+            unspent,
+            bucket.pcd,
+        )
+        .expect("QrSpendableInit");
+    assert_eq!(
+        *spendable.data(),
+        (note.commitment(), (epoch1, user.nf_at(&note, epoch1)), end),
+        "the spendable rests at the next epoch's opening anchor with that epoch's nullifier"
+    );
+
+    let lifted = user.lift_to_epoch(rng, &pool, &note, spendable, epoch2);
+    let derived = user.derivation_pcd(rng, note, epoch2, EpochIndex(epoch2.0 + 2));
+    let (bind, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            spend::SpendBind,
+            witness::spend_bind(
+                (*lifted.data(), *derived.data()),
+                &user.covering_window(&note, &derived),
+            ),
+            lifted,
+            derived,
+        )
+        .expect("SpendBind");
+    let (bind_cm, present_nf, nf_next, _) = *bind.data();
+    assert_eq!(bind_cm, note.commitment());
+    assert_eq!(
+        (present_nf, nf_next),
+        (
+            user.nf_at(&note, epoch2),
+            user.nf_at(&note, EpochIndex(epoch2.0 + 1))
+        )
+    );
+}
+
+#[test]
+fn qr_spendable_init_rejects_an_absent_commitment() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let user = WalletSim::new(shared_sk());
+    let note = user.random_note(300);
+    let epoch0 = EpochIndex(0);
+    // The note's cm is published nowhere in this pool.
+    let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
+    pool.advance(epoch0.last_block().0, |_| random_block(rng, 1, 1));
+
+    let bucket = qr_bucket_for(
+        rng,
+        &pool,
+        (Anchor::default(), pool.block(epoch0.last_block()).anchor()),
+        EPOCH_MEMBERS,
+        0,
+        Fp::from(Tachygram::from(note.commitment())),
+        Anchor::from(Fp::ZERO),
+    );
+    let unspent = qr_epoch_unspent(rng, &user, &note, &bucket);
+
+    let err = PROOF_SYSTEM
+        .fuse(
+            rng,
+            spendable::QrSpendableInit,
+            witness::qr_spendable_init((*unspent.data(), *bucket.pcd.data()), &bucket.members),
+            unspent,
+            bucket.pcd,
+        )
+        .err()
+        .unwrap();
+    let ragu::Error::InvalidWitness(inner) = err else {
+        panic!("expected InvalidWitness, got {err:?}");
+    };
+    assert_eq!(
+        inner.to_string(),
+        "QrSpendableInit: commitment not in bucket"
+    );
+}
+
+/// A bucket sealed short of the epoch opens at the real boundary but folds
+/// its end from a terminal the chain never reached, so it cannot pair with
+/// the note's whole-epoch segment.
+#[test]
+fn qr_spendable_init_rejects_a_bucket_whose_span_differs_from_the_segment() {
+    let rng = &mut StdRng::seed_from_u64(0);
+    let user = WalletSim::new(shared_sk());
+    let note = user.random_note(300);
+    let epoch0 = EpochIndex(0);
+    let mut pool = PoolSim::genesis_with(vec![vec![Tachygram::from(note.commitment())]]);
+    pool.advance(epoch0.last_block().0, |_| random_block(rng, 1, 1));
+
+    let cm = Fp::from(Tachygram::from(note.commitment()));
+    let whole = qr_bucket_for(
+        rng,
+        &pool,
+        (Anchor::default(), pool.block(epoch0.last_block()).anchor()),
+        EPOCH_MEMBERS,
+        0,
+        cm,
+        Anchor::from(Fp::ZERO),
+    );
+    let unspent = qr_epoch_unspent(rng, &user, &note, &whole);
+    let short = qr_bucket_for(
+        rng,
+        &pool,
+        (Anchor::default(), pool.block(BlockHeight(1)).anchor()),
+        EPOCH_MEMBERS,
+        0,
+        cm,
+        Anchor::from(Fp::ZERO),
+    );
+
+    let err = PROOF_SYSTEM
+        .fuse(
+            rng,
+            spendable::QrSpendableInit,
+            witness::qr_spendable_init((*unspent.data(), *short.pcd.data()), &short.members),
+            unspent,
+            short.pcd,
+        )
+        .err()
+        .unwrap();
+    let ragu::Error::InvalidWitness(inner) = err else {
+        panic!("expected InvalidWitness, got {err:?}");
+    };
+    assert_eq!(
+        inner.to_string(),
+        "QrSpendableInit: segment does not close at the bucket's end"
     );
 }
 

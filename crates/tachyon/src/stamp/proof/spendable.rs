@@ -3,9 +3,10 @@
 //! The spendable carries `(cm, (epoch, present_nf), anchor)`: the note's
 //! current epoch and its nullifier `F_mk(epoch)` there, its pool position,
 //! and the minted-note commitment binding the lineage (and its value) across
-//! lifts. [`SpendableInit`]
-//! bootstraps it from a minted note and [`SummarySpendableInit`] from a
-//! [`Summary`] covering the creation; [`SpendableLift`] advances it over
+//! lifts. [`SpendableInit`] bootstraps it from a minted note,
+//! [`SummarySpendableInit`] from a [`Summary`] covering the creation, and
+//! [`QrSpendableInit`] from a [`QrBucket`] holding the creation over the
+//! note's own [`Unspent`] for that epoch; [`SpendableLift`] advances it over
 //! [`Unspent`] segments.
 
 extern crate alloc;
@@ -18,7 +19,7 @@ use ragu::{
     constraint::{enforce_equal_point, enforce_nonzero, enforce_zero},
 };
 
-use super::{delegation::NullifierDerivation, pool::Unspent, summary::Summary};
+use super::{delegation::NullifierDerivation, pool::Unspent, qr::QrBucket, summary::Summary};
 use crate::{
     collections::indexed_multiset,
     note,
@@ -267,6 +268,89 @@ impl Step for SummarySpendableInit {
         )?;
 
         Ok(((cm, (creation_epoch, present_nf), summary_anchor_last), ()))
+    }
+}
+
+/// Bootstrap a spendable from a [`QrBucket`] holding the note's creation,
+/// over the note's [`Unspent`] for that epoch.
+///
+/// The `Unspent` is the epoch's QR segment bound to the note
+/// ([`QrResidueAttest`](super::qr::QrResidueAttest),
+/// [`QrUnspentInit`](super::qr::QrUnspentInit),
+/// [`UnspentBind`](super::pool::UnspentBind)), so `cm` and the whole-epoch
+/// absence of the note's nullifier arrive on its header. This step adds the
+/// membership $\mathsf{contents}(\mathsf{cm}) = 0$ and emits the spendable at
+/// the segment's tip.
+///
+/// Committed polynomials: `contents`; one oracle.
+///
+/// # Soundness
+///
+/// Membership needs no profile. Every bucket divides the epoch's stamp
+/// polynomials, root through split and merge, so a root of any bucket is a
+/// tachygram published in the bucket's span. The span closes by equality with
+/// the segment's: `anchor_last` is emitted and reaches consensus through the
+/// lineage, and the bucket's `end` folds from its own `terminal`, so the stamp
+/// commitments absorbed between `start` and `end` are the published ones.
+/// Without that equality a bucket over invented stamps onto the real opening
+/// anchor would pass the opening.
+#[derive(Debug)]
+pub struct QrSpendableInit;
+
+impl Step for QrSpendableInit {
+    type Aux<'source> = ();
+    type Left = Unspent;
+    type Output = SpendableHeader;
+    type Right = QrBucket;
+    /// `(contents)`.
+    type Witness<'source> = (TachygramSetPoly,);
+
+    const INDEX: Index = Index::new(31);
+
+    fn witness<'source>(
+        &self,
+        ctx: &mut ragu::StepCtx<'_>,
+        (contents,): Self::Witness<'source>,
+        (
+            cm,
+            unspent_anchor_prev,
+            (unspent_epoch_start, _),
+            (unspent_epoch_last, unspent_nf_last),
+            unspent_anchor_last,
+        ): <Self::Left as Header>::Data,
+        (bucket_epoch, _, start, end, _, _, bucket_commit): <Self::Right as Header>::Data,
+    ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
+        enforce_equal_point(
+            Eq::from(contents.commit()),
+            Eq::from(bucket_commit),
+            "QrSpendableInit: contents do not match the bucket",
+        )?;
+        enforce_zero(
+            Fp::from(unspent_epoch_start) - Fp::from(bucket_epoch),
+            "QrSpendableInit: segment does not start in the bucket's epoch",
+        )?;
+        enforce_zero(
+            Fp::from(unspent_anchor_prev) - Fp::from(start),
+            "QrSpendableInit: segment does not open at the bucket's start",
+        )?;
+        enforce_zero(
+            Fp::from(unspent_anchor_last) - Fp::from(end),
+            "QrSpendableInit: segment does not close at the bucket's end",
+        )?;
+
+        // Inclusion: cm ∈ bucket ⇔ the contents vanish at cm.
+        let cm_in_bucket = contents.eval(cm.into());
+        ctx.enforce_poly_query(bucket_commit.into(), cm.into(), cm_in_bucket)?;
+        enforce_zero(cm_in_bucket, "QrSpendableInit: commitment not in bucket")?;
+
+        Ok((
+            (
+                cm,
+                (unspent_epoch_last, unspent_nf_last),
+                unspent_anchor_last,
+            ),
+            (),
+        ))
     }
 }
 
