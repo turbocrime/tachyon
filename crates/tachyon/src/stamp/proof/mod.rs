@@ -47,7 +47,7 @@ fn make_app() -> Result<Application, ragu::Error> {
         .register(qr::QrSideDescend)?
         .register(qr::QrFilterSeed)?
         .register(qr::QrFilterDescend)?
-        .register(qr::QrResidueAttest)?
+        .register(qr::QrProfileAttest)?
         .register(qr::QrUnspentInit)?
         .register(qr::QrBucketSeal)?
         .register(qr::QrStampIntakeSeed)?

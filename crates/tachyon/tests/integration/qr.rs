@@ -18,7 +18,7 @@ use zcash_tachyon::{
     nullifier::Nullifier,
     stamp::proof::{
         PROOF_SYSTEM,
-        pool::{Unspent, UnspentFuse},
+        pool::{EndEpochUnspentSeed, Unspent, UnspentFuse},
         qr, spend, spendable, summary,
     },
     witness,
@@ -35,8 +35,8 @@ use crate::fixtures::{
 /// and its partition reaches a bucket spanning it.
 const EPOCH_MEMBERS: usize = EPOCH_SIZE as usize;
 
-/// The sealed bucket holding `value` at `depth` levels of the anchor span
-/// `(start, terminal)`'s discriminants, sealed on `prev_last`.
+/// The sealed bucket holding `value` at `depth` levels of the epoch closed by
+/// `boundary`, over the anchor span `(start, terminal)`, sealed on `prev_last`.
 fn qr_bucket_for(
     rng: &mut StdRng,
     pool: &PoolSim,
@@ -46,8 +46,9 @@ fn qr_bucket_for(
     value: Fp,
     prev_last: Anchor,
 ) -> QrBucketEntry {
-    let profile = qr_profile_of(value, terminal, depth);
-    let intake = build_qr_partition(rng, pool, (start, terminal), terminal, capacity, depth)
+    let boundary = pool.boundary_after(terminal);
+    let profile = qr_profile_of(value, boundary, depth);
+    let intake = build_qr_partition(rng, pool, (start, terminal), boundary, capacity, depth)
         .into_iter()
         .find(|intake| intake.pcd.data().4 == profile)
         .expect("an intake carries the value's profile");
@@ -63,21 +64,17 @@ fn qr_epoch_unspent(
     note: &Note,
     bucket: &QrBucketEntry,
 ) -> Pcd<Unspent> {
-    let (epoch, terminal, _, _, profile, ..) = *bucket.pcd.data();
-    let filter = build_qr_filter_pcd(rng, epoch, terminal, profile);
+    let (epoch, _, _, boundary, profile, ..) = *bucket.pcd.data();
+    let filter = build_qr_filter_pcd(rng, epoch, boundary, profile);
     let (claim, ()) = PROOF_SYSTEM
         .fuse(
             rng,
-            qr::QrResidueAttest,
-            witness::qr_residue_attest(
-                (*filter.data(), ()),
-                user.nf_at(note, epoch),
-                user.nf_at(note, epoch.next()),
-            ),
+            qr::QrProfileAttest,
+            witness::qr_profile_attest((*filter.data(), ()), user.nf_at(note, epoch).into()),
             filter,
             Proof::trivial().carry::<()>(()),
         )
-        .expect("QrResidueAttest");
+        .expect("QrProfileAttest");
     let witness = witness::qr_unspent_init((*claim.data(), *bucket.pcd.data()), &bucket.members);
     let (arbitrary, ()) = PROOF_SYSTEM
         .fuse(rng, qr::QrUnspentInit, witness, claim, bucket.pcd.clone())
@@ -90,7 +87,7 @@ fn qr_summary_intake_init_starts_a_root_from_a_summary() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
     let start = Anchor::from(Fp::random(&mut *rng));
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let members: [Tachygram; 6] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
 
     let (summary, ()) = PROOF_SYSTEM
@@ -105,7 +102,7 @@ fn qr_summary_intake_init_starts_a_root_from_a_summary() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*summary.data(), ()), boundary),
             summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -115,11 +112,11 @@ fn qr_summary_intake_init_starts_a_root_from_a_summary() {
         *root.data(),
         (
             epoch,
-            terminal,
             start,
             anchor_last,
+            boundary,
             QrProfile::ROOT,
-            QrDiscriminant::of(terminal),
+            QrDiscriminant::of(boundary),
             acc_commit
         ),
         "a root intake carries the summary's span and contents at depth zero"
@@ -131,20 +128,20 @@ fn qr_stamp_intake_seed_roots_an_intake_on_one_stamp() {
     let rng = &mut StdRng::seed_from_u64(0);
     let pool = PoolSim::genesis_with(random_block(rng, 3, 1));
     let block = pool.block(BlockHeight(0));
-    let terminal = block.anchor();
+    let boundary = pool.boundary_after(block.anchor());
     let entry = block.stamps.first().expect("one stamp");
     let (anchor_prev, members, commit, anchor_last) = entry.clone();
 
-    let stamp_root = seed_qr_stamp_intake(rng, &pool, entry, terminal);
+    let stamp_root = seed_qr_stamp_intake(rng, &pool, entry, boundary);
     assert_eq!(
         *stamp_root.pcd.data(),
         (
             EpochIndex(0),
-            terminal,
             anchor_prev,
             anchor_last,
+            boundary,
             QrProfile::ROOT,
-            QrDiscriminant::of(terminal),
+            QrDiscriminant::of(boundary),
             commit
         ),
         "the seed folds the stamp into its anchor and roots at depth zero"
@@ -156,7 +153,7 @@ fn qr_stamp_intake_seed_roots_an_intake_on_one_stamp() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*summary.data(), ()), boundary),
             summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -172,12 +169,12 @@ fn qr_stamp_intake_seed_roots_an_intake_on_one_stamp() {
 fn qr_stamp_intake_seed_rejects_an_empty_stamp() {
     let rng = &mut StdRng::seed_from_u64(0);
     let anchor_prev = Anchor::from(Fp::random(&mut *rng));
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let err = PROOF_SYSTEM
         .seed(
             rng,
             qr::QrStampIntakeSeed,
-            witness::qr_stamp_intake_seed(((), ()), anchor_prev, EpochIndex(3), terminal, &[]),
+            witness::qr_stamp_intake_seed(((), ()), anchor_prev, EpochIndex(3), boundary, &[]),
         )
         .err()
         .unwrap();
@@ -193,11 +190,12 @@ fn qr_stamp_rooted_intakes_merge_and_seal_with_summary_rooted_ones() {
     let mut pool = PoolSim::genesis_with(random_block(rng, 3, 2));
     pool.mine(random_block(rng, 3, 1));
     let terminal = pool.block(BlockHeight(1)).anchor();
+    let boundary = pool.boundary_after(terminal);
     let joint = pool.block(BlockHeight(0)).anchor();
 
     // Six members open the span as one summary; the last stamp joins it rooted
     // on its own.
-    let summary_rooted = build_qr_partition(rng, &pool, (Anchor::default(), joint), terminal, 6, 0)
+    let summary_rooted = build_qr_partition(rng, &pool, (Anchor::default(), joint), boundary, 6, 0)
         .into_iter()
         .next()
         .expect("one root");
@@ -208,7 +206,7 @@ fn qr_stamp_rooted_intakes_merge_and_seal_with_summary_rooted_ones() {
             .stamps
             .first()
             .expect("one stamp"),
-        terminal,
+        boundary,
     );
 
     let members: Vec<Tachygram> = summary_rooted
@@ -240,11 +238,11 @@ fn qr_stamp_rooted_intakes_merge_and_seal_with_summary_rooted_ones() {
         *merged.data(),
         (
             EpochIndex(0),
-            terminal,
             Anchor::default(),
             terminal,
+            boundary,
             QrProfile::ROOT,
-            QrDiscriminant::of(terminal),
+            QrDiscriminant::of(boundary),
             contents
         ),
         "the merge joins a summary-rooted span onto a stamp-rooted one"
@@ -262,14 +260,14 @@ fn qr_stamp_rooted_intakes_merge_and_seal_with_summary_rooted_ones() {
         *bucket.pcd.data(),
         (
             EpochIndex(0),
-            terminal,
             Anchor::default(),
-            terminal.next_epoch(EpochIndex(1)).unwrap(),
+            terminal,
+            boundary,
             QrProfile::ROOT,
-            QrDiscriminant::of(terminal),
+            QrDiscriminant::of(boundary),
             contents
         ),
-        "the joined span runs the epoch's opening anchor to the next epoch's"
+        "sealing keeps the span, from the epoch's opening anchor to its terminal"
     );
 }
 
@@ -278,7 +276,7 @@ fn qr_intake_split_partitions_the_contents_by_class() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
     let start = Anchor::from(Fp::random(&mut *rng));
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let members: [Tachygram; 12] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
 
     let (summary, ()) = PROOF_SYSTEM
@@ -292,13 +290,13 @@ fn qr_intake_split_partitions_the_contents_by_class() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*summary.data(), ()), boundary),
             summary,
             Proof::trivial().carry::<()>(()),
         )
         .expect("QrSummaryIntakeInit");
 
-    let discriminant = QrDiscriminant::of(terminal);
+    let discriminant = QrDiscriminant::of(boundary);
     let (residue, non_residue): (Vec<Tachygram>, Vec<Tachygram>) = members
         .iter()
         .copied()
@@ -322,7 +320,6 @@ fn qr_intake_split_partitions_the_contents_by_class() {
         *split.data(),
         (
             epoch,
-            terminal,
             start,
             start
                 .next_stamp(
@@ -334,6 +331,7 @@ fn qr_intake_split_partitions_the_contents_by_class() {
                         .commit()
                 )
                 .unwrap(),
+            boundary,
             QrProfile::ROOT,
             discriminant,
             residue
@@ -356,7 +354,7 @@ fn qr_intake_split_rejects_a_forged_partition() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
     let start = Anchor::from(Fp::random(&mut *rng));
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let members: [Tachygram; 8] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
 
     let (summary, ()) = PROOF_SYSTEM
@@ -370,7 +368,7 @@ fn qr_intake_split_rejects_a_forged_partition() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*summary.data(), ()), boundary),
             summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -401,8 +399,8 @@ fn qr_intake_split_rejects_the_exceptional_value_on_the_non_residue_side() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
     let start = Anchor::from(Fp::random(&mut *rng));
-    let terminal = Anchor::from(Fp::random(&mut *rng));
-    let discriminant = QrDiscriminant::of(terminal);
+    let boundary = Anchor::from(Fp::random(&mut *rng));
+    let discriminant = QrDiscriminant::of(boundary);
     let exceptional = Tachygram::from(-Fp::from(discriminant));
     let members: Vec<Tachygram> = iter::repeat_with(|| Tachygram::from(Fp::random(&mut *rng)))
         .take(8)
@@ -420,7 +418,7 @@ fn qr_intake_split_rejects_the_exceptional_value_on_the_non_residue_side() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*summary.data(), ()), boundary),
             summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -461,7 +459,7 @@ fn qr_side_descend_carries_each_side_one_level_down() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
     let start = Anchor::from(Fp::random(&mut *rng));
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let members: [Tachygram; 12] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
 
     let (summary, ()) = PROOF_SYSTEM
@@ -475,12 +473,12 @@ fn qr_side_descend_carries_each_side_one_level_down() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*summary.data(), ()), boundary),
             summary,
             Proof::trivial().carry::<()>(()),
         )
         .expect("QrSummaryIntakeInit");
-    let (_, _, _, end, ..) = *root.data();
+    let (_, _, anchor_last, ..) = *root.data();
     let (split, ()) = PROOF_SYSTEM
         .fuse(
             rng,
@@ -491,7 +489,7 @@ fn qr_side_descend_carries_each_side_one_level_down() {
         )
         .expect("QrIntakeSplit");
 
-    let discriminant = QrDiscriminant::of(terminal);
+    let discriminant = QrDiscriminant::of(boundary);
     for side in [true, false] {
         let side_members: Vec<Tachygram> = members
             .iter()
@@ -511,9 +509,9 @@ fn qr_side_descend_carries_each_side_one_level_down() {
             *child.data(),
             (
                 epoch,
-                terminal,
                 start,
-                end,
+                anchor_last,
+                boundary,
                 QrProfile::ROOT.descend(side),
                 discriminant.next(),
                 side_members
@@ -532,7 +530,7 @@ fn qr_side_descend_rejects_a_foreign_sibling() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
     let start = Anchor::from(Fp::random(&mut *rng));
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let members: [Tachygram; 12] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
 
     let (summary, ()) = PROOF_SYSTEM
@@ -546,7 +544,7 @@ fn qr_side_descend_rejects_a_foreign_sibling() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*summary.data(), ()), boundary),
             summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -588,7 +586,7 @@ fn qr_side_descend_rejects_a_foreign_interpolant() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
     let start = Anchor::from(Fp::random(&mut *rng));
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let members: [Tachygram; 12] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
 
     let (summary, ()) = PROOF_SYSTEM
@@ -602,7 +600,7 @@ fn qr_side_descend_rejects_a_foreign_interpolant() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*summary.data(), ()), boundary),
             summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -645,7 +643,7 @@ fn qr_side_descend_rejects_a_foreign_interpolant_on_the_non_residue_side() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
     let start = Anchor::from(Fp::random(&mut *rng));
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let members: [Tachygram; 12] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
 
     let (summary, ()) = PROOF_SYSTEM
@@ -659,7 +657,7 @@ fn qr_side_descend_rejects_a_foreign_interpolant_on_the_non_residue_side() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*summary.data(), ()), boundary),
             summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -702,7 +700,7 @@ fn qr_side_descend_rejects_a_child_short_of_a_member() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
     let start = Anchor::from(Fp::random(&mut *rng));
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let members: [Tachygram; 12] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
 
     let (summary, ()) = PROOF_SYSTEM
@@ -716,7 +714,7 @@ fn qr_side_descend_rejects_a_child_short_of_a_member() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*summary.data(), ()), boundary),
             summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -724,7 +722,7 @@ fn qr_side_descend_rejects_a_child_short_of_a_member() {
 
     // File one residue-class member on the non-residue side. The product
     // still holds, so the split accepts the misfiled partition.
-    let discriminant = QrDiscriminant::of(terminal);
+    let discriminant = QrDiscriminant::of(boundary);
     let (mut short_residue, mut padded_non_residue): (Vec<Tachygram>, Vec<Tachygram>) = members
         .iter()
         .copied()
@@ -810,7 +808,7 @@ fn qr_side_descend_refuses_a_full_register() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
     let start = Anchor::from(Fp::random(&mut *rng));
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let members: [Tachygram; 2] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
 
     let (summary, ()) = PROOF_SYSTEM
@@ -824,7 +822,7 @@ fn qr_side_descend_refuses_a_full_register() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*summary.data(), ()), boundary),
             summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -882,7 +880,7 @@ fn qr_side_descend_refuses_a_full_register() {
 fn qr_intake_merge_joins_two_spans() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let start = Anchor::from(Fp::random(&mut *rng));
     let left_members: [Tachygram; 5] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
     let right_members: [Tachygram; 4] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
@@ -908,7 +906,7 @@ fn qr_intake_merge_joins_two_spans() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*left_summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*left_summary.data(), ()), boundary),
             left_summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -917,7 +915,7 @@ fn qr_intake_merge_joins_two_spans() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*right_summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*right_summary.data(), ()), boundary),
             right_summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -938,11 +936,11 @@ fn qr_intake_merge_joins_two_spans() {
         *merged.data(),
         (
             epoch,
-            terminal,
             start,
             end,
+            boundary,
             QrProfile::ROOT,
-            QrDiscriminant::of(terminal),
+            QrDiscriminant::of(boundary),
             union.commit()
         ),
         "the merge spans both inputs and holds their union"
@@ -953,7 +951,7 @@ fn qr_intake_merge_joins_two_spans() {
 fn qr_intake_merge_rejects_a_gap() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let left_start = Anchor::from(Fp::random(&mut *rng));
     let right_start = Anchor::from(Fp::random(&mut *rng));
     let left_members: [Tachygram; 5] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
@@ -978,7 +976,7 @@ fn qr_intake_merge_rejects_a_gap() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*left_summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*left_summary.data(), ()), boundary),
             left_summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -987,7 +985,7 @@ fn qr_intake_merge_rejects_a_gap() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*right_summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*right_summary.data(), ()), boundary),
             right_summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -1012,7 +1010,7 @@ fn qr_intake_merge_rejects_a_gap() {
 fn qr_intake_merge_rejects_different_profiles() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let start = Anchor::from(Fp::random(&mut *rng));
     let left_members: [Tachygram; 12] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
     let right_members: [Tachygram; 4] = array::from_fn(|_| Tachygram::from(Fp::random(&mut *rng)));
@@ -1037,7 +1035,7 @@ fn qr_intake_merge_rejects_different_profiles() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*left_summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*left_summary.data(), ()), boundary),
             left_summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -1046,7 +1044,7 @@ fn qr_intake_merge_rejects_different_profiles() {
         .fuse(
             rng,
             qr::QrSummaryIntakeInit,
-            witness::qr_summary_intake_init((*right_summary.data(), ()), terminal),
+            witness::qr_summary_intake_init((*right_summary.data(), ()), boundary),
             right_summary,
             Proof::trivial().carry::<()>(()),
         )
@@ -1071,7 +1069,7 @@ fn qr_intake_merge_rejects_different_profiles() {
         )
         .expect("QrSideDescend");
 
-    let discriminant = QrDiscriminant::of(terminal);
+    let discriminant = QrDiscriminant::of(boundary);
     let deeper_members: Vec<Tachygram> = left_members
         .iter()
         .copied()
@@ -1101,16 +1099,20 @@ fn qr_split_alone_leaves_both_children_over_one_span() {
     let mut pool = PoolSim::genesis_with(random_block(rng, 2, 2));
     pool.mine(random_block(rng, 2, 2));
     let terminal = pool.block(pool.height()).anchor();
+    let boundary = pool.boundary_after(terminal);
 
     // Eight members fit one polynomial, so the span opens as a single intake.
-    let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), terminal, 8, 1);
+    let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), boundary, 8, 1);
 
     assert_eq!(routed.len(), 2, "one layer leaves one intake per side");
     for intake in &routed {
-        let (_, _, start, end, profile, ..) = *intake.pcd.data();
+        let (_, anchor_prev, anchor_last, _, profile, ..) = *intake.pcd.data();
         assert_eq!(profile.depth, 1);
-        assert_eq!(start, Anchor::default());
-        assert_eq!(end, terminal, "both children keep their parent's span");
+        assert_eq!(anchor_prev, Anchor::default());
+        assert_eq!(
+            anchor_last, terminal,
+            "both children keep their parent's span"
+        );
     }
 }
 
@@ -1122,6 +1124,7 @@ fn qr_partition_covers_the_epoch_by_profile() {
         pool.mine(random_block(rng, 2, 3));
     }
     let terminal = pool.block(pool.height()).anchor();
+    let boundary = pool.boundary_after(terminal);
     let published: Vec<Tachygram> = (0..=3)
         .flat_map(|height| pool.block(BlockHeight(height)).tachygrams())
         .flatten()
@@ -1129,16 +1132,16 @@ fn qr_partition_covers_the_epoch_by_profile() {
 
     // The epoch's twenty-four members fit one polynomial, so each profile ends
     // up as a single intake over the whole span.
-    let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), terminal, 24, 2);
+    let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), boundary, 24, 2);
 
     assert_eq!(routed.len(), 4, "two layers leave one intake per profile");
     let mut profiles: Vec<u64> = routed
         .iter()
         .map(|intake| {
-            let (_, _, start, end, profile, ..) = *intake.pcd.data();
+            let (_, anchor_prev, anchor_last, _, profile, ..) = *intake.pcd.data();
             assert_eq!(profile.depth, 2);
-            assert_eq!(start, Anchor::default());
-            assert_eq!(end, terminal, "every intake spans the whole epoch");
+            assert_eq!(anchor_prev, Anchor::default());
+            assert_eq!(anchor_last, terminal, "every intake spans the whole epoch");
             profile.bits
         })
         .collect();
@@ -1159,7 +1162,7 @@ fn qr_partition_covers_the_epoch_by_profile() {
             "an intake's header commits exactly the members it holds"
         );
         for &member in &intake.members {
-            let mut discriminant = QrDiscriminant::of(terminal);
+            let mut discriminant = QrDiscriminant::of(boundary);
             for &side in &profile.path() {
                 assert_eq!(
                     qr::classify(Fp::from(member), Fp::from(discriminant)).0,
@@ -1193,6 +1196,7 @@ fn qr_partition_chunks_a_span_past_the_polynomial_capacity() {
         pool.mine(random_block(rng, 2, 3));
     }
     let terminal = pool.block(pool.height()).anchor();
+    let boundary = pool.boundary_after(terminal);
     let published: Vec<Tachygram> = (0..=3)
         .flat_map(|height| pool.block(BlockHeight(height)).tachygrams())
         .flatten()
@@ -1203,7 +1207,7 @@ fn qr_partition_chunks_a_span_past_the_polynomial_capacity() {
         rng,
         &pool,
         (Anchor::default(), terminal),
-        terminal,
+        boundary,
         capacity,
         1,
     );
@@ -1220,14 +1224,14 @@ fn qr_partition_chunks_a_span_past_the_polynomial_capacity() {
             .collect();
         let first = run.first().expect("each side carries an intake");
         assert_eq!(
-            first.pcd.data().2,
+            first.pcd.data().1,
             Anchor::default(),
             "the side's run opens at the span's start"
         );
-        let mut cursor = first.pcd.data().3;
+        let mut cursor = first.pcd.data().2;
         for pair in run.windows(2) {
             assert_eq!(
-                pair[1].pcd.data().2,
+                pair[1].pcd.data().1,
                 cursor,
                 "the side's intakes cover adjacent spans"
             );
@@ -1235,7 +1239,7 @@ fn qr_partition_chunks_a_span_past_the_polynomial_capacity() {
                 pair[0].members.len() + pair[1].members.len() > capacity,
                 "neighbours merge as far as the capacity allows"
             );
-            cursor = pair[1].pcd.data().3;
+            cursor = pair[1].pcd.data().2;
         }
         assert_eq!(cursor, terminal, "the side's run closes at the span's end");
         for intake in run {
@@ -1260,9 +1264,10 @@ fn qr_intakes_at_one_profile_merge_across_adjacent_spans() {
     let mut pool = PoolSim::genesis_with(random_block(rng, 2, 2));
     pool.mine(random_block(rng, 2, 2));
     let terminal = pool.block(pool.height()).anchor();
+    let boundary = pool.boundary_after(terminal);
 
     // A four-member capacity chunks the eight-member span into two roots.
-    let roots = build_qr_partition(rng, &pool, (Anchor::default(), terminal), terminal, 4, 0);
+    let roots = build_qr_partition(rng, &pool, (Anchor::default(), terminal), boundary, 4, 0);
     assert_eq!(roots.len(), 2, "one root per capacity-sized run");
 
     let mut blocks = roots.into_iter();
@@ -1286,30 +1291,33 @@ fn qr_intakes_at_one_profile_merge_across_adjacent_spans() {
         )
         .expect("QrIntakeMerge");
 
-    let (_, _, start, end, profile, ..) = *merged.data();
+    let (_, anchor_prev, anchor_last, _, profile, ..) = *merged.data();
     assert_eq!(profile, QrProfile::ROOT.descend(true));
-    assert_eq!(start, Anchor::default());
-    assert_eq!(end, terminal, "the merged residue bucket spans both runs");
+    assert_eq!(anchor_prev, Anchor::default());
+    assert_eq!(
+        anchor_last, terminal,
+        "the merged residue bucket spans both runs"
+    );
 }
 
 #[test]
 fn qr_filter_descend_records_the_path_by_side() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let profile = QrProfile::ROOT.descend(true).descend(false).descend(true);
 
-    let filter = build_qr_filter_pcd(rng, epoch, terminal, profile);
-    let (residue, non_residue) = profile.discriminants_by_side(terminal);
-    let next = QrDiscriminant::of(terminal).next().next().next();
+    let filter = build_qr_filter_pcd(rng, epoch, boundary, profile);
+    let (residue, non_residue) = profile.discriminants_by_side(boundary);
+    let discriminant = QrDiscriminant::of(boundary).next().next().next();
 
     assert_eq!(
         *filter.data(),
         (
             epoch,
-            terminal,
+            boundary,
             profile,
-            next,
+            discriminant,
             residue.iter().copied().collect::<QrFilterPoly>().commit(),
             non_residue
                 .iter()
@@ -1327,18 +1335,18 @@ fn qr_filter_descend_records_the_path_by_side() {
 fn qr_filter_descend_rejects_a_forged_extension() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
 
     let (seeded, ()) = PROOF_SYSTEM
         .seed(
             rng,
             qr::QrFilterSeed,
-            witness::qr_filter_seed(((), ()), epoch, terminal),
+            witness::qr_filter_seed(((), ()), epoch, boundary),
         )
         .expect("QrFilterSeed");
 
     let (bit, side_filter, _extended) = witness::qr_filter_descend((*seeded.data(), ()), true);
-    let foreign = iter::once(QrDiscriminant::of(terminal).next()).collect::<QrFilterPoly>();
+    let foreign = iter::once(QrDiscriminant::of(boundary).next()).collect::<QrFilterPoly>();
     let err = PROOF_SYSTEM
         .fuse(
             rng,
@@ -1362,13 +1370,13 @@ fn qr_filter_descend_rejects_a_forged_extension() {
 fn qr_filter_descend_refuses_a_full_register() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
-    let terminal = Anchor::from(Fp::random(&mut *rng));
+    let boundary = Anchor::from(Fp::random(&mut *rng));
     let full = QrProfile {
         depth: u64::from(u64::BITS),
         bits: u64::MAX,
     };
 
-    let filter = build_qr_filter_pcd(rng, epoch, terminal, full);
+    let filter = build_qr_filter_pcd(rng, epoch, boundary, full);
     let (_, _, profile, ..) = *filter.data();
     assert_eq!(profile, full, "sixty-four residue sides fill the register");
 
@@ -1400,29 +1408,34 @@ fn qr_bucket_seal_seals_a_fully_routed_intake() {
         pool.mine(random_block(rng, 2, 3));
     }
     let terminal = pool.block(pool.height()).anchor();
+    let boundary = pool.boundary_after(terminal);
 
-    let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), terminal, 24, 2);
+    let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), boundary, 24, 2);
     let intake = routed.into_iter().next().expect("one intake");
-    let (epoch, _, start, _, profile, discriminant, contents) = *intake.pcd.data();
+    let (epoch, anchor_prev, anchor_last, _, profile, discriminant, contents) = *intake.pcd.data();
     let bucket = seal_qr_intake(rng, intake, Anchor::from(Fp::ZERO));
 
     assert_eq!(
         *bucket.pcd.data(),
         (
             epoch,
-            terminal,
-            start,
-            terminal.next_epoch(epoch.next()).unwrap(),
+            anchor_prev,
+            anchor_last,
+            boundary,
             profile,
             discriminant,
             contents
         ),
-        "sealing keeps every field and folds the end onto the next epoch's opening anchor"
+        "sealing keeps every field, pinning both ends of the epoch"
     );
     assert_eq!(
-        start,
+        anchor_prev,
         Anchor::default(),
         "epoch zero's opening anchor is the general rule at prev_last = 0"
+    );
+    assert_eq!(
+        anchor_last, terminal,
+        "and the bucket closes on the epoch's terminal anchor, not past it"
     );
 }
 
@@ -1434,12 +1447,13 @@ fn qr_bucket_seal_rejects_an_intake_short_of_the_epoch_boundary() {
         pool.mine(random_block(rng, 2, 3));
     }
     // Opening the span past the epoch's first stamp leaves it rooted on a stamp
-    // anchor, which the epoch domain cannot produce. The span reaches its
-    // terminal, so only the boundary check can fail.
+    // anchor, which the epoch domain cannot produce. The span still folds to its
+    // own boundary, so only the opening check can fail.
     let terminal = pool.block(BlockHeight(2)).anchor();
+    let boundary = pool.boundary_after(terminal);
     let start = pool.block(BlockHeight(0)).anchor();
 
-    let routed = build_qr_partition(rng, &pool, (start, terminal), terminal, 12, 1);
+    let routed = build_qr_partition(rng, &pool, (start, terminal), boundary, 12, 1);
     let intake = routed.into_iter().next().expect("one intake");
     let witness = witness::qr_bucket_seal((*intake.pcd.data(), ()), Anchor::from(Fp::ZERO));
     let err = PROOF_SYSTEM
@@ -1469,10 +1483,12 @@ fn qr_bucket_seal_rejects_an_intake_short_of_its_terminal() {
         pool.mine(random_block(rng, 2, 3));
     }
     let terminal = pool.block(pool.height()).anchor();
+    let boundary = pool.boundary_after(terminal);
 
     // A six-member capacity chunks the epoch into four roots. The first opens at
-    // the epoch boundary but stops well short of the terminal.
-    let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), terminal, 6, 0);
+    // the epoch boundary but stops well short of the terminal, so its own
+    // anchor_last does not tick to the boundary its routing used.
+    let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), boundary, 6, 0);
     let intake = routed.into_iter().next().expect("one intake");
     let witness = witness::qr_bucket_seal((*intake.pcd.data(), ()), Anchor::from(Fp::ZERO));
     let err = PROOF_SYSTEM
@@ -1490,7 +1506,7 @@ fn qr_bucket_seal_rejects_an_intake_short_of_its_terminal() {
     };
     assert_eq!(
         inner.to_string(),
-        "QrBucketSeal: intake does not reach its terminal"
+        "QrBucketSeal: intake does not run to the epoch's terminal anchor"
     );
 }
 
@@ -1502,12 +1518,12 @@ fn qr_unspent_init_clears_an_absent_nullifier_against_its_bucket() {
         pool.mine(random_block(rng, 2, 3));
     }
     let terminal = pool.block(pool.height()).anchor();
+    let boundary = pool.boundary_after(terminal);
     let epoch = BlockHeight(0).epoch();
     let nf = Nullifier::from(Fp::random(&mut *rng));
-    let nf_next = Nullifier::from(Fp::random(&mut *rng));
 
-    let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), terminal, 24, 2);
-    let profile = qr_profile_of(Fp::from(nf), terminal, 2);
+    let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), boundary, 24, 2);
+    let profile = qr_profile_of(Fp::from(nf), boundary, 2);
     let intake = routed
         .into_iter()
         .find(|intake| intake.pcd.data().4 == profile)
@@ -1521,16 +1537,16 @@ fn qr_unspent_init_clears_an_absent_nullifier_against_its_bucket() {
     );
     let bucket = seal_qr_intake(rng, intake, Anchor::from(Fp::ZERO));
 
-    let filter = build_qr_filter_pcd(rng, epoch, terminal, profile);
+    let filter = build_qr_filter_pcd(rng, epoch, boundary, profile);
     let (claim, ()) = PROOF_SYSTEM
         .fuse(
             rng,
-            qr::QrResidueAttest,
-            witness::qr_residue_attest((*filter.data(), ()), nf, nf_next),
+            qr::QrProfileAttest,
+            witness::qr_profile_attest((*filter.data(), ()), nf.into()),
             filter,
             Proof::trivial().carry::<()>(()),
         )
-        .expect("QrResidueAttest");
+        .expect("QrProfileAttest");
     let witness = witness::qr_unspent_init((*claim.data(), *bucket.pcd.data()), &bucket.members);
     let (unspent, ()) = PROOF_SYSTEM
         .fuse(rng, qr::QrUnspentInit, witness, claim, bucket.pcd)
@@ -1543,30 +1559,33 @@ fn qr_unspent_init_clears_an_absent_nullifier_against_its_bucket() {
         "the segment opens where the partition's span does"
     );
     assert_eq!(
-        anchor_last,
-        terminal.next_epoch(epoch.next()).unwrap(),
-        "and closes at the next epoch's opening anchor"
+        anchor_last, terminal,
+        "and closes on the epoch's terminal anchor, inside the epoch"
     );
     assert_eq!(first, (epoch, nf));
-    assert_eq!(last, (epoch.next(), nf_next));
-    assert_eq!(elapsed, NfSeqPoly::new(epoch, &[nf, nf_next]).commit());
+    assert_eq!(
+        last,
+        (epoch, nf),
+        "one epoch, so both boundary caches agree"
+    );
+    assert_eq!(elapsed, NfSeqPoly::new(epoch, &[nf]).commit());
 }
 
-/// Two consecutive epochs' segments meet at the junction epoch: the first
-/// closes at the next epoch's opening anchor holding that epoch's nullifier,
-/// so `UnspentFuse` joins them with no boundary link between.
+/// Each QR segment stops on its own epoch's terminal anchor, so two
+/// consecutive epochs' segments do not abut. `EndEpochUnspentSeed` supplies the
+/// boundary link between them, and `UnspentFuse` composes the three.
 #[test]
-fn qr_unspent_segments_of_consecutive_epochs_fuse_directly() {
+fn qr_unspent_segments_of_consecutive_epochs_fuse_over_a_boundary_link() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch0 = EpochIndex(0);
     let epoch1 = epoch0.next();
-    let epoch2 = epoch1.next();
     let mut pool = PoolSim::genesis_with(random_block(rng, 1, 1));
     // Fill epoch zero and open epoch one, one stamp per block.
     pool.advance(epoch1.first_block().0 + 1, |_| random_block(rng, 1, 1));
-    let [nf0, nf1, nf2] = array::from_fn(|_| Nullifier::from(Fp::random(&mut *rng)));
+    let [nf0, nf1] = array::from_fn(|_| Nullifier::from(Fp::random(&mut *rng)));
 
     let terminal0 = pool.block(epoch0.last_block()).anchor();
+    let terminal1 = pool.anchor();
     let bucket0 = qr_bucket_for(
         rng,
         &pool,
@@ -1579,26 +1598,25 @@ fn qr_unspent_segments_of_consecutive_epochs_fuse_directly() {
     let bucket1 = qr_bucket_for(
         rng,
         &pool,
-        (pool.block(epoch1.first_block()).prev, pool.anchor()),
+        (pool.block(epoch1.first_block()).prev, terminal1),
         EPOCH_MEMBERS,
         0,
         Fp::from(nf1),
         terminal0,
     );
-    let (_, _, _, end1, ..) = *bucket1.pcd.data();
 
-    let mut segment = |bucket: QrBucketEntry, nf: Nullifier, nf_next: Nullifier| {
-        let (epoch, terminal, ..) = *bucket.pcd.data();
-        let filter = build_qr_filter_pcd(rng, epoch, terminal, QrProfile::ROOT);
+    let mut segment = |bucket: QrBucketEntry, nf: Nullifier| {
+        let (epoch, _, _, boundary, ..) = *bucket.pcd.data();
+        let filter = build_qr_filter_pcd(rng, epoch, boundary, QrProfile::ROOT);
         let (claim, ()) = PROOF_SYSTEM
             .fuse(
                 rng,
-                qr::QrResidueAttest,
-                witness::qr_residue_attest((*filter.data(), ()), nf, nf_next),
+                qr::QrProfileAttest,
+                witness::qr_profile_attest((*filter.data(), ()), nf.into()),
                 filter,
                 Proof::trivial().carry::<()>(()),
             )
-            .expect("QrResidueAttest");
+            .expect("QrProfileAttest");
         let witness =
             witness::qr_unspent_init((*claim.data(), *bucket.pcd.data()), &bucket.members);
         let (unspent, ()) = PROOF_SYSTEM
@@ -1606,34 +1624,61 @@ fn qr_unspent_segments_of_consecutive_epochs_fuse_directly() {
             .expect("QrUnspentInit");
         unspent
     };
-    let left = segment(bucket0, nf0, nf1);
-    let right = segment(bucket1, nf1, nf2);
+    let left = segment(bucket0, nf0);
+    let right = segment(bucket1, nf1);
+    assert_eq!(
+        left.data().4,
+        terminal0,
+        "epoch zero's segment stops inside epoch zero"
+    );
+    assert_ne!(
+        left.data().4,
+        right.data().0,
+        "so it does not reach epoch one's opening anchor"
+    );
 
+    let (crossing, ()) = PROOF_SYSTEM
+        .seed(
+            rng,
+            EndEpochUnspentSeed,
+            witness::end_epoch_unspent_seed(((), ()), terminal0, epoch0, nf0, nf1),
+        )
+        .expect("EndEpochUnspentSeed");
+    let (lifted, ()) = PROOF_SYSTEM
+        .fuse(
+            rng,
+            UnspentFuse,
+            witness::unspent_fuse((*left.data(), *crossing.data()), &[nf0], &[nf0, nf1]),
+            left,
+            crossing,
+        )
+        .expect("UnspentFuse over the boundary link");
     let (fused, ()) = PROOF_SYSTEM
         .fuse(
             rng,
             UnspentFuse,
-            witness::unspent_fuse((*left.data(), *right.data()), &[nf0, nf1], &[nf1, nf2]),
-            left,
+            witness::unspent_fuse((*lifted.data(), *right.data()), &[nf0, nf1], &[nf1]),
+            lifted,
             right,
         )
-        .expect("UnspentFuse");
+        .expect("UnspentFuse over epoch one");
 
     let (anchor_prev, first, elapsed, last, anchor_last) = *fused.data();
     assert_eq!(anchor_prev, Anchor::default());
     assert_eq!(first, (epoch0, nf0));
-    assert_eq!(last, (epoch2, nf2));
-    assert_eq!(anchor_last, end1);
+    assert_eq!(last, (epoch1, nf1));
+    assert_eq!(anchor_last, terminal1);
     assert_eq!(
         elapsed,
-        NfSeqPoly::new(epoch0, &[nf0, nf1, nf2]).commit(),
+        NfSeqPoly::new(epoch0, &[nf0, nf1]).commit(),
         "the junction epoch's member is shared, not repeated"
     );
 }
 
 /// A note created in epoch zero bootstraps from the bucket holding its `cm`
-/// over its own QR segment, rests at epoch one's opening anchor, lifts over
-/// epoch one on ordinary segments, and binds a spend in epoch two.
+/// over its own QR segment, rests at epoch zero's terminal anchor, lifts over
+/// the boundary and epoch one on ordinary segments, and binds a spend in epoch
+/// two.
 #[test]
 fn qr_spendable_init_starts_a_spendable_that_reaches_spend_bind() {
     let rng = &mut StdRng::seed_from_u64(0);
@@ -1673,7 +1718,7 @@ fn qr_spendable_init_starts_a_spendable_that_reaches_spend_bind() {
         nf_bucket.pcd.data().4,
         "the commitment and the nullifier route to different buckets"
     );
-    let (_, _, _, end, ..) = *bucket.pcd.data();
+    let (_, _, anchor_last, ..) = *bucket.pcd.data();
     let unspent = qr_epoch_unspent(rng, &user, &note, &nf_bucket);
 
     let (spendable, ()) = PROOF_SYSTEM
@@ -1687,8 +1732,12 @@ fn qr_spendable_init_starts_a_spendable_that_reaches_spend_bind() {
         .expect("QrSpendableInit");
     assert_eq!(
         *spendable.data(),
-        (note.commitment(), (epoch1, user.nf_at(&note, epoch1)), end),
-        "the spendable rests at the next epoch's opening anchor with that epoch's nullifier"
+        (
+            note.commitment(),
+            (epoch0, user.nf_at(&note, epoch0)),
+            anchor_last
+        ),
+        "the spendable rests on the creation epoch's terminal anchor with that epoch's nullifier"
     );
 
     let lifted = user.lift_to_epoch(rng, &pool, &note, spendable, epoch2);
@@ -1756,9 +1805,9 @@ fn qr_spendable_init_rejects_an_absent_commitment() {
     );
 }
 
-/// A bucket sealed short of the epoch opens at the real boundary but folds
-/// its end from a terminal the chain never reached, so it cannot pair with
-/// the note's whole-epoch segment.
+/// A bucket sealed short of the epoch opens at the real boundary but seeds its
+/// discriminants from a boundary the chain never reached, so it cannot pair
+/// with the note's whole-epoch segment.
 #[test]
 fn qr_spendable_init_rejects_a_bucket_whose_span_differs_from_the_segment() {
     let rng = &mut StdRng::seed_from_u64(0);
@@ -1804,7 +1853,7 @@ fn qr_spendable_init_rejects_a_bucket_whose_span_differs_from_the_segment() {
     };
     assert_eq!(
         inner.to_string(),
-        "QrSpendableInit: segment does not close at the bucket's end"
+        "QrSpendableInit: segment does not close where the bucket does"
     );
 }
 
@@ -1816,29 +1865,29 @@ fn qr_unspent_init_rejects_a_published_nullifier() {
         pool.mine(random_block(rng, 2, 3));
     }
     let terminal = pool.block(pool.height()).anchor();
+    let boundary = pool.boundary_after(terminal);
     let epoch = BlockHeight(0).epoch();
 
-    let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), terminal, 24, 2);
+    let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), boundary, 24, 2);
     let intake = routed
         .into_iter()
         .find(|intake| !intake.members.is_empty())
         .expect("some intake holds a member");
     let published = *intake.members.first().expect("a member");
     let nf = Nullifier::from(Fp::from(published));
-    let nf_next = Nullifier::from(Fp::random(&mut *rng));
     let (_, _, _, _, profile, ..) = *intake.pcd.data();
     let bucket = seal_qr_intake(rng, intake, Anchor::from(Fp::ZERO));
 
-    let filter = build_qr_filter_pcd(rng, epoch, terminal, profile);
+    let filter = build_qr_filter_pcd(rng, epoch, boundary, profile);
     let (claim, ()) = PROOF_SYSTEM
         .fuse(
             rng,
-            qr::QrResidueAttest,
-            witness::qr_residue_attest((*filter.data(), ()), nf, nf_next),
+            qr::QrProfileAttest,
+            witness::qr_profile_attest((*filter.data(), ()), nf.into()),
             filter,
             Proof::trivial().carry::<()>(()),
         )
-        .expect("QrResidueAttest");
+        .expect("QrProfileAttest");
     let witness = witness::qr_unspent_init((*claim.data(), *bucket.pcd.data()), &bucket.members);
     let err = PROOF_SYSTEM
         .fuse(rng, qr::QrUnspentInit, witness, claim, bucket.pcd)
@@ -1861,28 +1910,28 @@ fn qr_unspent_init_rejects_a_foreign_bucket() {
         pool.mine(random_block(rng, 2, 3));
     }
     let terminal = pool.block(pool.height()).anchor();
+    let boundary = pool.boundary_after(terminal);
     let epoch = BlockHeight(0).epoch();
     let nf = Nullifier::from(Fp::random(&mut *rng));
-    let nf_next = Nullifier::from(Fp::random(&mut *rng));
 
-    let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), terminal, 24, 2);
-    let profile = qr_profile_of(Fp::from(nf), terminal, 2);
+    let routed = build_qr_partition(rng, &pool, (Anchor::default(), terminal), boundary, 24, 2);
+    let profile = qr_profile_of(Fp::from(nf), boundary, 2);
     let foreign = routed
         .into_iter()
         .find(|intake| intake.pcd.data().4 != profile)
         .expect("three intakes carry another profile");
     let bucket = seal_qr_intake(rng, foreign, Anchor::from(Fp::ZERO));
 
-    let filter = build_qr_filter_pcd(rng, epoch, terminal, profile);
+    let filter = build_qr_filter_pcd(rng, epoch, boundary, profile);
     let (claim, ()) = PROOF_SYSTEM
         .fuse(
             rng,
-            qr::QrResidueAttest,
-            witness::qr_residue_attest((*filter.data(), ()), nf, nf_next),
+            qr::QrProfileAttest,
+            witness::qr_profile_attest((*filter.data(), ()), nf.into()),
             filter,
             Proof::trivial().carry::<()>(()),
         )
-        .expect("QrResidueAttest");
+        .expect("QrProfileAttest");
     let witness = witness::qr_unspent_init((*claim.data(), *bucket.pcd.data()), &bucket.members);
     let err = PROOF_SYSTEM
         .fuse(rng, qr::QrUnspentInit, witness, claim, bucket.pcd)
@@ -1898,41 +1947,39 @@ fn qr_unspent_init_rejects_a_foreign_bucket() {
 }
 
 #[test]
-fn qr_residue_attest_rejects_a_foreign_interpolant() {
+fn qr_profile_attest_rejects_a_foreign_interpolant() {
     let rng = &mut StdRng::seed_from_u64(0);
     let epoch = EpochIndex(3);
-    let terminal = Anchor::from(Fp::random(&mut *rng));
-    let nf = Nullifier::from(Fp::random(&mut *rng));
-    let nf_next = Nullifier::from(Fp::random(&mut *rng));
-    let profile = qr_profile_of(Fp::from(nf), terminal, 3);
+    let boundary = Anchor::from(Fp::random(&mut *rng));
+    let value = Tachygram::from(Fp::random(&mut *rng));
+    let profile = qr_profile_of(Fp::from(value), boundary, 3);
 
-    let filter = build_qr_filter_pcd(rng, epoch, terminal, profile);
-    let (_, _, residue_filter, _interpolant, quotient, elapsed_seq) =
-        witness::qr_residue_attest((*filter.data(), ()), nf, nf_next);
+    let filter = build_qr_filter_pcd(rng, epoch, boundary, profile);
+    let (_, residue_filter, _interpolant, quotient, sequence) =
+        witness::qr_profile_attest((*filter.data(), ()), value);
 
     // A decomposition exists only along the value's own path, so the forgery
-    // has to come from another nullifier's attestation.
-    let foreign = Nullifier::from(Fp::random(&mut *rng));
+    // has to come from another value's attestation.
+    let foreign = Tachygram::from(Fp::random(&mut *rng));
     let foreign_filter = build_qr_filter_pcd(
         rng,
         epoch,
-        terminal,
-        qr_profile_of(Fp::from(foreign), terminal, 3),
+        boundary,
+        qr_profile_of(Fp::from(foreign), boundary, 3),
     );
-    let (_, _, _, foreign_interpolant, ..) =
-        witness::qr_residue_attest((*foreign_filter.data(), ()), foreign, nf_next);
+    let (_, _, foreign_interpolant, ..) =
+        witness::qr_profile_attest((*foreign_filter.data(), ()), foreign);
 
     let err = PROOF_SYSTEM
         .fuse(
             rng,
-            qr::QrResidueAttest,
+            qr::QrProfileAttest,
             (
-                nf,
-                nf_next,
+                value,
                 residue_filter,
                 foreign_interpolant,
                 quotient,
-                elapsed_seq,
+                sequence,
             ),
             filter,
             Proof::trivial().carry::<()>(()),
@@ -1944,6 +1991,6 @@ fn qr_residue_attest_rejects_a_foreign_interpolant() {
     };
     assert_eq!(
         inner.to_string(),
-        "QrResidueAttest: nullifier fails the residue side of this profile"
+        "QrProfileAttest: value fails the residue side of this profile"
     );
 }

@@ -429,6 +429,14 @@ impl PoolSim {
         self.anchor_index[&anchor].0.epoch()
     }
 
+    /// The boundary anchor closing the epoch `terminal` sits in, which is what
+    /// seeds that epoch's QR discriminants.
+    pub fn boundary_after(&self, terminal: Anchor) -> Anchor {
+        terminal
+            .next_epoch(self.epoch_at(terminal).next())
+            .expect("an indexed anchor sits in a real epoch")
+    }
+
     pub fn advance(
         &mut self,
         count: u32,
@@ -571,7 +579,7 @@ pub(crate) struct QrBucketEntry {
     pub members: Vec<Tachygram>,
 }
 
-/// Seal `intake`; `prev_last` is the last anchor of the preceding epoch.
+/// Seal `intake`; `prev_last` is the terminal anchor of the preceding epoch.
 pub(crate) fn seal_qr_intake<RNG: CryptoRng>(
     rng: &mut RNG,
     intake: QrIntakeEntry,
@@ -599,11 +607,11 @@ pub(crate) fn seed_qr_stamp_intake<RNG: CryptoRng>(
     rng: &mut RNG,
     pool: &PoolSim,
     stamp: &StampEntry,
-    terminal: Anchor,
+    boundary: Anchor,
 ) -> QrIntakeEntry {
     let (entry, members) = (stamp.0, stamp.1.clone());
     let epoch = pool.epoch_at(entry);
-    let witness = witness::qr_stamp_intake_seed(((), ()), entry, epoch, terminal, &members);
+    let witness = witness::qr_stamp_intake_seed(((), ()), entry, epoch, boundary, &members);
     let (pcd, ()) = PROOF_SYSTEM
         .seed(rng, qr::QrStampIntakeSeed, witness)
         .expect("QrStampIntakeSeed");
@@ -622,7 +630,7 @@ fn build_qr_roots<RNG: CryptoRng>(
     rng: &mut RNG,
     pool: &PoolSim,
     (start, end): (Anchor, Anchor),
-    terminal: Anchor,
+    boundary: Anchor,
     capacity: usize,
 ) -> Vec<QrIntakeEntry> {
     let mut runs: Vec<Vec<&StampEntry>> = Vec::new();
@@ -652,11 +660,11 @@ fn build_qr_roots<RNG: CryptoRng>(
             run.last().expect("nonempty run"),
         );
         if run.len() == 1 && first.1.len() > capacity {
-            roots.push(seed_qr_stamp_intake(rng, pool, first, terminal));
+            roots.push(seed_qr_stamp_intake(rng, pool, first, boundary));
             continue;
         }
         let (summary, members) = build_summary_pcd(rng, pool, (first.0, last.3));
-        let witness = witness::qr_summary_intake_init((*summary.data(), ()), terminal);
+        let witness = witness::qr_summary_intake_init((*summary.data(), ()), boundary);
         let (pcd, ()) = PROOF_SYSTEM
             .fuse(
                 rng,
@@ -771,11 +779,11 @@ pub(crate) fn build_qr_partition<RNG: CryptoRng>(
     rng: &mut RNG,
     pool: &PoolSim,
     (start, end): (Anchor, Anchor),
-    terminal: Anchor,
+    boundary: Anchor,
     capacity: usize,
     depth: u64,
 ) -> Vec<QrIntakeEntry> {
-    let mut layer = build_qr_roots(rng, pool, (start, end), terminal, capacity);
+    let mut layer = build_qr_roots(rng, pool, (start, end), boundary, capacity);
     for _ in 0..depth {
         let mut residue = Vec::new();
         let mut non_residue = Vec::new();
@@ -795,14 +803,14 @@ pub(crate) fn build_qr_partition<RNG: CryptoRng>(
 pub(crate) fn build_qr_filter_pcd<RNG: CryptoRng>(
     rng: &mut RNG,
     epoch: EpochIndex,
-    terminal: Anchor,
+    boundary: Anchor,
     profile: QrProfile,
 ) -> Pcd<qr::QrFilter> {
     let (seeded, ()) = PROOF_SYSTEM
         .seed(
             rng,
             qr::QrFilterSeed,
-            witness::qr_filter_seed(((), ()), epoch, terminal),
+            witness::qr_filter_seed(((), ()), epoch, boundary),
         )
         .expect("QrFilterSeed");
 
@@ -824,9 +832,9 @@ pub(crate) fn build_qr_filter_pcd<RNG: CryptoRng>(
 }
 
 /// The profile a value takes at `depth` levels of an epoch's discriminants.
-pub(crate) fn qr_profile_of(value: Fp, terminal: Anchor, depth: u64) -> QrProfile {
+pub(crate) fn qr_profile_of(value: Fp, boundary: Anchor, depth: u64) -> QrProfile {
     let mut profile = QrProfile::ROOT;
-    let mut discriminant = QrDiscriminant::of(terminal);
+    let mut discriminant = QrDiscriminant::of(boundary);
     for _ in 0..depth {
         profile = profile.descend(qr::classify(value, Fp::from(discriminant)).0);
         discriminant = discriminant.next();

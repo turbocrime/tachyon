@@ -13,16 +13,17 @@ use crate::{
     digest::poseidon,
 };
 
-/// One depth's discriminant $R_j$, with $R_1 = H(\mathsf{terminal})$ and
+/// One depth's discriminant $R_j$, with $R_1 = H(\mathsf{boundary})$ and
 /// $R_{j+1} = H(R_j)$. Every discriminant postdates the epoch's tachygrams.
 #[derive(Clone, Copy, Debug, From, Into, PartialEq, TotalEq)]
 pub struct QrDiscriminant(pub Fp);
 
 impl QrDiscriminant {
-    /// The epoch's first discriminant.
+    /// The epoch's first discriminant, seeded on the boundary anchor that
+    /// closes the epoch.
     #[must_use]
-    pub fn of(terminal: Anchor) -> Self {
-        Self(poseidon::qr_discriminant(Fp::from(terminal)))
+    pub fn of(boundary: Anchor) -> Self {
+        Self(poseidon::qr_discriminant(Fp::from(boundary)))
     }
 
     /// The next depth's discriminant.
@@ -160,11 +161,11 @@ impl QrProfile {
     #[must_use]
     pub fn discriminants_by_side(
         self,
-        terminal: Anchor,
+        boundary: Anchor,
     ) -> (Vec<QrDiscriminant>, Vec<QrDiscriminant>) {
         let mut residue = Vec::new();
         let mut non_residue = Vec::new();
-        let mut discriminant = QrDiscriminant::of(terminal);
+        let mut discriminant = QrDiscriminant::of(boundary);
         for bit in self.path() {
             if bit {
                 residue.push(discriminant);
@@ -184,11 +185,11 @@ impl QrProfile {
     #[must_use]
     pub fn class_decomposition(
         self,
-        terminal: Anchor,
+        boundary: Anchor,
         side: bool,
         value: Fp,
     ) -> Option<(QrInterpolantPoly, QrQuotientPoly)> {
-        let (residue, non_residue) = self.discriminants_by_side(terminal);
+        let (residue, non_residue) = self.discriminants_by_side(boundary);
         let points: Vec<(Fp, Fp)> = if side { residue } else { non_residue }
             .into_iter()
             .map(|discriminant| {
@@ -252,27 +253,27 @@ mod tests {
 
     #[test]
     fn the_discriminants_follow_the_path() {
-        let terminal = Anchor::default();
-        let first = QrDiscriminant::of(terminal);
+        let boundary = Anchor::default();
+        let first = QrDiscriminant::of(boundary);
         let second = first.next();
         assert_ne!(first, second);
 
         let (residue, non_residue) = QrProfile::ROOT
             .descend(true)
             .descend(false)
-            .discriminants_by_side(terminal);
+            .discriminants_by_side(boundary);
         assert_eq!(residue, [first]);
         assert_eq!(non_residue, [second]);
 
-        let (root_residue, root_non_residue) = QrProfile::ROOT.discriminants_by_side(terminal);
+        let (root_residue, root_non_residue) = QrProfile::ROOT.discriminants_by_side(boundary);
         assert!(root_residue.is_empty() && root_non_residue.is_empty());
     }
 
     #[test]
-    fn the_discriminant_derives_from_the_terminal_alone() {
-        let terminal = Anchor::default();
-        let first = QrDiscriminant::of(terminal);
-        let again = QrDiscriminant::of(terminal);
+    fn the_discriminant_derives_from_the_boundary_alone() {
+        let boundary = Anchor::default();
+        let first = QrDiscriminant::of(boundary);
+        let again = QrDiscriminant::of(boundary);
         assert_eq!(first, again);
         assert_ne!(first.0, Fp::ZERO, "derivation must move off zero");
     }

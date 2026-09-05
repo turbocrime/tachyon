@@ -40,7 +40,7 @@ A `Summary` folds a run of one epoch's stamps into one accumulator alongside the
 
 Summaries are also the roots of an epoch's QR evidence.
 Once per epoch a builder routes every published tachygram into buckets by quadratic-residue profile (`QrSummaryIntakeInit`, `QrStampIntakeSeed`, `QrIntakeSplit`, `QrSideDescend`, `QrIntakeMerge`, `QrBucketSeal`) and records each profile's path as a pair of filter polynomials (`QrFilterSeed`, `QrFilterDescend`).
-A nullifier has one profile, so it can have been published in only one bucket, and clearing it against that bucket clears the epoch (`QrResidueAttest`, `QrUnspentInit`).
+A nullifier has one profile, so it can have been published in only one bucket, and clearing it against that bucket clears the epoch (`QrProfileAttest`, `QrUnspentInit`).
 `QrSpendableInit` starts a wallet's spendable from the bucket holding its note's creation, over the note's own QR segment for that epoch.
 The evidence is note-independent and rebuildable from public data.
 
@@ -89,7 +89,7 @@ The wallet runs every step that touches the note's commitment or master key.
 It derives its nullifier windows (`NfMasterSeed`, `NfDerive`, `NullifierFuse`), derives spendable status from its own derivation (`SpendableInit`, `SummarySpendableInit`, `QrSpendableInit`), binds and lifts over sync-built segments (`UnspentBind`, `SpendableLift`), and produces spend and output stamps (`SpendBind`, `SpendStamp`, `OutputBind`, `OutputStamp`).
 
 The sync service holds the per-epoch nullifier values the wallet shared and pool history.
-It builds summaries (`SummarySeed`, `SummaryAdvance`), routes each epoch's tachygrams into QR evidence (`QrSummaryIntakeInit`, `QrStampIntakeSeed`, `QrIntakeSplit`, `QrSideDescend`, `QrIntakeMerge`, `QrBucketSeal`, `QrFilterSeed`, `QrFilterDescend`), and produces the `ArbitraryUnspent` segments that carry the spendable forward (`QrResidueAttest` and `QrUnspentInit` over one bucket; `SummaryUnspentInit` over a summary; `UnspentSeed`, `EndEpochUnspentSeed`, `UnspentFuse` per stamp), then hands the composed segment to the wallet to bind and lift over; it never sees a note, `cm`, `psi`, or `mk`.
+It builds summaries (`SummarySeed`, `SummaryAdvance`), routes each epoch's tachygrams into QR evidence (`QrSummaryIntakeInit`, `QrStampIntakeSeed`, `QrIntakeSplit`, `QrSideDescend`, `QrIntakeMerge`, `QrBucketSeal`, `QrFilterSeed`, `QrFilterDescend`), and produces the `ArbitraryUnspent` segments that carry the spendable forward (`QrProfileAttest` and `QrUnspentInit` over one bucket; `SummaryUnspentInit` over a summary; `UnspentSeed`, `EndEpochUnspentSeed`, `UnspentFuse` per stamp), then hands the composed segment to the wallet to bind and lift over; it never sees a note, `cm`, `psi`, or `mk`.
 
 The aggregator works only with published `StampHeader`s.
 It aligns anchors with `StampLift` over `AnchorChain` segments (`AnchorSeed`, `AnchorFuse`) and fuses with `MergeStamp`.
@@ -109,7 +109,7 @@ It aligns anchors with `StampLift` over `AnchorChain` segments (`AnchorSeed`, `A
 | QrSideDescend | possible | yes | no |
 | QrFilterSeed | possible | yes | no |
 | QrFilterDescend | possible | yes | no |
-| QrResidueAttest | possible | yes | no |
+| QrProfileAttest | possible | yes | no |
 | QrUnspentInit | possible | yes | no |
 | UnspentSeed | possible | yes | no |
 | EndEpochUnspentSeed | possible | yes | no |
@@ -168,11 +168,13 @@ Summaries root unbound like every seed. A consuming lineage closes at its own sp
 ### QR epoch evidence
 
 An epoch's evidence partitions its tachygrams by a sequence of quadratic tests.
-The discriminants iterate from the epoch's end-of-epoch anchor,
+The discriminants iterate from the boundary anchor that closes the epoch,
 
-$$R_1 = H(\mathsf{terminal}), \qquad R_{j+1} = H(R_j),$$
+$$R_1 = H(\mathsf{boundary}), \qquad R_{j+1} = H(R_j),$$
 
 so every discriminant postdates every tachygram in the epoch.
+No QR header ever rests on that anchor, since the boundary domain is never a chain link and every span here stays inside the epoch.
+The bucket names it, ticks to it at the seal, and stops one link short of it.
 A value takes the residue side at depth $j$ when $x + R_j$ is a square or zero.
 A profile is the string of sides on the path to a bucket.
 
@@ -187,31 +189,33 @@ The exceptional value $-R$ has root $0$ under either class, so the split also op
 Each descend requires the parent's depth below 64, the width of the profile's side register, so $\mathsf{bits} < 2^{64} < p$ and two paths never share a profile.
 A layer splits every intake, then merges same-profile neighbours while the product fits one polynomial.
 
-`QrBucketSeal` turns a fully routed intake into a `QrBucket`, requiring
+`QrBucketSeal` turns a fully routed intake into a `QrBucket` by pinning both ends of the epoch,
 
-$$\mathsf{start} = H_\mathsf{ep}(\mathsf{prev\_last}, \mathsf{epoch}), \qquad \mathsf{end} = \mathsf{terminal},$$
+$$\mathsf{anchor\_prev} = H_\mathsf{ep}(\mathsf{prev\_last}, \mathsf{epoch}), \qquad \mathsf{boundary} = H_\mathsf{ep}(\mathsf{anchor\_last}, \mathsf{epoch} + 1).$$
 
-and closing the bucket at the next epoch's opening anchor $H_\mathsf{ep}(\mathsf{terminal}, \mathsf{epoch} + 1)$, folded natively.
-Only an epoch transition produces an anchor in the epoch domain, so `start` is an epoch's opening anchor and a partially routed intake cannot seal.
+Only an epoch transition produces an anchor in the epoch domain, so `anchor_prev` is an epoch's opening boundary anchor.
 Epoch zero's opening anchor is this rule at $\mathsf{prev\_last} = 0$.
-`terminal` is free at every root; one short of the epoch's last anchor folds to an anchor off the chain, which no honest segment continues, so the consuming lineage never reaches consensus.
+`boundary` is free at every root, but every discriminant the routing used iterates from it, so an intake that stops short carries an `anchor_last` whose tick misses it and the seal rejects the intake outright.
+The bucket therefore spans $[\mathsf{anchor\_prev}, \mathsf{anchor\_last}]$, closing on the epoch's terminal anchor rather than past it.
 `QrBucketSeal` is the only step that produces a `QrBucket`, and `QrUnspentInit` consumes nothing else.
 
 `QrFilter` records a profile's path as the discriminants it classified on, sorted by side, one lineage per profile.
 `QrFilterSeed` opens the empty pair and `QrFilterDescend` extends the selected side by $(Y - R)$, the multiplier being public in circuit.
 
-The consumer reads the same identity the other way, with the path's discriminants as the roots and the nullifier as the shift.
-`QrResidueAttest` proves
+The consumer reads the same identity the other way, with the path's discriminants as the roots and the tested value as the shift.
+`QrProfileAttest` proves
 
-$$g(y)^2 - (\mathsf{nf} + y) = P_\mathsf{res}(y)\, h_\mathsf{res}(y)$$
+$$g(y)^2 - (\mathsf{value} + y) = P_\mathsf{res}(y)\, h_\mathsf{res}(y)$$
 
-at one challenge, which settles $g(R_j)^2 = \mathsf{nf} + R_j$ at every root $R_j$ of $P_\mathsf{res}$, at any depth, and binds the two-member `elapsed` of $(e, \mathsf{nf})$ and $(e + 1, \mathsf{nf\_next})$.
-`QrUnspentInit` proves the non-residue half the same way, opens $P_\mathsf{non}$ nonzero at $-\mathsf{nf}$ so the exceptional discriminant stays residue-side, and opens the bucket at $\mathsf{nf}$.
-The nullifier's class is then fixed at every level of the bucket's path, so no other bucket of the epoch can hold it.
-The consumer checks that claim and bucket agree on epoch, terminal, profile and discriminant, and emits the bucket's span as a crossing segment, so consecutive epochs' segments fuse at the junction epoch with no boundary link between them; `start` closes through the lineage that consumes the emitted segment.
+at one challenge, which settles $g(R_j)^2 = \mathsf{value} + R_j$ at every root $R_j$ of $P_\mathsf{res}$, at any depth, and binds the single-member sequence naming $\mathsf{value}$ in $e$.
+The claim says nothing about what the value is, so any tachygram can hold one.
+`QrUnspentInit` proves the non-residue half the same way, opens $P_\mathsf{non}$ nonzero at $-\mathsf{value}$ so the exceptional discriminant stays residue-side, and opens the bucket at $\mathsf{value}$.
+Its class is then fixed at every level of the bucket's path, so no other bucket of the epoch can hold it.
+The consumer checks that claim and bucket agree on epoch, boundary, profile and discriminant, reads the value as a nullifier, and emits the bucket's span as a single-epoch segment; `anchor_prev` closes through the lineage that consumes it.
+Two consecutive epochs' segments do not abut, since each stops on its own epoch's terminal anchor, so `EndEpochUnspentSeed` supplies the link between them.
 
 `QrSpendableInit` bootstraps a spendable from the bucket holding the note's creation.
-Its left input is the note's `Unspent` over that epoch, the QR segment bound by `UnspentBind`, so `cm` and the whole-epoch absence of the nullifier arrive on the header; the step opens the bucket at $\mathsf{cm}$ for zero, requires the segment's span to equal the bucket's, and emits the spendable at the segment's tip.
+Its left input is the note's `Unspent` over that epoch, the QR segment bound by `UnspentBind`, so `cm` and the whole-epoch absence of the nullifier arrive on the header; the step opens the bucket at $\mathsf{cm}$ for zero, requires the segment's span to equal the bucket's, and emits the spendable at the segment's tip, the epoch's terminal anchor.
 Membership needs no profile: every bucket divides the epoch's stamp polynomials, so a root of any bucket is a tachygram published in its span, and the span equality closes the bucket's anchors through the lineage the segment already joins.
 
 ### Derivation window
@@ -426,11 +430,11 @@ flowchart LR
 | ------ | ------ |
 | AnchorChain | (start, end) |
 | Summary | (epoch, anchor_prev, anchor_last, acc_commit) |
-| QrIntake | (epoch, terminal, start, end, profile, discriminant, contents) |
-| QrIntakeSides | (epoch, terminal, start, end, profile, discriminant, residue, non_residue) |
-| QrBucket | (epoch, terminal, start, end, profile, discriminant, contents) |
-| QrFilter | (epoch, terminal, profile, next, residue_filter, non_residue_filter) |
-| QrProfileClaim | (epoch, terminal, profile, next, nf, nf_next, non_residue_filter, elapsed) |
+| QrIntake | (epoch, anchor_prev, anchor_last, boundary, profile, discriminant, contents) |
+| QrIntakeSides | (epoch, anchor_prev, anchor_last, boundary, profile, discriminant, residue, non_residue) |
+| QrBucket | (epoch, anchor_prev, anchor_last, boundary, profile, discriminant, contents) |
+| QrFilter | (epoch, boundary, profile, discriminant, residue_filter, non_residue_filter) |
+| QrProfileClaim | (epoch, boundary, profile, discriminant, value, non_residue_filter, sequence) |
 | ArbitraryUnspent | (anchor_prev, (epoch_start, nf_start), elapsed, (epoch_last, nf_last), anchor_last) |
 | Unspent | (cm, anchor_prev, (epoch_start, nf_start), (epoch_last, nf_last), anchor_last) |
 | NfMasterHeader | (cm, mk) |
@@ -451,15 +455,15 @@ flowchart LR
 | SummaryUnspentInit | Summary | — | nf, summary_set, elapsed_seq | ArbitraryUnspent |
 | SummarySpendableInit | NullifierDerivation | Summary | creation_epoch, present_nf, nf_seq, complement_seq, summary_set | SpendableHeader |
 | QrSpendableInit | Unspent | QrBucket | contents | SpendableHeader |
-| QrSummaryIntakeInit | Summary | — | terminal | QrIntake |
-| QrStampIntakeSeed | — | — | anchor_prev, epoch, terminal, stamp_commit | QrIntake |
+| QrSummaryIntakeInit | Summary | — | boundary | QrIntake |
+| QrStampIntakeSeed | — | — | anchor_prev, epoch, boundary, stamp_commit | QrIntake |
 | QrIntakeMerge | QrIntake | QrIntake | left_contents, right_contents, merged | QrIntake |
 | QrIntakeSplit | QrIntake | — | contents, residue, non_residue | QrIntakeSides |
 | QrSideDescend | QrIntakeSides | — | bit, side_contents, interpolant, quotient | QrIntake |
 | QrBucketSeal | QrIntake | — | prev_last | QrBucket |
-| QrFilterSeed | — | — | epoch, terminal | QrFilter |
+| QrFilterSeed | — | — | epoch, boundary | QrFilter |
 | QrFilterDescend | QrFilter | — | bit, side_filter, extended | QrFilter |
-| QrResidueAttest | QrFilter | — | nf, nf_next, residue_filter, interpolant, quotient, elapsed_seq | QrProfileClaim |
+| QrProfileAttest | QrFilter | — | value, residue_filter, interpolant, quotient, sequence | QrProfileClaim |
 | QrUnspentInit | QrProfileClaim | QrBucket | non_residue_filter, interpolant, quotient, contents | ArbitraryUnspent |
 | UnspentSeed | — | — | anchor_prev, (epoch, nf), stamp_tg_set, elapsed_seq | ArbitraryUnspent |
 | EndEpochUnspentSeed | — | — | anchor_prev, (epoch_prev, nf_prev), nf, elapsed_seq | ArbitraryUnspent |

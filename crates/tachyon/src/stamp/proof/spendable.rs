@@ -275,12 +275,13 @@ impl Step for SummarySpendableInit {
 /// over the note's [`Unspent`] for that epoch.
 ///
 /// The `Unspent` is the epoch's QR segment bound to the note
-/// ([`QrResidueAttest`](super::qr::QrResidueAttest),
+/// ([`QrProfileAttest`](super::qr::QrProfileAttest),
 /// [`QrUnspentInit`](super::qr::QrUnspentInit),
 /// [`UnspentBind`](super::pool::UnspentBind)), so `cm` and the whole-epoch
 /// absence of the note's nullifier arrive on its header. This step adds the
 /// membership $\mathsf{contents}(\mathsf{cm}) = 0$ and emits the spendable at
-/// the segment's tip.
+/// the segment's tip, the epoch's terminal anchor, which
+/// [`EndEpochUnspentSeed`](super::pool::EndEpochUnspentSeed) lifts across.
 ///
 /// Committed polynomials: `contents`; one oracle.
 ///
@@ -290,10 +291,11 @@ impl Step for SummarySpendableInit {
 /// polynomials, root through split and merge, so a root of any bucket is a
 /// tachygram published in the bucket's span. The span closes by equality with
 /// the segment's: `anchor_last` is emitted and reaches consensus through the
-/// lineage, and the bucket's `end` folds from its own `terminal`, so the stamp
-/// commitments absorbed between `start` and `end` are the published ones.
-/// Without that equality a bucket over invented stamps onto the real opening
-/// anchor would pass the opening.
+/// lineage, and [`QrBucketSeal`](super::qr::QrBucketSeal) ties the bucket's own
+/// `anchor_last` to the boundary its routing used, so the stamp commitments
+/// absorbed across the span are the published ones. Without that equality a
+/// bucket over invented stamps onto the real opening anchor would pass the
+/// opening.
 #[derive(Debug)]
 pub struct QrSpendableInit;
 
@@ -318,7 +320,7 @@ impl Step for QrSpendableInit {
             (unspent_epoch_last, unspent_nf_last),
             unspent_anchor_last,
         ): <Self::Left as Header>::Data,
-        (bucket_epoch, _, start, end, _, _, bucket_commit): <Self::Right as Header>::Data,
+        (bucket_epoch, bucket_anchor_prev, bucket_anchor_last, _, _, _, bucket_commit): <Self::Right as Header>::Data,
     ) -> ragu::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
         enforce_equal_point(
             Eq::from(contents.commit()),
@@ -330,12 +332,12 @@ impl Step for QrSpendableInit {
             "QrSpendableInit: segment does not start in the bucket's epoch",
         )?;
         enforce_zero(
-            Fp::from(unspent_anchor_prev) - Fp::from(start),
-            "QrSpendableInit: segment does not open at the bucket's start",
+            Fp::from(unspent_anchor_prev) - Fp::from(bucket_anchor_prev),
+            "QrSpendableInit: segment does not open where the bucket does",
         )?;
         enforce_zero(
-            Fp::from(unspent_anchor_last) - Fp::from(end),
-            "QrSpendableInit: segment does not close at the bucket's end",
+            Fp::from(unspent_anchor_last) - Fp::from(bucket_anchor_last),
+            "QrSpendableInit: segment does not close where the bucket does",
         )?;
 
         // Inclusion: cm ∈ bucket ⇔ the contents vanish at cm.
