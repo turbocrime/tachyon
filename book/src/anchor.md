@@ -15,7 +15,7 @@ A block that publishes no stamp produces no link, so the anchor is constant acro
 Each stamp lands at a definite position in a definite block, when the block is accepted by consensus. A stamp's contribution to the pool state is
 
 $$
-\mathsf{anchor}' = \mathsf{Poseidon}_\mathtt{Tachyon\text{-}StampFld}(\mathsf{anchor},\ e,\ \mathsf{tg}_\mathsf{lo},\ \mathsf{tg}_\mathsf{hi})
+\mathsf{anchor}' = \mathsf{Poseidon}_\mathtt{Tachyon\text{-}AnchorSt}(\mathsf{anchor},\ e,\ \mathsf{tg}_\mathsf{lo},\ \mathsf{tg}_\mathsf{hi})
 $$
 
 where $e$ is the containing block's epoch and $(\mathsf{tg}_\mathsf{lo}, \mathsf{tg}_\mathsf{hi})$ are the two 128-bit limbs of the stamp's tachygram-set commitment[^tachygrams] in compressed form. The compressed encoding carries $x$ with the sign of $y$ in its high bit, so the limb pair determines the point.
@@ -27,7 +27,7 @@ where $e$ is the containing block's epoch and $(\mathsf{tg}_\mathsf{lo}, \mathsf
 When the chain crosses from epoch $e$ into epoch $e+1$:
 
 $$
-\mathsf{anchor}' = \mathsf{Poseidon}_\mathtt{Tachyon\text{-}EpochStp}(\mathsf{anchor},\ e+1)
+\mathsf{anchor}' = \mathsf{Poseidon}_\mathtt{Tachyon\text{-}AnchorEp}(\mathsf{anchor},\ e+1)
 $$
 
 Both link types absorb an epoch, so the epoch index alone does not distinguish them. What distinguishes this one is that it absorbs the epoch being *entered* rather than the epoch it sits inside, under its own domain. Reaching a boundary anchor by a stamp link would therefore be a cross-domain collision, which is what lets a proof pin a lineage to a real epoch boundary.

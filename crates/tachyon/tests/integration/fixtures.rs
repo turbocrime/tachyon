@@ -624,8 +624,8 @@ pub(crate) fn seed_qr_stamp_intake<RNG: CryptoRng>(
 /// A run of consecutive stamps closes before the next stamp would carry it past
 /// `capacity`, and is rooted over its summary. A stamp that alone exceeds
 /// `capacity` is rooted on its own through
-/// [`QrStampIntakeSeed`](qr::QrStampIntakeSeed), which takes a stamp no summary
-/// could hold. Chunking counts members, and is indifferent to block boundaries.
+/// [`QrStampIntakeSeed`](qr::QrStampIntakeSeed), skipping the summary steps.
+/// Chunking counts members, and is indifferent to block boundaries.
 fn build_qr_roots<RNG: CryptoRng>(
     rng: &mut RNG,
     pool: &PoolSim,

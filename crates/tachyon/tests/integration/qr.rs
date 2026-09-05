@@ -1511,7 +1511,7 @@ fn qr_bucket_seal_rejects_an_intake_short_of_its_terminal() {
 }
 
 #[test]
-fn qr_unspent_init_clears_an_absent_nullifier_against_its_bucket() {
+fn qr_unspent_init_accepts_an_absent_nullifier_against_its_bucket() {
     let rng = &mut StdRng::seed_from_u64(0);
     let mut pool = PoolSim::genesis_with(random_block(rng, 2, 3));
     for _ in 0..3 {

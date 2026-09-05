@@ -40,7 +40,7 @@ A `Summary` folds a run of one epoch's stamps into one accumulator alongside the
 
 Summaries are also the roots of an epoch's QR evidence.
 Once per epoch a builder routes every published tachygram into buckets by quadratic-residue profile (`QrSummaryIntakeInit`, `QrStampIntakeSeed`, `QrIntakeSplit`, `QrSideDescend`, `QrIntakeMerge`, `QrBucketSeal`) and records each profile's path as a pair of filter polynomials (`QrFilterSeed`, `QrFilterDescend`).
-A nullifier has one profile, so it can have been published in only one bucket, and clearing it against that bucket clears the epoch (`QrProfileAttest`, `QrUnspentInit`).
+A nullifier has one profile, so it can have been published in only one bucket, and one exclusion opening on that bucket proves it absent from the epoch (`QrProfileAttest`, `QrUnspentInit`).
 `QrSpendableInit` starts a wallet's spendable from the bucket holding its note's creation, over the note's own QR segment for that epoch.
 The evidence is note-independent and rebuildable from public data.
 
@@ -178,7 +178,7 @@ The bucket names it, ticks to it at the seal, and stops one link short of it.
 A value takes the residue side at depth $j$ when $x + R_j$ is a square or zero.
 A profile is the string of sides on the path to a bucket.
 
-`QrSummaryIntakeInit` starts a `QrIntake` from a `Summary` at depth zero, `QrStampIntakeSeed` starts one from a single stamp too large to summarize, and `QrIntakeMerge` joins two same-profile intakes whose spans meet, so spans compose as anchor segments do.
+`QrSummaryIntakeInit` starts a `QrIntake` from a `Summary` at depth zero, `QrStampIntakeSeed` starts one from a single stamp directly, skipping the summary steps a stamp that fills its polynomial gains nothing from, and `QrIntakeMerge` joins two same-profile intakes whose spans meet, so spans compose as anchor segments do.
 `QrIntakeSplit` factors an intake's contents into two sides as `QrIntakeSides`, and `QrSideDescend` extracts one side while attesting the other at its class multiplier $c$:
 
 $$g(X)^2 - c\,(X + R) = s(X)\, h(X)$$
