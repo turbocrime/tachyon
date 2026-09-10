@@ -31,15 +31,22 @@ impl NoteMasterKey {
     #[expect(
         clippy::as_conversions,
         clippy::cast_possible_truncation,
-        clippy::indexing_slicing,
         clippy::integer_division_remainder_used,
         reason = "the remainder indexes an array of PoseidonFp::RATE"
     )]
     pub fn derive_nullifier(&self, epoch: EpochIndex) -> Nullifier {
         let index = u32::from(epoch);
         let inner_index = index as usize % PoseidonFp::RATE;
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "the remainder is at most the index it came from"
+        )]
         let epoch_start = EpochIndex::new(index - (inner_index as u32));
-        Nullifier::from(poseidon::nullifier_group(self.0, epoch_start.into())[inner_index])
+        let group = poseidon::nullifier_group(self.0, epoch_start.into());
+        let Some(nf) = group.get(inner_index) else {
+            unreachable!("the remainder is below PoseidonFp::RATE");
+        };
+        Nullifier::from(*nf)
     }
 
     /// Derive one derivation window: the nullifiers for
@@ -61,16 +68,26 @@ impl NoteMasterKey {
         clippy::indexing_slicing,
         clippy::integer_division,
         clippy::integer_division_remainder_used,
-        reason = "both widths are small powers of two and divide exactly"
+        reason = "both widths are small powers of two and divide exactly, so the slot splits into a group and an offset within it"
     )]
     pub fn derive_window(&self, epoch_start: EpochIndex) -> [Nullifier; NF_DERIVATION_WIDTH] {
-        debug_assert_eq!(
-            u32::from(epoch_start) % (PoseidonFp::RATE as u32),
-            0,
-            "epoch_start must be group-aligned"
-        );
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "PoseidonFp::RATE is a nonzero constant"
+        )]
+        {
+            debug_assert_eq!(
+                u32::from(epoch_start) % (PoseidonFp::RATE as u32),
+                0,
+                "epoch_start must be group-aligned"
+            );
+        }
         let groups: [[Fp; PoseidonFp::RATE]; NF_DERIVATION_WIDTH / PoseidonFp::RATE] =
             array::from_fn(|offset| {
+                #[expect(
+                    clippy::arithmetic_side_effects,
+                    reason = "the window is 16 epochs wide and EpochIndex::new asserts the start is a real epoch"
+                )]
                 let group_start = u32::from(epoch_start) + (offset * PoseidonFp::RATE) as u32;
                 poseidon::nullifier_group(self.0, Fp::from(EpochIndex::new(group_start)))
             });

@@ -170,6 +170,10 @@ pub fn unspent_bind(
 ) -> StepWitness<'static, UnspentBind> {
     let (_, (epoch_start, _), _, (epoch_last, _), _) = unspent;
     let (_, deriv_start, ..) = deriv;
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the unspent's span begins inside the derivation range"
+    )]
     let lo = u32::from(epoch_start - deriv_start) as usize;
     let (head, from_span) = window.split_at(lo);
     let (_span, tail) = from_span.split_at(elapsed.len());
@@ -209,6 +213,10 @@ pub fn spendable_init(
     window: &[Nullifier],
 ) -> StepWitness<'static, SpendableInit> {
     let (_, deriv_start, ..) = deriv;
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the creation epoch is inside the derivation range"
+    )]
     let lo = u32::from(creation_epoch - deriv_start) as usize;
     let (head, from_creation) = window.split_at(lo);
     let Some((present_nf, tail)) = from_creation.split_first() else {
@@ -252,6 +260,10 @@ pub fn spend_bind(
 ) -> StepWitness<'static, SpendBind> {
     let (_, (epoch, _), _) = spendable;
     let (_, deriv_start, ..) = deriv;
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the spend epoch is inside the derivation range"
+    )]
     let lo = u32::from(epoch - deriv_start) as usize;
     let (head, from_spend) = window.split_at(lo);
     let (pair, tail) = from_spend.split_at(2);
@@ -357,6 +369,10 @@ pub fn summary_spendable_init(
     window: &[Nullifier],
 ) -> StepWitness<'static, SummarySpendableInit> {
     let (_, deriv_start, ..) = deriv;
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the creation epoch is inside the derivation range"
+    )]
     let lo = u32::from(creation_epoch - deriv_start) as usize;
     let (head, from_creation) = window.split_at(lo);
     let Some((present_nf, tail)) = from_creation.split_first() else {

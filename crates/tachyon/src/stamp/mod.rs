@@ -379,6 +379,10 @@ impl Plan {
         // lists. Digests are computed once per leaf and carried through the
         // fold rather than re-derived at each merge step. The covered-actions
         // digest is computed once, on the final stamp.
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "a plan's action count is far below usize::MAX"
+        )]
         let mut entries = Vec::with_capacity(self.spends.len() + self.outputs.len());
 
         if self.spends.len() != spend_pcds.len() {

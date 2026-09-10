@@ -178,6 +178,7 @@ impl Step for NfDerive {
         _right: <Self::Right as Header>::Data,
     ) -> ragu_core::Result<(<Self::Output as Header>::Data, Self::Aux<'source>)> {
         #[expect(
+            clippy::arithmetic_side_effects,
             clippy::as_conversions,
             clippy::integer_division_remainder_used,
             reason = "the group width is a small constant"
@@ -192,6 +193,7 @@ impl Step for NfDerive {
         // through `EpochIndex`, which cannot hold such an index; a real
         // circuit sees a raw field element and needs the check.
         #[expect(
+            clippy::arithmetic_side_effects,
             clippy::as_conversions,
             clippy::cast_possible_truncation,
             reason = "the window width is a small constant"

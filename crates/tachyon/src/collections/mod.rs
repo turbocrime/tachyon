@@ -13,6 +13,10 @@ pub(crate) mod qr;
 
 fn trim(coeffs: &mut Vec<Fp>) {
     if let Some(last_nonzero_idx) = coeffs.iter().rposition(|co| co != &Fp::ZERO) {
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "rposition returns an index below len"
+        )]
         coeffs.truncate(last_nonzero_idx + 1);
     }
 }

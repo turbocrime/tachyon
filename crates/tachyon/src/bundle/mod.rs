@@ -618,6 +618,10 @@ impl Bundle<ProofStamp> {
         let other_descs: Vec<action::Descriptor> =
             adjuncts.iter().flat_map(|&adj| adj.descriptors()).collect();
 
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "a transaction's action count is far below usize::MAX"
+        )]
         let n_descs = own_descs.len() + other_descs.len();
 
         let unique_descs: BTreeSet<action::Descriptor> =
@@ -634,6 +638,10 @@ impl Bundle<ProofStamp> {
         // Every action publishes two tachygrams: a spend its nullifier pair, an
         // output its commitment and pad. The set collapses duplicates, so a
         // tachygram reused across actions also shows up as a short count.
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "two tachygrams per action, and the action count is far below usize::MAX"
+        )]
         if self.stamp.tachygrams.len() != 2 * unique_descs.len() {
             return Err(VerifyCoverageError::TachygramArityMismatch);
         }
@@ -797,6 +805,10 @@ impl<S: StampState> Bundle<S> {
         let mut chunk = [0u8; 64];
         #[expect(clippy::indexing_slicing, reason = "take is clamped to chunk.len()")]
         while memo.len() < n_memo {
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "the loop condition proves memo.len() < n_memo"
+            )]
             let take = (n_memo - memo.len()).min(chunk.len());
             reader.read_exact(&mut chunk[..take])?;
             memo.extend_from_slice(&chunk[..take]);

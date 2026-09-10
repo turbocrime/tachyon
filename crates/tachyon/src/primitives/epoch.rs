@@ -42,6 +42,10 @@ impl EpochIndex {
     /// Indexes past [`EPOCH_MAX`] map to no block height in the protocol's
     /// range, so the final epoch has no successor.
     #[must_use]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the branch bounds the index below EPOCH_MAX"
+    )]
     pub const fn next(self) -> Option<Self> {
         if self.0 < EPOCH_MAX {
             Some(Self(self.0 + 1))
@@ -52,6 +56,10 @@ impl EpochIndex {
 
     /// Returns the first block height of the epoch.
     #[must_use]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "EPOCH_MAX is BLOCK_MAX / EPOCH_SIZE, so the product is a block height"
+    )]
     pub const fn first_block(self) -> BlockHeight {
         BlockHeight(self.0 * EPOCH_SIZE)
     }
@@ -61,6 +69,10 @@ impl EpochIndex {
     /// Computed from this epoch's own first block, so the final epoch
     /// ([`EPOCH_MAX`], whose last block is `BLOCK_MAX`) does not overflow.
     #[must_use]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the final epoch's first block is BLOCK_MAX - (EPOCH_SIZE - 1)"
+    )]
     pub const fn last_block(self) -> BlockHeight {
         BlockHeight(self.first_block().0 + (EPOCH_SIZE - 1))
     }
