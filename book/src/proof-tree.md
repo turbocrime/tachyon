@@ -32,7 +32,7 @@ The sync service produces `ArbitraryUnspent` segments without ever holding the n
 
 A `Summary` folds a run of one epoch's stamps into one accumulator alongside the anchor (`SummarySeed`, `SummaryAdvance`); summaries are note-independent, so anyone can build them.
 Summaries and single stamps root an epoch's QR evidence.
-Once per epoch a builder routes every published tachygram into buckets by quadratic-residue profile (`QrSummaryIntake`, `QrStampIntakeSeed`, `QrEmptyIntakeSeed`, `QrIntakeSplit`, `QrSideDescend`, `QrIntakeMerge`, `QrBucketSeal`).
+Once per epoch a builder routes every published tachygram into buckets by quadratic-residue profile (`QrSummaryIntake`, `QrStampIntakeSeed`, `QrEmptyIntakeSeed`, `QrIntakeSplit`, `QrSideSelect`, `QrSideDescend`, `QrIntakeMerge`, `QrBucketSeal`).
 A nullifier has one profile, so it can have been published in only one bucket, and one exclusion opening on that bucket proves it absent from the epoch (`QrUnspentInit`).
 Every `ArbitraryUnspent` starts that way and covers whole epochs, half-open: `[anchor_start, anchor_next)` and `[epoch_start, epoch_next)`.
 Both anchor bounds are entry anchors, and an entry anchor belongs to the epoch it opens, so `anchor_next` belongs to `epoch_next` and is excluded.
@@ -89,6 +89,9 @@ The aggregator runs `StampLift` on each input, along spans that contain that inp
 `StampMerge` then fuses the aligned stamps pairwise into a single `Stamp` whose multisets are the union of all the inputs'.
 The merged stamp stays with one receiving bundle and keeps that bundle's fee, and the bundles it covers are stripped to point at the receiver.
 An innocent aggregate is itself a bundle with its own max fee note, so the aggregator proves its zero fee with `FeeSeed` and merges that stamp with the aligned stamps.
+`StampUnmerge` divides one stamp by another at the same anchor, removing the divisor's leaves from the dividend.
+It undoes a merge: the quotient stays with the dividend's bundle and keeps that bundle's fee.
+An aggregator uses it when a block includes some of its contributors while the aggregate is still being built: it divides the aggregate by the included contributors' stamps and keeps building from the quotient.
 The aggregated stamp has the same shape as any other, so it is itself eligible for further aggregation; aggregators stack to fold many published transactions into one stamp, and miners typically integrate the aggregator role into block production.
 
 ### Fee states and flows
@@ -102,10 +105,10 @@ The wallet runs every step that touches the note's commitment or master key.
 It derives its nullifier windows (`NoteSeed`, `NullifierDerive`, `NullifierFuse`), derives spendable status from its own derivation (`SpendableInit`, `QrSpendableInit`), binds and lifts over sync-built segments (`UnspentBind`, `SpendableLift`), produces spend and output actions (`SpendBind`, `SpendAction`, `OutputBind`, `OutputAction`), merges and lifts them (`ActionMerge`, `ActionLift`), and applies its bundle's fee (`FeeFuse`, `FeeSeed`).
 
 The sync service holds the per-epoch nullifier values the wallet shared and pool history.
-It builds summaries (`SummarySeed`, `SummaryAdvance`), routes each epoch's tachygrams into QR evidence (`QrSummaryIntake`, `QrStampIntakeSeed`, `QrEmptyIntakeSeed`, `QrIntakeSplit`, `QrSideDescend`, `QrIntakeMerge`, `QrBucketSeal`), folds the sealed buckets into one tree and opens it per query (`EvidenceTreeLeafPair`, `EvidenceTreePairFuse`, `EvidenceTreeFuse`, `EvidenceTreeCap`, `EvidenceTreeDescend`, `EvidenceTreeOpen`), and produces the `ArbitraryUnspent` segments that carry the spendable forward (`QrUnspentInit` over one bucket, `UnspentLift` one epoch at a time, `UnspentFuse` across segments), then hands the composed segment to the wallet to bind and lift over; it never sees a note, `cm`, `psi`, or `mk`.
+It builds summaries (`SummarySeed`, `SummaryAdvance`), routes each epoch's tachygrams into QR evidence (`QrSummaryIntake`, `QrStampIntakeSeed`, `QrEmptyIntakeSeed`, `QrIntakeSplit`, `QrSideSelect`, `QrSideDescend`, `QrIntakeMerge`, `QrBucketSeal`), folds the sealed buckets into one tree and opens it per query (`EvidenceTreeLeafPair`, `EvidenceTreePairFuse`, `EvidenceTreeFuse`, `EvidenceTreeCap`, `EvidenceTreeDescend`, `EvidenceTreeOpen`), and produces the `ArbitraryUnspent` segments that carry the spendable forward (`QrUnspentInit` over one bucket, `UnspentLift` one epoch at a time, `UnspentFuse` across segments), then hands the composed segment to the wallet to bind and lift over; it never sees a note, `cm`, `psi`, or `mk`.
 
 The aggregator works with published `Stamp`s.
-It aligns anchors with `StampLift` along spans (`AnchorSpanSeed`, `AnchorSpanFuse`), fuses with `StampMerge`, and proves an innocent aggregate's zero fee with `FeeSeed`.
+It aligns anchors with `StampLift` along spans (`AnchorSpanSeed`, `AnchorSpanFuse`), fuses with `StampMerge`, removes contributors with `StampUnmerge`, and proves an innocent aggregate's zero fee with `FeeSeed`.
 
 | step | wallet | sync service | aggregator |
 | ---- | ------ | ------------ | ---------- |
@@ -126,6 +129,7 @@ It aligns anchors with `StampLift` along spans (`AnchorSpanSeed`, `AnchorSpanFus
 | EvidenceTreeDescend | possible | yes | no |
 | EvidenceTreeOpen | possible | yes | no |
 | QrSideDescend | possible | yes | no |
+| QrSideSelect | possible | yes | no |
 | QrUnspentInit | possible | yes | no |
 | UnspentFuse | possible | yes | no |
 | UnspentLift | possible | yes | no |
@@ -146,6 +150,7 @@ It aligns anchors with `StampLift` along spans (`AnchorSpanSeed`, `AnchorSpanFus
 | FeeSeed | yes | no | yes |
 | StampMerge | yes | no | yes |
 | StampLift | yes | possible | yes |
+| StampUnmerge | no | no | yes |
 
 ## Soundness
 
@@ -212,14 +217,36 @@ Honest depth is $\log_2$ of the bucket count and stays below 26 at any proposed 
 A profile is the string of sides on the path to a bucket.
 
 `QrSummaryIntake` starts a `QrIntake` from a `Summary` at depth zero, `QrStampIntakeSeed` starts one from a single stamp directly, `QrEmptyIntakeSeed` starts an empty one over an epoch that published no stamp, and `QrIntakeMerge` joins two intakes of one epoch, discriminant and profile whose spans meet, so spans compose as anchor segments do.
-`QrIntakeSplit` factors an intake's contents into two sides at $R = R_0 + \mathsf{depth}$ as `QrIntakeSides`, and `QrSideDescend` extracts one side while attesting the other at its class multiplier $c$:
+`QrIntakeSplit` factors an intake's contents into two sides as `QrIntakeSides`.
+The split's discriminant at this depth is defined by the progression:
+
+$$R = R_0 + \mathsf{depth}$$
+
+`QrSideSelect` copies the entire split statement and fixes the interpolant and quotient commitments as `QrSideSelection`.
+It pins the non-residue polynomial to the split's commitment and checks the exceptional-value assignment:
+
+$$q_0(-R) \neq 0$$
+
+`QrSideDescend` takes the split and selection as inputs and matches every copied source field.
+Its witness bit chooses the child, sibling and class multiplier.
+The multiplier is one for a residue sibling and the fixed quadratic non-residue for a non-residue sibling.
+It pins the sibling to the split and the hints to the selection, then checks the identity with $s$ for the sibling and $c$ for its multiplier:
 
 $$u(X)^2 - c\,(X + R) = s(X)\, h(X)$$
 
-holds only when every root of the sibling $s$ takes its side at $R$, since each root leaves $u(x)^2 = c\,(x + R)$; with the split's product, every member of the extracted class is then in the child.
-A child may carry a stray member of the other class, which only tightens the openings its consumers make, but it cannot lack a member of its own.
-The exceptional value $-R$ has root $0$ under either class, so the split also opens the non-residue side nonzero at $-R$.
-The descent's challenge absorbs the three commitments and a scalar-binding point of $R$. $R_0$ is prover-chosen, so without it a prover could solve the identity for $R$ after $z$. $R_0$ is read off the header, so every step of one network classifies at the same progression.
+Every root of the sibling satisfies the corresponding class equation:
+
+$$u(x)^2 = c\,(x + R)$$
+
+Together with the split's product and selection's exceptional-value assignment, this establishes completeness of the extracted class in the child.
+A child may carry stray members of the sibling's class, strengthening its consumers' exclusion openings.
+The exceptional value has zero class root, and selection assigns it to the residue side through its nonzero opening of the non-residue polynomial.
+Selection's hints are arbitrary committed polynomials; descent establishes their identity.
+The descent's challenge absorbs the three commitments and scalar-binding points for the discriminant and sibling multiplier, fixing every operand of the tested residual before the challenge.
+Every step of one network classifies at the progression carried by its headers.
+Split witnesses three polynomials and opens each once at its product challenge.
+Selection witnesses the non-residue polynomial and two hints, opening only the non-residue polynomial at the exceptional point and producing the two hint commitments.
+Descent witnesses and opens the sibling and both hints once each, forwarding the selected child's commitment.
 Each descend requires the parent's depth below 32, so $\mathsf{bits} < 2^{32} < p$ and two paths never share a profile.
 A layer splits every intake over capacity, then merges same-profile neighbours while the product fits one polynomial; sibling buckets need not stop at the same depth.
 
@@ -242,7 +269,7 @@ With $s_j = x + R_0 + j$ and $c$ the non-residue,
 
 $$r_j^2 = \bigl(c - (c - 1)\, b_j\bigr)\, s_j, \qquad b_j = 0 \implies s_j \neq 0,$$
 
-so $b_j$ is the value's own side at every position, with $s_j = 0$ filed residue-side as the split files it.
+so each bit is the value's own side, with zero shifted values filed residue-side as selection assigns them.
 The mask selects the bucket's depth $d$ as a prefix and the fold compares the bucket's sides against the value's,
 
 $$\sum_j m_j = d, \qquad 2 \sum_j j\, m_j = d\,(d - 1), \qquad a_{j+1} = a_j + m_j\,(a_j + b_j), \qquad a_{32} = \mathsf{bits},$$
@@ -375,17 +402,22 @@ The work splits as follows, each stamp step also opening its action-set and tach
 
 `StampMerge` fuses two stamps by checking anchor equality and confirming each output set is the union of the two inputs': it witnesses the merged sets and enforces, for each, that the merged set polynomial is the product of the input set polynomials.
 `ActionMerge` applies the same relation to two pre-fee `Actions` inputs.
+`StampUnmerge` checks anchor equality, witnesses the quotient sets, and enforces, for each set, that the dividend's set polynomial is the product of the divisor's and the quotient's.
+Every stamp's action set polynomial is a product of linear factors, one per leaf digest, and its tachygram set polynomial is the product over exactly those leaves' tachygrams.
+Unique factorization makes the division exact: the divisor's leaves are a sub-multiset of the dividend's.
+Once consensus checks the published [anchor](./anchor.md), every spend leaf beneath it derived its nullifier pair at that anchor's epoch, and the tachygram quotient holds exactly the remaining leaves' tachygrams.
+Sub-aggregate boundaries do not bound removal. A divisor is a stamp PCD in hand, and merging in a complement first lets division remove any leaf multiset the stamps in hand combine to express.
 `FeeFuse` transforms `Actions` into a `Stamp` with the same product relation, multiplying each set polynomial by a fee singleton set polynomial as in [Dynamic Fee](./fee.md#fee-change-note).
 
 ### Stamp anchor
 
 `OutputAction` and `FeeSeed` take an anchor as direct witness: neither has prior chain state to thread from.
-The other steps thread the anchor from a validated spendable through `SpendBind`/`SpendAction`, thread it from the left actions (`FeeFuse`), equality-constrain the two inputs' anchors (`ActionMerge`, `StampMerge`), or move the content to the end of an `AnchorSpan` that contains its anchor (`ActionLift`, `StampLift`).
+The other steps thread the anchor from a validated spendable through `SpendBind`/`SpendAction`, thread it from the left actions (`FeeFuse`), equality-constrain the two inputs' anchors (`ActionMerge`, `StampMerge`, `StampUnmerge`), or move the content to the end of an `AnchorSpan` that contains its anchor (`ActionLift`, `StampLift`).
 Consensus verifies the published anchor against the chain before accepting the stamp.
 
 ### Rerandomization at trust boundaries
 
-Every stamp-producing operation rerandomizes its proof before releasing it: `Plan::prove`, `ProofStamp::merge` and `ProofStamp::lift` each rerandomize the PCD they built. This is obligatory rather than cosmetic.
+Every stamp-producing operation rerandomizes its proof before releasing it: `Plan::prove`, `ProofStamp::merge`, `ProofStamp::unmerge` and `ProofStamp::lift` each rerandomize the PCD they built. This is obligatory rather than cosmetic.
 
 A PCD proof is a commitment to its own witness data. Two proofs built from overlapping private inputs are correlated as group elements, even when their public headers reveal nothing. The proof a wallet holds after `SpendBind` and the proof it publishes in a stamp share a lineage, so an observer holding both could link them, and an aggregator that merges two stamps sees both inputs directly.
 
@@ -535,6 +567,7 @@ flowchart LR
 | Summary | (epoch, anchor_prev, anchor_end, acc_commit) |
 | QrIntake | (epoch, anchor_prev, anchor_end, discriminant, profile, contents) |
 | QrIntakeSides | (epoch, anchor_prev, anchor_end, discriminant, profile, non_residue, residue) |
+| QrSideSelection | (source: QrIntakeSides, interpolant, quotient) |
 | QrBucket | (epoch, anchor_start, anchor_next, discriminant, profile, contents) |
 | EvidenceTree | (epoch, anchor_start, anchor_next, discriminant, root) |
 | EvidenceTreePair | (epoch, anchor_start, anchor_next, discriminant, first, second) |
@@ -562,7 +595,8 @@ flowchart LR
 | QrEmptyIntakeSeed | — | — | anchor, epoch, discriminant | QrIntake |
 | QrIntakeMerge | QrIntake | QrIntake | left_contents, right_contents, merged | QrIntake |
 | QrIntakeSplit | QrIntake | — | contents, non_residue, residue | QrIntakeSides |
-| QrSideDescend | QrIntakeSides | — | bit, sibling_contents, interpolant, quotient | QrIntake |
+| QrSideSelect | QrIntakeSides | — | non_residue_contents, interpolant, quotient | QrSideSelection |
+| QrSideDescend | QrIntakeSides | QrSideSelection | bit, sibling_contents, interpolant, quotient | QrIntake |
 | QrBucketSeal | QrIntake | — | anchor_final_prev | QrBucket |
 | QrUnspentInit | QrBucket | — | value, classes, mask, sequence, contents | ArbitraryUnspent |
 | EvidenceTreeLeafPair | QrBucket | QrBucket | — | EvidenceTreePair |
@@ -589,6 +623,7 @@ flowchart LR
 | FeeSeed | — | — | max fee note opening, anchor, fee action_set, fee tachygram_set | Stamp |
 | StampMerge | Stamp | Stamp | (action_set, tachygram_set) × left, merged, right | Stamp |
 | StampLift | Stamp | AnchorSpan | members | Stamp |
+| StampUnmerge | Stamp | Stamp | (action_set, tachygram_set) × dividend, quotient, divisor | Stamp |
 
 [^nullifiers]: See [Nullifiers](./nullifiers.md) for the nullifier sponge, the scalar `psi` seed, and the delegated absence sequence.
 [^tachygrams]: See [Tachygrams](./tachygrams.md) for the per-stamp multiset polynomial and its Pedersen commitment.
