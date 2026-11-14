@@ -16,7 +16,7 @@ Multiple parties execute the proof tree.
 A wallet proves a window of its note's nullifiers were correctly derived[^nullifiers].
 `NoteSeed` witnesses the note's value and trapdoors and the proof-authorizing key `pak`, derives the note's payment key from `pak` (which pins `nk`, and through `nk` the commitment `cm`), derives the master key `mk` and `cm`, and emits a `NoteSecret` carrying `(cm, note, mk)`. `nk` never leaves the step.
 `NullifierDerive` consumes that seed. It witnesses the window's start epoch, staged and required group-aligned with the window's last epoch at most `EPOCH_MAX`, and the window's sequence in O0.
-It runs four $\texttt{Tachyon-NfDerive}$ sponges, one per group, to squeeze the window's 16 nullifiers natively, and binds the sequence to them with one opening at $\zeta$ (below). It exports the whole window, so the range it announces is derived rather than witnessed.
+It runs four $\texttt{Tachyon-NfDerive}$ sponges, one per group, to squeeze the window's 16 nullifiers in the circuit, and binds the sequence to them with one opening at $\zeta$ (below). It exports the whole window, so the range it announces is derived rather than witnessed.
 `NullifierFuse` concatenates two adjacent nullifier sequences into one, requiring the same `cm` and contiguity (`right.epoch_start == left.epoch_end + 1`).
 The result is a `NoteNullifiers` proving the range `[epoch_start, epoch_end]` commits to the genuine nullifiers of the note identified by `cm`, one factor per covered epoch.
 
@@ -166,8 +166,8 @@ The framework derives one challenge $\zeta$ per step, bound to both input header
 A step stages a witnessed scalar to fix it before $\zeta$.
 The challenge is not bound to the output header.
 A step checks a relation between slots by opening them at $\zeta$, or at a scalar fixed before $\zeta$: an input header field or a staged value.
-The bridge hash, written $x(B), y(B)$ by coordinates, is a Pallas point derived from O1's commitment.
-A slot a step does not fill holds the constant 1, the default of `Step::polynomials`. No constraint holds an unfilled slot to 1 at this ragu revision, so a consumer relies only on slots the producing step constrains.
+The bridge hash, written $x(B), y(B)$ by coordinates, is a Pallas point that binds O1's commitment.
+A slot a step does not fill holds the constant 1, the default of `Step::polynomials`. No constraint holds an unfilled slot to 1, so a consumer relies only on slots the producing step constrains.
 
 ## Soundness
 
@@ -352,7 +352,7 @@ Two builders, or one builder at two times, may therefore publish different trees
 ### Derivation window
 
 `NoteSeed` is the only seed. It binds the master key to the note: deriving `pk` from `pak` pins `nk`, and the note commitment digests `nk` (through `pk`) and `psi`, so the derived `mk = Poseidon(psi, nk)` is consistent with the `cm` the seed threads forward.
-`NullifierDerive` threads `mk` from that header, squeezes the window's nullifiers natively, and binds the witnessed sequence to them at $\zeta$:
+`NullifierDerive` threads `mk` from that header, squeezes the window's nullifiers in the circuit, and binds the witnessed sequence to them at $\zeta$:
 
 $$g(\zeta) = \prod_{j < K} F_{\texttt{base}+j,\ \mathsf{nf}_{\texttt{base}+j}}(\zeta)$$
 
