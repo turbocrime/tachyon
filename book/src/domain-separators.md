@@ -14,7 +14,7 @@ Digests used to commit to Tachyon bundle contents for sighash and auth digest.
 | Purpose | Value |
 | ------- | ----- |
 | Bundle commitment | `ZTxIdTachyonHash` |
-| Bundle auth digest | `ZTxAuthTachyHash` |
+| `tachyon_auth_digest`, the bundle's auth digest | `ZTxAuthTachyHash` |
 
 ### Bundle contents
 
@@ -26,8 +26,8 @@ Digests over bundle contents, feeding the two above. These are Tachyon-specific 
 | A stamp's fee descriptors | `Tachyon-Fees` |
 | A stamp's coverage | `Tachyon-Coverage` |
 | Memo payload | `Tachyon-Memo` |
-| Stamp proof | `Tachyon-Proof` |
-| Stamp data | `Tachyon-Stamp` |
+| `hStampProofTachyon`, the stamp proof, the anchor and the tachygram set commitment | `Tachyon-Proof` |
+| `hStampTachyon`, the stamp | `Tachyon-Stamp` |
 
 ## BLAKE2b-512
 
