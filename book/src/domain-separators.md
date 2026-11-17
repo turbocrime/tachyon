@@ -23,9 +23,8 @@ Digests over bundle contents, feeding the two above. These are Tachyon-specific 
 | Purpose | Value |
 | ------- | ----- |
 | Action descriptors | `Tachyon-Actions` |
-| A stamp's fee descriptors | `Tachyon-Fees` |
-| A stamp's coverage | `Tachyon-Coverage` |
 | Memo payload | `Tachyon-Memo` |
+| `hStampAdjunctsTachyon`, the stamp's adjunct list | `Tachyon-Adjuncts` |
 | `hStampProofTachyon`, the stamp proof, the anchor and the tachygram set commitment | `Tachyon-Proof` |
 | `hStampTachyon`, the stamp | `Tachyon-Stamp` |
 
