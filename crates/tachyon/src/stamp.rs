@@ -4,7 +4,7 @@
 #![allow(
     clippy::multiple_inherent_impl,
     clippy::same_name_method,
-    reason = "todo: take read/write off StampState"
+    reason = "todo: take write off StampState"
 )]
 
 extern crate alloc;
@@ -63,9 +63,10 @@ mod stamp_sealed {
     pub trait Sealed {}
     impl<P: super::Proof> Sealed for super::ProofStamp<P> {}
     impl Sealed for super::StrippedStamp {}
+    impl<P: super::Proof> Sealed for Option<super::ProofStamp<P>> {}
 }
 
-/// Bundle states that carry a stamp: [`ProofStamp`] or [`StrippedStamp`].
+/// Stamped, stripped, or undetermined bundle states.
 pub trait StampState: stamp_sealed::Sealed {
     /// A stamp's `hStampTachyon`. See [`blake2b::stamp_digest`].
     ///
@@ -73,19 +74,7 @@ pub trait StampState: stamp_sealed::Sealed {
     fn stamp_digest(&self) -> [u8; 32];
 
     /// The `tachyonBundleState` wire byte for this state.
-    fn state_byte() -> StateByte
-    where
-        Self: Sized;
-
-    /// Read the stamp trailer from the consensus wire format.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if reading fails or the trailer is not a canonical
-    /// encoding of this state.
-    fn read<R: Read>(reader: &mut R) -> io::Result<Self>
-    where
-        Self: Sized;
+    fn state_byte(&self) -> StateByte;
 
     /// Write the stamp trailer in the consensus wire format.
     ///
@@ -102,12 +91,8 @@ impl StampState for StrippedStamp {
         *blake2b::STAMP_DIGEST_EMPTY
     }
 
-    fn state_byte() -> StateByte {
+    fn state_byte(&self) -> StateByte {
         StateByte::StrippedStamp
-    }
-
-    fn read<R: Read>(_reader: &mut R) -> io::Result<Self> {
-        Ok(Self)
     }
 
     fn write<W: Write>(&self, _writer: &mut W) -> io::Result<()> {
@@ -240,16 +225,31 @@ impl<P: Proof> StampState for ProofStamp<P> {
         )
     }
 
-    fn state_byte() -> StateByte {
+    fn state_byte(&self) -> StateByte {
         StateByte::ProofStamp
-    }
-
-    fn read<R: Read>(reader: &mut R) -> io::Result<Self> {
-        Self::read(reader)
     }
 
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         self.write(writer)
+    }
+}
+
+impl<P: Proof> StampState for Option<ProofStamp<P>> {
+    fn stamp_digest(&self) -> [u8; 32] {
+        self.as_ref()
+            .map_or_else(|| StrippedStamp.stamp_digest(), StampState::stamp_digest)
+    }
+
+    fn state_byte(&self) -> StateByte {
+        self.as_ref()
+            .map_or_else(|| StrippedStamp.state_byte(), StampState::state_byte)
+    }
+
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        match self.as_ref() {
+            Some(stamp) => stamp.write(writer),
+            None => StrippedStamp.write(writer),
+        }
     }
 }
 

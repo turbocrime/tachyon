@@ -7,7 +7,8 @@
 //!   the other transactions whose bundles it covers
 //! - `Bundle<StrippedStamp>`: proof stamp removed, covered by an aggregate that
 //!   lists this bundle's txid
-//! - [`TachyonBundle`]: enum of the on-wire forms for block items
+//! - `Bundle<Option<ProofStamp<P>>>`: undetermined bundle, stripped when the
+//!   stamp is `None`
 //!
 //! # Consensus wire format
 //!
@@ -107,10 +108,10 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
-use core::{cmp::Ordering, iter, ops::Neg as _};
+use core::{iter, ops::Neg as _};
 
 use corez::io::{self, Read, Write};
-use derive_more::{Debug, Display, Eq as TotalEq, Error, From, IsVariant, PartialEq, TryInto};
+use derive_more::{Debug, Display, Eq as TotalEq, Error, PartialEq};
 use ragu::{ProductionRank, Rank as _, pasta::Pasta};
 use rand_core::CryptoRng;
 use udon::{curve::Affine as _, field::Field as _};
@@ -165,9 +166,19 @@ impl StateByte {
         }
     }
 
-    pub(super) fn write<W: Write>(self, mut writer: W) -> io::Result<()> {
+    /// Write the state byte, including `NoBundle` for a transaction without a
+    /// bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if writing fails.
+    pub fn write<W: Write>(self, mut writer: W) -> io::Result<()> {
         #[expect(clippy::as_conversions, reason = "repr u8")]
         writer.write_all(&(self as u8).to_le_bytes())
+    }
+
+    fn unexpected() -> io::Error {
+        io::Error::new(io::ErrorKind::InvalidData, "unexpected tachyonBundleState")
     }
 }
 
@@ -685,25 +696,12 @@ impl<P: stamp::Proof> Bundle<ProofStamp<P>> {
     /// Returns an error for invalid encodings, a wrong state byte, or too many
     /// actions and adjuncts for one tachygram set polynomial.
     pub fn read<R: Read>(mut reader: R) -> io::Result<Self> {
-        if StateByte::read(&mut reader)? != StateByte::ProofStamp {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "unexpected tachyonBundleState",
-            ));
+        let state = StateByte::read(&mut reader)?;
+        if state != StateByte::ProofStamp {
+            return Err(StateByte::unexpected());
         }
-        Self::read_proof_body(reader)
-    }
-
-    fn read_proof_body<R: Read>(reader: R) -> io::Result<Self> {
-        let bundle = Self::read_body(reader)?;
-        if 2 * bundle.actions.len() + bundle.stamp.adjuncts.len() + 1
-            > ProductionRank::num_coeffs() - 1
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "too many adjuncts",
-            ));
-        }
+        let bundle = Self::read_body(reader, |trailer| ProofStamp::read(trailer))?;
+        bundle.check_coverage_bound(bundle.stamp.adjuncts.len())?;
         Ok(bundle)
     }
 
@@ -904,7 +902,10 @@ impl<S: StampState> Bundle<S> {
     /// Read everything after the `tachyonBundleState` byte: value balance,
     /// action descriptors, max fee commitment, memo, signatures, tachygram
     /// pairs, fee, change, and the stamp trailer.
-    fn read_body<R: Read>(mut reader: R) -> io::Result<Self> {
+    fn read_body<R: Read>(
+        mut reader: R,
+        read_stamp: impl FnOnce(&mut R) -> io::Result<S>,
+    ) -> io::Result<Self> {
         let value_balance = {
             let mut bytes = [0u8; size_of::<i64>()];
             reader.read_exact(&mut bytes)?;
@@ -999,7 +1000,7 @@ impl<S: StampState> Bundle<S> {
             ));
         }
 
-        let stamp = S::read(&mut reader)?;
+        let stamp = read_stamp(&mut reader)?;
 
         Ok(Self {
             value_balance,
@@ -1016,6 +1017,16 @@ impl<S: StampState> Bundle<S> {
         })
     }
 
+    fn check_coverage_bound(&self, n_adjuncts: usize) -> io::Result<()> {
+        if 2 * self.actions.len() + n_adjuncts + 1 > ProductionRank::num_coeffs() - 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "too many adjuncts",
+            ));
+        }
+        Ok(())
+    }
+
     /// Write the bundle in the consensus wire format: the
     /// `tachyonBundleState` byte for `S`, the bundle body, and the stamp.
     ///
@@ -1024,7 +1035,7 @@ impl<S: StampState> Bundle<S> {
     /// Returns an error if writing fails or a count exceeds what a
     /// compactsize can hold.
     pub fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
-        S::state_byte().write(&mut writer)?;
+        self.stamp.state_byte().write(&mut writer)?;
 
         writer.write_all(&i64::from(self.value_balance).to_le_bytes())?;
 
@@ -1087,7 +1098,7 @@ impl<S: StampState> Bundle<S> {
         let binding_sig: [u8; 64] = self.binding_sig.0.into();
 
         blake2b::bundle_auth_digest(
-            S::state_byte().into(),
+            self.stamp.state_byte().into(),
             &action_auth,
             self.fee.v_fee.into(),
             &Fp::from(self.fee_auth).to_bytes(),
@@ -1104,149 +1115,33 @@ impl Bundle<StrippedStamp> {
     ///
     /// Returns an error for invalid encodings or a wrong state byte.
     pub fn read<R: Read>(mut reader: R) -> io::Result<Self> {
-        if StateByte::read(&mut reader)? != StateByte::StrippedStamp {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "unexpected tachyonBundleState",
-            ));
-        }
-        Self::read_body(reader)
-    }
-}
-
-/// A Tachyon bundle in one of its valid wire states.
-#[expect(clippy::module_name_repetitions, reason = "intentional name")]
-#[derive(Clone, Debug, From, IsVariant, TryInto)]
-pub enum TachyonBundle {
-    /// No bundle.
-    NoBundle,
-    /// A bundle with its own proof (autonome or aggregate).
-    Proven(Bundle<ProofStamp<stamp::Compressed>>),
-    /// A bundle with no internal proof (adjunct).
-    Adjunct(Bundle<StrippedStamp>),
-}
-
-impl PartialEq for TachyonBundle {
-    fn eq(&self, other: &Self) -> bool {
-        #[expect(clippy::ref_patterns, reason = "match needs explicit ref")]
-        match *self {
-            Self::NoBundle => other.is_no_bundle(),
-            Self::Proven(ref bundle) => {
-                other.is_proven()
-                    && bundle.commitment() == other.commitment()
-                    && bundle.auth_digest() == other.auth_digest()
-            },
-            Self::Adjunct(ref bundle) => {
-                other.is_adjunct()
-                    && bundle.commitment() == other.commitment()
-                    && bundle.auth_digest() == other.auth_digest()
-            },
-        }
-    }
-}
-
-impl PartialOrd for TachyonBundle {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(
-            self.commitment()
-                .cmp(&other.commitment())
-                .then(self.auth_digest().cmp(&other.auth_digest())),
-        )
-    }
-}
-
-impl TachyonBundle {
-    /// Borrow the inner bundle as a trait object, if it exists.
-    #[must_use]
-    pub fn as_dyn(&self) -> Option<&Bundle<dyn StampState>> {
-        #[expect(clippy::ref_patterns, reason = "match needs explicit ref")]
-        match *self {
-            Self::NoBundle => None,
-            Self::Proven(ref bundle) => Some(bundle),
-            Self::Adjunct(ref bundle) => Some(bundle),
-        }
-    }
-
-    /// Read any Tachyon bundle from the consensus wire format, dispatching
-    /// on the `tachyonBundleState` byte.
-    ///
-    /// Decodes `0x00` (non-tachyon) as [`Self::NoBundle`], `0x01` as a
-    /// proof-stamped bundle, and `0x02` as a stripped bundle;
-    /// rejects any other byte.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if reading fails, the state byte is none of those
-    /// three, or any component is not a canonical encoding.
-    pub fn read<R: Read>(mut reader: R) -> io::Result<Self> {
         let state = StateByte::read(&mut reader)?;
-
-        Ok(match state {
-            StateByte::NoBundle => Self::NoBundle,
-            StateByte::ProofStamp => Self::Proven(Bundle::read_proof_body(&mut reader)?),
-            StateByte::StrippedStamp => Self::Adjunct(Bundle::read_body(&mut reader)?),
-        })
+        if state != StateByte::StrippedStamp {
+            return Err(StateByte::unexpected());
+        }
+        Self::read_body(reader, |_reader| Ok(StrippedStamp))
     }
+}
 
-    /// Write any Tachyon bundle in the consensus wire format, dispatching on
-    /// the variant.
+impl<P: stamp::Proof> Bundle<Option<ProofStamp<P>>> {
+    /// Read a proof-stamped or stripped bundle, or return `None` for `0x00`.
     ///
     /// # Errors
     ///
-    /// Returns an error if writing fails.
-    pub fn write<W: Write>(&self, writer: W) -> io::Result<()> {
-        #[expect(clippy::ref_patterns, reason = "match needs explicit ref")]
-        match *self {
-            Self::NoBundle => StateByte::NoBundle.write(writer),
-            Self::Proven(ref stamped) => stamped.write(writer),
-            Self::Adjunct(ref stamped) => stamped.write(writer),
+    /// Returns an error for invalid encodings or too many actions and
+    /// adjuncts for one tachygram set polynomial.
+    pub fn read<R: Read>(mut reader: R) -> io::Result<Option<Self>> {
+        let bundle = match StateByte::read(&mut reader)? {
+            StateByte::NoBundle => return Ok(None),
+            StateByte::ProofStamp => {
+                Self::read_body(reader, |trailer| ProofStamp::read(trailer).map(Some))?
+            },
+            StateByte::StrippedStamp => Self::read_body(reader, |_reader| Ok(None))?,
+        };
+        if let Some(stamp) = bundle.stamp.as_ref() {
+            bundle.check_coverage_bound(stamp.adjuncts.len())?;
         }
-    }
-
-    /// Tachyon's contribution to the transaction `auth_digest`, dispatching
-    /// on the variant.
-    #[must_use]
-    pub fn auth_digest(&self) -> [u8; 32] {
-        #[expect(clippy::ref_patterns, reason = "match needs explicit ref")]
-        match *self {
-            Self::NoBundle => *blake2b::AUTH_DIGEST_NO_BUNDLE,
-            Self::Proven(ref stamped) => stamped.auth_digest(),
-            Self::Adjunct(ref stamped) => stamped.auth_digest(),
-        }
-    }
-
-    /// Tachyon's contribution to the transaction sighash, dispatching on the
-    /// variant.
-    #[must_use]
-    pub fn commitment(&self) -> [u8; 32] {
-        #[expect(clippy::ref_patterns, reason = "match needs explicit ref")]
-        match *self {
-            Self::NoBundle => *blake2b::COMMIT_NO_BUNDLE,
-            Self::Proven(ref stamped) => stamped.commitment(),
-            Self::Adjunct(ref stamped) => stamped.commitment(),
-        }
-    }
-
-    /// Whether this bundle has a proof stamp listing at least one adjunct.
-    #[must_use]
-    pub fn is_aggregate(&self) -> bool {
-        #[expect(clippy::ref_patterns, reason = "match needs explicit ref")]
-        match *self {
-            Self::NoBundle => false,
-            Self::Proven(ref stamped) => stamped.is_aggregate(),
-            Self::Adjunct(ref _stamped) => false,
-        }
-    }
-
-    /// Whether this bundle has a proof stamp listing no adjuncts.
-    #[must_use]
-    pub fn is_autonome(&self) -> bool {
-        #[expect(clippy::ref_patterns, reason = "match needs explicit ref")]
-        match *self {
-            Self::NoBundle => false,
-            Self::Proven(ref stamped) => stamped.is_autonome(),
-            Self::Adjunct(ref _stamped) => false,
-        }
+        Ok(Some(bundle))
     }
 }
 
