@@ -11,8 +11,8 @@ use zcash_tachyon::{
     Tachygram, TachygramSetPoly, action,
     constants::EPOCH_MAX,
     digest::poseidon,
+    effect,
     entropy::ActionEntropy,
-    keys::private,
     note,
     nullifier::{self, NF_DERIVATION_WIDTH, Nullifier},
     pasta::{Eq, Fp},
@@ -408,9 +408,12 @@ fn spend_action_commits_to_the_plan_and_the_nullifier_pair() {
     let spend_epoch = height.epoch();
     let rcv = value::Trapdoor::random(rng);
     let theta = ActionEntropy::random(rng);
-    let plan = action::Plan::spend(note, theta, rcv, |alpha| {
-        user.pak.ak.derive_action_public(&alpha)
-    });
+    let plan = action::Plan::<effect::Spend> {
+        note,
+        theta,
+        rcv,
+        authority: user.pak.ak,
+    };
 
     let spendable = user.spendable_init(app, &pool, &note, height);
     let secret = user.note_secret(app, note);
@@ -474,7 +477,7 @@ fn spend_action_commits_to_the_plan_and_the_nullifier_pair() {
     assert_eq!(
         action_commit,
         Eq::from(
-            ActionSetPoly::from_iter([plan.digest((
+            ActionSetPoly::from_iter([plan.descriptor().digest((
                 Tachygram::from(mk.derive_nullifier(spend_epoch)),
                 Tachygram::from(mk.derive_nullifier(spend_epoch.next().unwrap()))
             ))])
@@ -902,7 +905,12 @@ fn output_action_commits_to_the_plan_and_the_note_pair() {
     let note = WalletSim::new(shared_sk()).random_note(200);
     let rcv = value::Trapdoor::random(rng);
     let theta = ActionEntropy::random(rng);
-    let plan = action::Plan::output(note, theta, rcv);
+    let plan = action::Plan::<effect::Output> {
+        note,
+        theta,
+        rcv,
+        authority: (),
+    };
     let anchor = Anchor::random(rng);
     let pad = Tachygram::from(poseidon::pad_tachygram(
         Fp::from(note.rcm),
@@ -978,7 +986,8 @@ fn output_action_commits_to_the_plan_and_the_note_pair() {
     assert_eq!(
         pcd.commitments()[..2],
         [
-            Eq::from(ActionSetPoly::from_iter([plan.digest(pair)]).commit()).to_affine(),
+            Eq::from(ActionSetPoly::from_iter([plan.descriptor().digest(pair)]).commit())
+                .to_affine(),
             Eq::from(
                 TachygramSetPoly::from_iter([Tachygram::from(note.commitment()), pad]).commit()
             )
@@ -988,11 +997,12 @@ fn output_action_commits_to_the_plan_and_the_note_pair() {
     let foreign_note = WalletSim::random(rng).random_note(200);
     let foreign = action::Plan {
         note: foreign_note,
-        rk: private::ActionSigningKey::new(&theta.randomizer(foreign_note.commitment()))
-            .derive_action_public(),
         ..plan
     };
-    assert_ne!(foreign.digest(pair), plan.digest(pair));
+    assert_ne!(
+        foreign.descriptor().digest(pair),
+        plan.descriptor().digest(pair)
+    );
 }
 
 #[test]
