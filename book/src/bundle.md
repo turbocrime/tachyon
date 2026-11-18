@@ -164,9 +164,9 @@ end
 
 ## Lifecycle
 
-Signing a `bundle::Plan` returns a descriptor-keyed action signature map and the binding signature. Independently, `ActionsPlan::prove` proves the actions at a chosen anchor, and `ActionsProof::fee` applies the fee. For a bundle with no actions, `AutonomeParts::seed` proves a zero-fee stamp directly. Both paths return `AutonomeParts`: the proof stamp, tachygram pairs keyed by descriptor, fee, and change commitment.
+At construction, a `bundle::Plan` derives the `Effects` that the bundle commitment hashes. Each spend authority signs its own spends with `authorize`; the planner signs the outputs and the binding signature with `sign_outputs` and `sign_binding`. Independently, `ActionsPlan::prove` proves the actions at a chosen anchor, and `ActionsProof::fee` applies the fee. For a bundle with no actions, `AutonomeParts::seed` proves a zero-fee stamp directly. Both proving paths return `AutonomeParts`: the proof stamp, tachygram pairs keyed by descriptor, fee, and change commitment.
 
-`bundle::Plan::assemble(signatures, autonome_parts)` requires the plan, pair map, and signature map to have identical descriptor keys and panics if they differ. It joins the maps in descriptor order into `actions` and attaches the fee, change, and stamp. This checks keys, not pair values or proof validity. Signing and proving may run in either order or concurrently.
+`bundle::Effects::assemble(action_sigs, binding_sig, autonome_parts)` combines the signatures and proving data with the effects. It requires the effects, pair map, and signature map to have identical descriptor keys and panics if they differ. It builds one action row per descriptor in effects order and attaches the fee, change, and stamp. This checks keys, not pair values or proof validity. Signing and proving may run in either order or concurrently.
 
 Provers can lift partial action proofs to a common anchor and merge them before applying the fee. To change the fee, apply it again to the retained action proof. To change the anchor, lift that proof or prove the actions again if the epoch changes the pairs, then apply the fee. In either case, assemble again with the same signatures.
 

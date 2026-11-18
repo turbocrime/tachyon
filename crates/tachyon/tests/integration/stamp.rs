@@ -16,9 +16,7 @@ use rand_core::CryptoRng;
 use udon::{curve::Projective as _, field::Field as _};
 use zcash_tachyon::{
     ActionDigest, ActionSetPoly, BlockHeight, CompactSize, ProofStamp, StrippedStamp, Tachygram,
-    TachygramSetPoly, action, bundle, effect,
-    entropy::ActionEntropy,
-    fee,
+    TachygramSetPoly, action, bundle, effect, fee,
     pasta::Fp,
     stamp::{
         self, AutonomeParts, FeeError, MergeError, ProveError, SeedError,
@@ -35,8 +33,8 @@ use crate::fixtures::{
     mock_sighash, mock_txid,
     pool::PoolSim,
     wallet::{
-        WalletSim, alice, alice_output_note, bob, later_output, lifted, merged, output_plan,
-        random_action, shared_sk, spend,
+        WalletSim, action_randomness, alice, alice_output_note, bob, later_output, lifted, merged,
+        output_plan, random_action, shared_sk, spend,
     },
 };
 
@@ -97,14 +95,14 @@ fn plan_prove_rejects_invalid_inputs() {
     let sp_b = user.spendable_init(app, pool, &note_b, height);
     let anchor = sp_a.data().2;
 
-    let (rcv_a, theta_a) = (value::Trapdoor::random(rng), ActionEntropy::random(rng));
+    let (rcv_a, theta_a) = action_randomness::<effect::Spend>(rng, note_a);
     let plan_a = action::Plan::<effect::Spend> {
         note: note_a,
         theta: theta_a,
         rcv: rcv_a,
         authority: user.pak.ak,
     };
-    let (rcv_b, theta_b) = (value::Trapdoor::random(rng), ActionEntropy::random(rng));
+    let (rcv_b, theta_b) = action_randomness::<effect::Spend>(rng, note_b);
     let plan_b = action::Plan::<effect::Spend> {
         note: note_b,
         theta: theta_b,
@@ -228,7 +226,7 @@ fn plan_prove_lifts_a_spend_along_spans() {
     let spendable = user.spendable_init(app, pool, &note, cm_height);
     let plan_anchor = pool.block(plan_height).anchor();
 
-    let (rcv, theta) = (value::Trapdoor::random(rng), ActionEntropy::random(rng));
+    let (rcv, theta) = action_randomness::<effect::Spend>(rng, note);
     let spend = action::Plan::<effect::Spend> {
         note,
         theta,
@@ -335,7 +333,8 @@ fn partial_actions_proofs_lift_and_merge_before_fee() {
     let max_fee_note = wallet.random_note(0);
     let [first, second] = [100, 200].map(|amount| output_plan(rng, wallet.random_note(amount)));
     let [left, right] = [(first, left_anchor), (second, right_anchor)].map(|(output, anchor)| {
-        bundle::Plan::new(vec![], vec![output], max_fee_note)
+        bundle::Plan::try_new(vec![], vec![output], max_fee_note, vec![])
+            .unwrap()
             .actions_plan(anchor)
             .prove(rng, app, vec![])
             .unwrap()
@@ -360,15 +359,16 @@ fn partial_actions_proofs_lift_and_merge_before_fee() {
         left.pairs.into_iter().chain(right.pairs).collect()
     );
 
-    let plan = bundle::Plan::new(vec![], vec![first, second], max_fee_note);
-    let sighash = mock_sighash(plan.commitment().unwrap());
-    let signatures = plan
-        .sign(rng, &sighash, &wallet.sk.derive_auth_private())
-        .unwrap();
+    let plan = bundle::Plan::try_new(vec![], vec![first, second], max_fee_note, vec![]).unwrap();
+    let sighash = mock_sighash(plan.effects().commitment());
+    let action_sigs = plan.sign_outputs(rng, &sighash);
+    let binding_sig = plan.sign_binding(rng, &sighash);
     let autonome_parts = merged
         .fee(rng, app, plan.max_fee_note(), value::Positive::ZERO)
         .unwrap();
-    plan.assemble(signatures, autonome_parts)
+    plan.effects()
+        .clone()
+        .assemble(action_sigs, binding_sig, autonome_parts)
         .verify::<_, StrippedStamp>(rng, app, &sighash, &[])
         .unwrap();
 }
@@ -408,7 +408,8 @@ fn proving_rejects_empty_actions_and_invalid_note_openings() {
         .prove(rng, app, vec![]),
         Err(ProveError::ZeroRcm)
     );
-    let actions = bundle::Plan::new(vec![], vec![output], max_fee_note)
+    let actions = bundle::Plan::try_new(vec![], vec![output], max_fee_note, vec![])
+        .unwrap()
         .actions_plan(anchor)
         .prove(rng, app, vec![])
         .unwrap();
@@ -450,7 +451,8 @@ fn overlapping_stamps_cannot_aggregate() {
         pairs: desc_b,
         cm_change: change_b,
         fee: v_fee,
-    } = bundle::Plan::new(vec![], vec![plan_b], max_fee_note)
+    } = bundle::Plan::try_new(vec![], vec![plan_b], max_fee_note, vec![])
+        .unwrap()
         .actions_plan(anchor)
         .prove(rng, app, vec![])
         .unwrap()
@@ -466,8 +468,7 @@ fn overlapping_stamps_cannot_aggregate() {
     let (_, spend_a) = spend(app);
     let note = PoolSim::shared_note(1000);
     let spendable = wallet.spendable_init(app, pool, &note, BlockHeight(1));
-    let rcv = value::Trapdoor::random(rng);
-    let theta = ActionEntropy::random(rng);
+    let (rcv, theta) = action_randomness::<effect::Spend>(rng, note);
     let spend_plan = action::Plan {
         note,
         theta,
@@ -475,14 +476,19 @@ fn overlapping_stamps_cannot_aggregate() {
         authority: wallet.pak.ak,
     };
     let output = output_plan(rng, wallet.random_note(600));
-    let plan = bundle::Plan::new(vec![spend_plan], vec![output], wallet.random_note(0));
-    let signatures = plan
-        .sign(
-            rng,
-            &mock_sighash(plan.commitment().unwrap()),
-            &wallet.sk.derive_auth_private(),
-        )
-        .unwrap();
+    let plan = bundle::Plan::try_new(
+        vec![spend_plan],
+        vec![output],
+        wallet.random_note(0),
+        vec![],
+    )
+    .unwrap();
+    let sighash = mock_sighash(plan.effects().commitment());
+    let mut action_sigs = plan.authorize(rng, &wallet.sk.derive_auth_private(), |digest| {
+        mock_sighash(*digest)
+    });
+    action_sigs.extend(plan.sign_outputs(rng, &sighash));
+    let binding_sig = plan.sign_binding(rng, &sighash);
     let autonome_parts = plan
         .actions_plan(anchor)
         .prove(
@@ -493,7 +499,10 @@ fn overlapping_stamps_cannot_aggregate() {
         .unwrap()
         .fee(rng, app, plan.max_fee_note(), value::Positive::ZERO)
         .unwrap();
-    let spend_b = plan.assemble(signatures, autonome_parts);
+    let spend_b = plan
+        .effects()
+        .clone()
+        .assemble(action_sigs, binding_sig, autonome_parts);
     let fixture_pairs = spend_a
         .actions
         .iter()

@@ -74,21 +74,19 @@ fn fee_less_output_bundle(
             proof: Box::new(pcd.proof().clone()),
         };
 
-        let plan = bundle::Plan::new(vec![], vec![output_plan], max_fee_note);
-        let signatures = plan
-            .sign(
-                rng,
-                &mock_sighash(plan.commitment().unwrap()),
-                &wallet.sk.derive_auth_private(),
-            )
-            .unwrap();
+        let plan = bundle::Plan::try_new(vec![], vec![output_plan], max_fee_note, vec![]).unwrap();
+        let sighash = mock_sighash(plan.effects().commitment());
+        let action_sigs = plan.sign_outputs(rng, &sighash);
+        let binding_sig = plan.sign_binding(rng, &sighash);
         let autonome_parts = stamp::AutonomeParts {
             stamp,
             pairs: BTreeMap::from([(output_plan.descriptor(), (cm.min(pad), cm.max(pad)))]),
             cm_change: max_fee_note.commitment().into(),
             fee: value::Positive::ZERO,
         };
-        plan.assemble(signatures, autonome_parts)
+        plan.effects()
+            .clone()
+            .assemble(action_sigs, binding_sig, autonome_parts)
     })
 }
 
@@ -257,7 +255,10 @@ fn fee_is_chosen_after_signing_up_to_the_max_and_applies_once() {
             .clone()
             .fee(rng, app, bundle_plan.max_fee_note(), fee)
             .unwrap();
-        bundle_plan.assemble(signatures.clone(), autonome_parts)
+        bundle_plan
+            .effects()
+            .clone()
+            .assemble(signatures.0.clone(), signatures.1, autonome_parts)
     });
     let bundles = [without_fee, at_fixture_fee, maximum_fee];
     for bundle in &bundles {
