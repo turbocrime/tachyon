@@ -143,7 +143,11 @@ fn plan_prove_rejects_invalid_inputs() {
         );
     }
 
-    let (swapped, swapped_pairs, ..) = plan
+    let stamp::AutonomeParts {
+        stamp: swapped,
+        pairs: swapped_pairs,
+        ..
+    } = plan
         .prove(
             rng,
             app,
@@ -171,7 +175,11 @@ fn plan_prove_rejects_invalid_inputs() {
     let foreign_a = action::Plan::spend(note_a, theta_a, rcv_a, |alpha| {
         other.pak.ak.derive_action_public(&alpha)
     });
-    let (foreign, foreign_pairs, ..) = stamp::Plan::new(
+    let stamp::AutonomeParts {
+        stamp: foreign,
+        pairs: foreign_pairs,
+        ..
+    } = stamp::Plan::new(
         vec![(foreign_a.descriptor(), theta_a, rcv_a)],
         vec![],
         anchor,
@@ -233,7 +241,12 @@ fn plan_prove_lifts_a_spend_along_spans() {
             pool.anchor_span(app, middle..=plan_height),
         ],
     ] {
-        let (stamp, pairs, cm_change, v_fee) = plan
+        let stamp::AutonomeParts {
+            stamp,
+            pairs,
+            cm_change,
+            fee: v_fee,
+        } = plan
             .clone()
             .prove(
                 rng,
@@ -273,7 +286,12 @@ fn plan_prove_lifts_a_spend_along_spans() {
         pool.anchor_span(app, cm_height..=cm_height),
         pool.anchor_span(app, plan_height..=plan_height),
     ];
-    let (forged, pairs, cm_change, v_fee) = plan
+    let stamp::AutonomeParts {
+        stamp: forged,
+        pairs,
+        cm_change,
+        fee: v_fee,
+    } = plan
         .prove(rng, app, &user.pak, vec![(secret, spendable, gapped)])
         .unwrap();
     let digests: Vec<ActionDigest> = pairs
@@ -306,7 +324,12 @@ fn overlapping_stamps_cannot_aggregate() {
     let output_a = alice_bundle.stamp;
     let plan_b = output_plan(rng, alice_note);
     let max_fee_note = wallet.random_note(0);
-    let (output_b, desc_b, change_b, v_fee) = bundle::Plan::new(vec![], vec![plan_b], max_fee_note)
+    let stamp::AutonomeParts {
+        stamp: output_b,
+        pairs: desc_b,
+        cm_change: change_b,
+        fee: v_fee,
+    } = bundle::Plan::new(vec![], vec![plan_b], max_fee_note)
         .stamp_plan(anchor, value::Positive::ZERO)
         .prove(rng, app, &wallet.pak, vec![])
         .unwrap();

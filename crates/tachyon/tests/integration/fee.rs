@@ -82,12 +82,12 @@ fn fee_less_output_bundle(
                 &wallet.sk.derive_auth_private(),
             )
             .unwrap();
-        let proof = (
+        let proof = stamp::AutonomeParts {
             stamp,
-            BTreeMap::from([(output_plan.descriptor(), (cm.min(pad), cm.max(pad)))]),
-            max_fee_note.commitment().into(),
-            value::Positive::ZERO,
-        );
+            pairs: BTreeMap::from([(output_plan.descriptor(), (cm.min(pad), cm.max(pad)))]),
+            cm_change: max_fee_note.commitment().into(),
+            fee: value::Positive::ZERO,
+        };
         plan.assemble(signatures, proof)
     })
 }

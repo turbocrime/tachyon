@@ -447,7 +447,7 @@ impl Plan {
     /// actions and the max fee note's value is nonzero.
     #[expect(
         clippy::type_complexity,
-        reason = "each spend's secret, spendable and spans; the stamp and its authorization data"
+        reason = "each spend's secret, spendable and spans"
     )]
     #[expect(
         clippy::too_many_lines,
@@ -463,15 +463,7 @@ impl Plan {
             ragu::Pcd<Pasta, ProductionRank, spendable::NoteSpendable>,
             Vec<ragu::Pcd<Pasta, ProductionRank, pool::AnchorSpan>>,
         )>,
-    ) -> Result<
-        (
-            ProofStamp<Uncompressed>,
-            BTreeMap<action::Descriptor, (Tachygram, Tachygram)>,
-            Tachygram,
-            value::Positive,
-        ),
-        ProveError,
-    > {
+    ) -> Result<AutonomeParts, ProveError> {
         let change = Tachygram::from(self.fee_change_note.commitment());
 
         // Each entry pairs leaf stamp components with the descriptor of its
@@ -629,18 +621,31 @@ impl Plan {
             .copied()
             .collect::<TachygramSetPoly>()
             .commit();
-        Ok((
-            ProofStamp {
+        Ok(AutonomeParts {
+            stamp: ProofStamp {
                 anchor,
                 tachygram_set,
                 adjuncts: BTreeSet::new(),
                 proof: Box::new(proof),
             },
-            descriptors,
-            change,
-            self.fee,
-        ))
+            pairs: descriptors,
+            cm_change: change,
+            fee: self.fee,
+        })
     }
+}
+
+/// A stamp and the bundle authorization data that it binds.
+#[derive(Clone, Debug)]
+pub struct AutonomeParts {
+    /// The stamp, with no adjuncts.
+    pub stamp: ProofStamp<Uncompressed>,
+    /// The covered descriptors and their ordered tachygram pairs.
+    pub pairs: BTreeMap<action::Descriptor, (Tachygram, Tachygram)>,
+    /// The actual fee, not the maximum.
+    pub fee: value::Positive,
+    /// The fee change note commitment.
+    pub cm_change: Tachygram,
 }
 
 /// Errors that can occur while proving a stamp.
