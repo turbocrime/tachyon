@@ -499,7 +499,7 @@ Consensus verifies the published anchor against the chain before accepting the s
 
 ### Rerandomization at trust boundaries
 
-`ActionsPlan::prove` rerandomizes the actions proof before handing it off. `ActionsProof::fee`, `AutonomeParts::seed`, `ProofStamp::merge`, `ProofStamp::unmerge`, and `ProofStamp::lift` rerandomize the stamp proof. This is obligatory rather than cosmetic.
+`ActionsPlan::prove`, `ActionsProof::lift`, and `ActionsProof::merge` rerandomize the actions proof before handing it off. `ActionsProof::fee`, `AutonomeParts::seed`, `ProofStamp::merge`, `ProofStamp::unmerge`, and `ProofStamp::lift` rerandomize the stamp proof. This is obligatory rather than cosmetic.
 
 A PCD proof is a commitment to its own witness data. Two proofs built from overlapping private inputs are correlated as group elements, even when their public headers reveal nothing. The proof a wallet holds after `SpendBind` and the proof it publishes in a stamp share a lineage, so an observer holding both could link them, and an aggregator that merges two stamps sees both inputs directly.
 
