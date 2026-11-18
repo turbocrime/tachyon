@@ -24,15 +24,13 @@ use core::error;
 use corez::io::{self, Read, Write};
 use derive_more::{Debug, Display, Eq as TotalEq, Error, PartialEq};
 use proof::{
-    App, HEADER_SIZE, bridge_hash, output,
+    App, HEADER_SIZE, output,
     stamp::{
         ActionLift, ActionMerge, Actions, FeeFuse, FeeSeed, OutputAction, SpendAction, Stamp,
         StampLift, StampMerge, StampUnmerge,
     },
 };
-use ragu::wire;
-use ragu_circuits::polynomials::{ProductionRank, Rank as _};
-use ragu_core::pasta::Pasta;
+use ragu::{ProductionRank, Rank as _, pasta::Pasta, pcd::wire};
 use rand_core::CryptoRng;
 use udon::{
     curve::{Affine as _, Projective as _},
@@ -41,6 +39,7 @@ use udon::{
 
 use crate::{
     ActionSetPoly, Note, TachygramSetPoly, action,
+    bridge_hash::bridge_hash,
     bundle::StateByte,
     digest::{blake2b, poseidon},
     effect,
@@ -147,14 +146,14 @@ pub trait Proof: sealed::Sealed {
     ///
     /// # Errors
     ///
-    /// Returns [`ragu_core::Error`] if the proof system fails. A disproved
+    /// Returns [`ragu::Error`] if the proof system fails. A disproved
     /// proof is reported as `Ok(false)`, not an error.
     fn verify<RNG: CryptoRng>(
         &self,
         rng: &mut RNG,
         app: &App<'_>,
         header: (ActionSetCommit, TachygramSetCommit, Anchor),
-    ) -> Result<bool, ragu_core::Error>;
+    ) -> Result<bool, ragu::Error>;
 }
 
 impl Proof for Uncompressed {
@@ -175,7 +174,7 @@ impl Proof for Uncompressed {
         rng: &mut RNG,
         app: &App<'_>,
         header: (ActionSetCommit, TachygramSetCommit, Anchor),
-    ) -> Result<bool, ragu_core::Error> {
+    ) -> Result<bool, ragu::Error> {
         let bridge = bridge_hash(header.1.as_ref().to_affine());
         let pcd = self.clone().carry::<Stamp>((bridge.into(), header.2));
         let [action_slot, tachygram_slot] = pcd.commitments();
@@ -186,7 +185,7 @@ impl Proof for Uncompressed {
         }
         let compressed = match app.compress(&pcd, rng) {
             Ok(compressed) => compressed,
-            Err(ragu_core::Error::InvalidWitness(_)) => return Ok(false),
+            Err(ragu::Error::InvalidWitness(_)) => return Ok(false),
             Err(error) => return Err(error),
         };
         app.verify_compressed(&compressed)
@@ -211,7 +210,7 @@ impl Proof for Compressed {
         _rng: &mut RNG,
         app: &App<'_>,
         header: (ActionSetCommit, TachygramSetCommit, Anchor),
-    ) -> Result<bool, ragu_core::Error> {
+    ) -> Result<bool, ragu::Error> {
         let [action_slot, tachygram_slot] = self.online_commitments();
         if action_slot != Eq::from(header.0).to_affine()
             || tachygram_slot != Eq::from(header.1).to_affine()
@@ -420,6 +419,7 @@ impl Plan {
     ///
     /// Returns the proof stamp, a descriptor-keyed map of tachygram pairs,
     /// the fee change, and the fee. Each pair has the smaller tachygram first.
+    /// Successful construction does not guarantee that the stamp verifies.
     ///
     /// `spend_pcds` pairs with the planned spends by position. For each
     /// **spend**, [`spend::SpendBind`] derives the live nullifier pair and
@@ -441,7 +441,7 @@ impl Plan {
     ///
     /// - [`ProveError::MissingPcd`] if the spend PCDs do not match the planned
     ///   spends, or a spend does not reach the plan's anchor.
-    /// - [`ProveError::ProofFailed`] if a proof-system step fails.
+    /// - [`ProveError::ProofFailed`] if Ragu cannot construct the proof.
     ///
     /// # Panics
     ///
@@ -652,9 +652,9 @@ pub enum ProveError {
     /// Missing PCD inputs for the operation.
     #[display("missing pcd inputs: {_0}")]
     MissingPcd(Box<dyn error::Error + Send + Sync + 'static>),
-    /// Proof creation failed; carries the underlying step-level error.
+    /// Proof construction failed; carries the underlying Ragu error.
     #[display("proof failed: {_0}")]
-    ProofFailed(ragu_core::Error),
+    ProofFailed(ragu::Error),
 }
 
 /// An uncompressed Ragu proof.
@@ -704,7 +704,7 @@ impl ProofStamp<Uncompressed> {
     ///
     /// # Errors
     ///
-    /// Returns [`ragu_core::Error`] if a proof-system step fails.
+    /// Returns [`ragu::Error`] if a proof-system step fails.
     #[expect(
         clippy::type_complexity,
         reason = "the digests, tachygrams, anchor and proof of one stamp"
@@ -724,7 +724,7 @@ impl ProofStamp<Uncompressed> {
             Box<Uncompressed>,
             (Tachygram, Tachygram),
         ),
-        ragu_core::Error,
+        ragu::Error,
     > {
         let (bind_pcd, ()) = app.seed(
             rng,
@@ -776,7 +776,7 @@ impl ProofStamp<Uncompressed> {
     ///
     /// # Errors
     ///
-    /// Returns [`ragu_core::Error`] if a proof-system step fails.
+    /// Returns [`ragu::Error`] if a proof-system step fails.
     #[expect(
         clippy::type_complexity,
         reason = "the digests, tachygrams, anchor and proof of one stamp"
@@ -795,7 +795,7 @@ impl ProofStamp<Uncompressed> {
             Box<Uncompressed>,
             (Tachygram, Tachygram),
         ),
-        ragu_core::Error,
+        ragu::Error,
     > {
         let (cm, nf_current, nf_next, anchor, _pk, cv) = *bind_pcd.data();
         let alpha = theta.randomizer::<effect::Spend>(cm);
@@ -844,7 +844,7 @@ impl ProofStamp<Uncompressed> {
     ///
     /// # Errors
     ///
-    /// Returns [`ragu_core::Error`] if a proof-system step fails.
+    /// Returns [`ragu::Error`] if a proof-system step fails.
     #[expect(
         clippy::type_complexity,
         reason = "the digests, tachygrams, anchor and proof of each stamp"
@@ -871,7 +871,7 @@ impl ProofStamp<Uncompressed> {
             Anchor,
             Box<Uncompressed>,
         ),
-        ragu_core::Error,
+        ragu::Error,
     > {
         let left_tg_poly = left_tachygrams
             .iter()
@@ -919,14 +919,14 @@ impl ProofStamp<Uncompressed> {
     ///
     /// # Errors
     ///
-    /// Returns [`ragu_core::Error`] if a proof-system operation fails.
+    /// Returns [`ragu::Error`] if a proof-system operation fails.
     fn prove_lift<RNG: CryptoRng>(
         self,
         rng: &mut RNG,
         app: &App<'_>,
         action_digests: impl IntoIterator<Item = ActionDigest>,
         spans: Vec<ragu::Pcd<Pasta, ProductionRank, pool::AnchorSpan>>,
-    ) -> Result<Self, ragu_core::Error> {
+    ) -> Result<Self, ragu::Error> {
         let action_set = action_digests.into_iter().collect::<ActionSetPoly>();
         let bridge = bridge_hash(self.tachygram_set.as_ref().to_affine());
         let mut stamp_pcd = self.proof.carry::<Stamp>((bridge.into(), self.anchor));
@@ -954,10 +954,12 @@ impl ProofStamp<Uncompressed> {
 
     /// Advances the stamp's anchor along `spans`, computing the action digests
     /// from the covered action and fee descriptors.
+    /// Successful construction does not guarantee that the lifted stamp
+    /// verifies.
     ///
     /// # Errors
     ///
-    /// Returns [`ragu_core::Error`] if a proof-system operation fails.
+    /// Returns [`ragu::Error`] if a proof-system operation fails.
     /// Empty `spans` leave the stamp unchanged before
     /// inspecting the descriptors.
     ///
@@ -971,7 +973,7 @@ impl ProofStamp<Uncompressed> {
         descriptors: &BTreeMap<action::Descriptor, (Tachygram, Tachygram)>,
         fee_descriptors: &BTreeMap<fee::Descriptor, Tachygram>,
         spans: Vec<ragu::Pcd<Pasta, ProductionRank, pool::AnchorSpan>>,
-    ) -> Result<Self, ragu_core::Error> {
+    ) -> Result<Self, ragu::Error> {
         if spans.is_empty() {
             return Ok(self);
         }
@@ -987,6 +989,8 @@ impl ProofStamp<Uncompressed> {
     }
 
     /// Merges two stamps into one covering stamp.
+    /// Successful construction does not guarantee that the merged stamp
+    /// verifies.
     ///
     /// Each side supplies borrowed action and fee maps, from which the action
     /// digests and tachygrams for the merge proof are derived.
@@ -1005,7 +1009,7 @@ impl ProofStamp<Uncompressed> {
     ///
     /// # Errors
     ///
-    /// Returns [`ragu_core::Error`] if a proof-system operation fails.
+    /// Returns [`ragu::Error`] if a proof-system operation fails.
     ///
     /// # Panics
     ///
@@ -1028,7 +1032,7 @@ impl ProofStamp<Uncompressed> {
             &BTreeMap<action::Descriptor, (Tachygram, Tachygram)>,
             &BTreeMap<fee::Descriptor, Tachygram>,
         ),
-    ) -> Result<Self, ragu_core::Error> {
+    ) -> Result<Self, ragu::Error> {
         let mut left_digests = BTreeSet::new();
         let mut left_tachygrams = BTreeSet::new();
         for (descriptor, &pair) in left_desc {
@@ -1096,7 +1100,8 @@ impl ProofStamp<Uncompressed> {
     ///
     /// Each side supplies borrowed action and fee maps. The quotient's action
     /// digests and tachygrams are the dividend's less the divisor's. A divisor
-    /// that does not divide this stamp fails in the proof system.
+    /// that does not divide this stamp can produce a proof that fails
+    /// verification, even when construction succeeds.
     ///
     /// The quotient lists this stamp's adjuncts less the divisor's adjuncts and
     /// `divisor_txid`, the txid of the one transaction the divisor covers
@@ -1111,7 +1116,7 @@ impl ProofStamp<Uncompressed> {
     ///
     /// # Errors
     ///
-    /// Returns [`ragu_core::Error`] if a proof-system operation fails.
+    /// Returns [`ragu::Error`] if a proof-system operation fails.
     ///
     /// # Panics
     ///
@@ -1134,7 +1139,7 @@ impl ProofStamp<Uncompressed> {
             &BTreeMap<action::Descriptor, (Tachygram, Tachygram)>,
             &BTreeMap<fee::Descriptor, Tachygram>,
         ),
-    ) -> Result<Self, ragu_core::Error> {
+    ) -> Result<Self, ragu::Error> {
         let mut digests = BTreeSet::new();
         let mut tachygrams_all = BTreeSet::new();
         for (descriptor, &pair) in descriptors {
@@ -1214,12 +1219,12 @@ impl ProofStamp<Uncompressed> {
     ///
     /// # Errors
     ///
-    /// Returns [`ragu_core::Error`] if the proof system fails.
+    /// Returns [`ragu::Error`] if the proof system fails.
     pub fn compress<RNG: CryptoRng>(
         self,
         rng: &mut RNG,
         app: &App<'_>,
-    ) -> Result<ProofStamp<Compressed>, ragu_core::Error> {
+    ) -> Result<ProofStamp<Compressed>, ragu::Error> {
         let bridge = bridge_hash(self.tachygram_set.as_ref().to_affine());
         let pcd = self.proof.carry::<Stamp>((bridge.into(), self.anchor));
         let (compressed, _) = app.compress(&pcd, rng)?.into_parts();
@@ -1243,14 +1248,14 @@ impl<P: Proof> ProofStamp<P> {
     ///
     /// # Errors
     ///
-    /// Returns [`ragu_core::Error`] if the proof system fails. A disproved
+    /// Returns [`ragu::Error`] if the proof system fails. A disproved
     /// proof is reported as `Ok(false)`, not an error.
     pub fn verify_proof<RNG: CryptoRng>(
         &self,
         rng: &mut RNG,
         app: &App<'_>,
         action_digests: impl IntoIterator<Item = ActionDigest>,
-    ) -> Result<bool, ragu_core::Error> {
+    ) -> Result<bool, ragu::Error> {
         let action_set = ActionSetPoly::from_iter(action_digests);
 
         self.proof.verify(

@@ -3,9 +3,8 @@ extern crate alloc;
 use alloc::{collections::BTreeMap, vec, vec::Vec};
 use core::{cell::RefCell, ops::RangeInclusive};
 
-use ragu_circuits::polynomials::ProductionRank;
-use ragu_core::{
-    PoseidonPermutation as _,
+use ragu::{
+    PoseidonPermutation as _, ProductionRank,
     pasta::{Pasta, PoseidonFp},
 };
 use rand::{SeedableRng as _, rngs::StdRng};
@@ -33,7 +32,7 @@ pub fn random_action<RNG: CryptoRng>(rng: &mut RNG) -> (action::Descriptor, acti
     let wallet = WalletSim::random(rng);
     let ask = wallet.sk.derive_auth_private();
     let note = wallet.random_note(400);
-    let (_, _, plan) = output_plan(rng, note);
+    let plan = output_plan(rng, note);
     let bundle_plan = bundle::Plan::new(
         vec![],
         vec![plan],
@@ -44,14 +43,10 @@ pub fn random_action<RNG: CryptoRng>(rng: &mut RNG) -> (action::Descriptor, acti
     action_sigs.into_iter().next().unwrap()
 }
 
-pub fn output_plan<RNG: CryptoRng>(
-    rng: &mut RNG,
-    note: Note,
-) -> (value::Trapdoor, ActionEntropy, action::Plan<effect::Output>) {
+pub fn output_plan<RNG: CryptoRng>(rng: &mut RNG, note: Note) -> action::Plan<effect::Output> {
     let rcv = value::Trapdoor::random(rng);
     let theta = ActionEntropy::random(rng);
-    let plan = action::Plan::output(note, theta, rcv);
-    (rcv, theta, plan)
+    action::Plan::output(note, theta, rcv)
 }
 
 pub(crate) fn shared_sk() -> private::SpendingKey {
