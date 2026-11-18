@@ -498,3 +498,6 @@ pub(crate) mod circuit {
         absorb(dr, sponge, children.each_ref())?.squeeze(dr)
     }
 }
+
+#[cfg(test)]
+mod tests;
