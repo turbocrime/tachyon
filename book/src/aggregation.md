@@ -214,7 +214,7 @@ A listed bundle the stamp does not cover adds to the derived tachygram union, an
 
 A `txid` names a transaction and not one of its authorization forms.
 Several forms of one `txid` can sit in a mempool, differing in fee, fee change or pairs.
-A node strips the form it holds and verifies the aggregate with it.
+A node verifies the aggregate against the form it holds.
 A wrong form fails before stamp proof verification, at the tachygram set check or at the stamp proof's output slot comparison.
 
 A stripped adjunct keeps its entire bundle body, including `cvFeeMaxTachyon`, `vActionTachygramsTachyon`, `vFeeTachyon`, and `cmChangeTachyon`. Its trailer is empty. The covering verifier collects the pairs and fee descriptors from the published bodies.

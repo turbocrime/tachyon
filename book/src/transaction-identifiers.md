@@ -55,8 +55,14 @@ An aggregate refers to each other transaction whose bundle it covers by `txid`, 
 
 A `txid` is enough to name an adjunct. The stamp proof binds each covered bundle's fee, fee change and unordered action pairs, which are authorization data in the body that a `txid` leaves out. An adjunct with a different fee, fee change or unordered action pair from what the stamp proof covers fails verification; signatures and pair encoding order are not bound by the proof.
 
-A stripped bundle's `wtxid` is a function of that bundle alone. Stripping takes nothing and writes nothing. The miner strips each listed transaction for its block, and a mempool node that strips a copy to verify an aggregate gets the same adjunct and `wtxid`. Lifting, merging or rerandomizing the aggregate's stamp changes the aggregate's `wtxid` and breaks no reference.
+A stripped bundle's `wtxid` is a function of that bundle alone.
+Stripping takes nothing and writes nothing.
+The miner strips each listed transaction for its block, and stripping a stamped copy produces that exact adjunct and `wtxid`.
+Lifting, merging or rerandomizing the aggregate's stamp changes the aggregate's `wtxid` and breaks no reference.
 
-A `txid` names a transaction and not one of its authorization forms. Several forms of one `txid` can sit in a mempool, differing in fee, fee change or pairs. A node strips the form it holds and verifies. A form with a different fee, fee change or unordered action pair from what the covering proof binds fails verification.
+A `txid` names a transaction and not one of its authorization forms.
+Several forms of one `txid` can sit in a mempool, differing in fee, fee change or pairs.
+A node verifies the aggregate against the form it holds.
+A form with a different fee, fee change or unordered action pair from what the covering proof binds fails verification.
 
 See [Aggregation → Adjunct list](./aggregation.md#adjunct-list) for who writes the list and the block rules that use it.
