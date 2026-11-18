@@ -121,7 +121,7 @@ use crate::{
     digest::blake2b,
     fee,
     keys::{private, public},
-    pasta::Fp,
+    pasta::{EpAffine, Fp},
     primitives::{Anchor, effect},
     reddsa, serialization,
     stamp::{
@@ -273,6 +273,24 @@ pub enum PlanError {
     /// The value balance overflows the representable range.
     #[display("value balance overflow")]
     BalanceOverflow,
+    /// A note has a zero commitment trapdoor.
+    #[display("zero note commitment trapdoor")]
+    ZeroRcm,
+    /// The action count exceeds the consensus bound.
+    #[display("too many actions")]
+    TooManyActions,
+    /// Two actions have the same descriptor.
+    #[display("duplicate action descriptor")]
+    DuplicateAction,
+    /// An action descriptor or max fee commitment has an identity point.
+    #[display("identity point in bundle effects")]
+    IdentityPoint,
+    /// An actionless bundle has a nonzero max fee.
+    #[display("nonzero maximum fee without actions")]
+    FeeWithoutActions,
+    /// An action's randomizer or trapdoor exceeds the base-field capacity.
+    #[display("unrepresentable action randomness")]
+    UnrepresentableActionRandomness,
 }
 
 /// A complete bundle plan, awaiting authorization.
@@ -289,6 +307,7 @@ pub struct Plan {
 
     /// Opaque recipient-directed payload, empty when absent.
     memo: Vec<u8>,
+    effects: Option<Effects>,
 }
 
 impl Plan {
@@ -305,7 +324,95 @@ impl Plan {
             outputs,
             max_fee_note,
             memo: Vec::new(),
+            effects: None,
         }
+    }
+
+    /// Derive a bundle's effects from its action plans and fee opening.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlanError`] if the notes or derived effects cannot form a
+    /// bundle.
+    pub fn try_new(
+        spends: Vec<action::Plan<effect::Spend>>,
+        outputs: Vec<action::Plan<effect::Output>>,
+        max_fee_note: Note,
+        memo: Vec<u8>,
+    ) -> Result<Self, PlanError> {
+        if spends
+            .iter()
+            .map(|plan| plan.note.rcm)
+            .chain(outputs.iter().map(|plan| plan.note.rcm))
+            .chain([max_fee_note.rcm])
+            .any(|rcm| Fp::from(rcm) == Fp::ZERO)
+        {
+            return Err(PlanError::ZeroRcm);
+        }
+        let count = spends.len() + outputs.len();
+        if 2 * count + 1 > ProductionRank::num_coeffs() - 1 {
+            return Err(PlanError::TooManyActions);
+        }
+        if count == 0 && max_fee_note.value != value::Positive::ZERO {
+            return Err(PlanError::FeeWithoutActions);
+        }
+        let value_balance = value::Balance::try_from(
+            spends
+                .iter()
+                .map(|plan| i128::from(plan.note.value))
+                .chain(outputs.iter().map(|plan| -i128::from(plan.note.value)))
+                .chain([-i128::from(max_fee_note.value)])
+                .sum::<i128>(),
+        )
+        .map_err(|_err| PlanError::BalanceOverflow)?;
+        if !spends.iter().all(action::Plan::randomness_fits)
+            || !outputs.iter().all(action::Plan::randomness_fits)
+        {
+            return Err(PlanError::UnrepresentableActionRandomness);
+        }
+        let mut actions: Vec<_> = spends
+            .iter()
+            .map(action::Plan::descriptor)
+            .chain(outputs.iter().map(action::Plan::descriptor))
+            .collect();
+        actions.sort_unstable();
+        if actions
+            .windows(2)
+            .any(|window| window.first() == window.last())
+        {
+            return Err(PlanError::DuplicateAction);
+        }
+        let cv_feemax = max_fee_note.cv_feemax();
+        if EpAffine::from(cv_feemax).is_identity()
+            || actions.iter().any(|desc| {
+                EpAffine::from(desc.cv).is_identity() || EpAffine::from(desc.rk).is_identity()
+            })
+        {
+            return Err(PlanError::IdentityPoint);
+        }
+        Ok(Self {
+            spends,
+            outputs,
+            max_fee_note,
+            memo: memo.clone(),
+            effects: Some(Effects {
+                value_balance,
+                actions,
+                cv_feemax,
+                memo,
+            }),
+        })
+    }
+
+    /// The effecting data fixed by this plan.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the plan was not validated.
+    #[must_use]
+    #[expect(clippy::expect_used, reason = "effects require a validated plan")]
+    pub fn effects(&self) -> &Effects {
+        self.effects.as_ref().expect("plan was not validated")
     }
 
     /// Attach an opaque recipient-directed payload, replacing any existing one.
@@ -314,7 +421,11 @@ impl Plan {
     /// [`Self::commitment`] is taken for the sighash.
     #[must_use]
     pub fn with_memo(self, memo: Vec<u8>) -> Self {
-        Self { memo, ..self }
+        Self {
+            memo,
+            effects: None,
+            ..self
+        }
     }
 
     /// Iterate over all actions in the plan, mapping with the provided
@@ -574,6 +685,156 @@ impl Plan {
             fee_auth: cm_change,
             binding_sig,
             memo: self.memo.clone(),
+            stamp,
+        }
+    }
+
+    /// Sign only spends owned by `ask`. The transaction layer derives the
+    /// sighash from the plan's commitment before any signature is produced.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the plan was not validated.
+    pub fn authorize<RNG: CryptoRng>(
+        &self,
+        rng: &mut RNG,
+        ask: &private::SpendAuthorizingKey,
+        sighash: impl FnOnce(&[u8; 32]) -> [u8; 32],
+    ) -> BTreeMap<action::Descriptor, action::Signature> {
+        let ak = ask.derive_auth_public();
+        let owned: BTreeMap<_, _> = self
+            .spends
+            .iter()
+            .filter(|plan| plan.authority == ak)
+            .map(|plan| {
+                (
+                    plan.descriptor(),
+                    plan.theta
+                        .randomizer::<effect::Spend>(plan.note.commitment()),
+                )
+            })
+            .collect();
+        let message = sighash(&self.effects().commitment());
+        owned
+            .into_iter()
+            .map(|(desc, alpha)| (desc, ask.derive_action_private(&alpha).sign(rng, &message)))
+            .collect()
+    }
+
+    /// Sign the outputs with their action randomizers, without a spend key.
+    pub fn sign_outputs<RNG: CryptoRng>(
+        &self,
+        rng: &mut RNG,
+        sighash: &[u8; 32],
+    ) -> BTreeMap<action::Descriptor, action::Signature> {
+        self.outputs
+            .iter()
+            .map(|plan| {
+                let alpha = plan
+                    .theta
+                    .randomizer::<effect::Output>(plan.note.commitment());
+                (
+                    plan.descriptor(),
+                    private::ActionSigningKey::new(&alpha).sign(rng, sighash),
+                )
+            })
+            .collect()
+    }
+
+    /// Sign with the sum of the action trapdoors and the max fee blind.
+    pub fn sign_binding<RNG: CryptoRng>(&self, rng: &mut RNG, sighash: &[u8; 32]) -> Signature {
+        private::BindingSigningKey::from(
+            self.spends
+                .iter()
+                .map(|plan| plan.rcv)
+                .chain(self.outputs.iter().map(|plan| plan.rcv))
+                .chain([self.max_fee_note.derive_feemax_blind()]),
+        )
+        .sign(rng, sighash)
+    }
+}
+
+/// Effecting data, independent of signatures, fees paid, and stamps.
+#[derive(Clone, Debug)]
+pub struct Effects {
+    /// Net value after deducting the maximum fee.
+    pub value_balance: value::Balance,
+    /// Action descriptors in commitment order.
+    pub actions: Vec<action::Descriptor>,
+    /// Commitment to the maximum fee and change note opening.
+    pub cv_feemax: value::Commitment,
+    /// Opaque recipient-directed payload, empty when absent.
+    pub memo: Vec<u8>,
+}
+
+impl Effects {
+    /// Commit to the effects in their given order.
+    #[must_use]
+    pub fn commitment(&self) -> [u8; 32] {
+        let desc_bytes: Vec<[u8; 64]> = self.actions.iter().copied().collect();
+        blake2b::bundle_commitment(
+            &blake2b::action_descriptor_digest(&desc_bytes),
+            self.value_balance.into(),
+            &self.cv_feemax.into(),
+            &blake2b::memo_digest(&self.memo),
+        )
+    }
+
+    /// Assemble the bundle from signatures and independently produced proof
+    /// data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the effects, signatures and pairs do not cover the same
+    /// descriptors exactly once.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "a signature and pair must exist for each descriptor"
+    )]
+    pub fn assemble(
+        self,
+        mut action_sigs: BTreeMap<action::Descriptor, action::Signature>,
+        binding_sig: Signature,
+        autonome_parts: stamp::AutonomeParts,
+    ) -> Bundle<ProofStamp<stamp::Uncompressed>> {
+        let stamp::AutonomeParts {
+            stamp,
+            mut pairs,
+            fee,
+            cm_change,
+        } = autonome_parts;
+        assert!(
+            self.actions.len() == action_sigs.len() && self.actions.len() == pairs.len(),
+            "action descriptors do not match"
+        );
+        let actions = self
+            .actions
+            .into_iter()
+            .map(|descriptor| {
+                let sig = action_sigs
+                    .remove(&descriptor)
+                    .expect("action descriptors do not match");
+                let pair = pairs
+                    .remove(&descriptor)
+                    .expect("action descriptors do not match");
+                action::Authorized {
+                    descriptor,
+                    sig,
+                    pair,
+                }
+            })
+            .collect();
+        Bundle {
+            actions,
+            value_balance: self.value_balance,
+            fee: fee::Descriptor {
+                cv_feemax: self.cv_feemax,
+                v_fee: fee,
+            },
+            fee_auth: cm_change,
+            binding_sig,
+            memo: self.memo,
             stamp,
         }
     }

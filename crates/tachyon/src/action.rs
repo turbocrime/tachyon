@@ -5,13 +5,13 @@ use core::{cmp, cmp::Ord};
 
 use corez::io::{self, Read, Write};
 use derive_more::{Debug, Display, Eq as TotalEq, PartialEq};
-use udon::curve::Affine as _;
+use udon::{curve::Affine as _, field::Field as _};
 
 use crate::{
     entropy::ActionEntropy,
     keys::public,
     note::Note,
-    pasta::EpAffine,
+    pasta::{EpAffine, Fp, Fq},
     primitives::{ActionDigest, Effect, Tachygram},
     reddsa, serialization, value,
 };
@@ -127,6 +127,23 @@ pub struct Plan<E: Effect> {
 }
 
 impl<E: Effect> Plan<E> {
+    #[expect(clippy::as_conversions, reason = "constant field capacity")]
+    pub(crate) fn randomness_fits(&self) -> bool {
+        [
+            Fq::from(self.theta.randomizer::<E>(self.note.commitment())),
+            Fq::from(self.rcv),
+        ]
+        .into_iter()
+        .all(|scalar| {
+            !scalar
+                .to_le_bits()
+                .as_ref()
+                .iter()
+                .skip(Fp::CAPACITY as usize)
+                .any(|&bit| bit)
+        })
+    }
+
     /// Derive the value commitment of this action plan.
     ///
     /// $$
