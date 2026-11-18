@@ -101,6 +101,17 @@ impl Ord for Descriptor {
     }
 }
 
+/// A Tachyon action in a bundle.
+#[derive(Clone, Copy, Debug, PartialEq, TotalEq)]
+pub struct Authorized {
+    /// Effecting fields.
+    pub descriptor: Descriptor,
+    /// Authorization over the transaction sighash.
+    pub sig: Signature,
+    /// The action's two published tachygrams.
+    pub pair: (Tachygram, Tachygram),
+}
+
 /// A planned Tachyon action, not yet authorized.
 #[derive(Clone, Copy, Debug)]
 pub struct Plan<E: Effect> {
