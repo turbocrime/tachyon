@@ -333,7 +333,8 @@ fn partial_actions_proofs_lift_and_merge_before_fee() {
     let max_fee_note = wallet.random_fee_note(0);
     let [first, second] = [100, 200].map(|amount| output_plan(rng, wallet.random_note(amount)));
     let [left, right] = [(first, left_anchor), (second, right_anchor)].map(|(output, anchor)| {
-        bundle::Plan::new(vec![], vec![output], max_fee_note)
+        bundle::Plan::try_new(vec![], vec![output], max_fee_note, vec![])
+            .unwrap()
             .actions_plan(anchor)
             .prove(rng, app, vec![])
             .unwrap()
@@ -358,15 +359,16 @@ fn partial_actions_proofs_lift_and_merge_before_fee() {
         left.pairs.into_iter().chain(right.pairs).collect()
     );
 
-    let plan = bundle::Plan::new(vec![], vec![first, second], max_fee_note);
-    let sighash = mock_sighash(plan.commitment().unwrap());
-    let signatures = plan
-        .sign(rng, &sighash, &wallet.sk.derive_auth_private())
-        .unwrap();
+    let plan = bundle::Plan::try_new(vec![], vec![first, second], max_fee_note, vec![]).unwrap();
+    let sighash = mock_sighash(plan.effects().commitment());
+    let action_sigs = plan.sign_outputs(rng, &sighash);
+    let binding_sig = plan.sign_binding(rng, &sighash);
     let autonome_parts = merged
         .fee(rng, app, plan.max_fee_note(), value::Positive::ZERO)
         .unwrap();
-    plan.assemble(signatures, autonome_parts)
+    plan.effects()
+        .clone()
+        .assemble(action_sigs, binding_sig, autonome_parts)
         .verify::<_, StrippedStamp>(rng, app, &sighash, &[])
         .unwrap();
 }
@@ -406,7 +408,8 @@ fn proving_rejects_empty_actions_and_invalid_note_openings() {
         .prove(rng, app, vec![]),
         Err(ProveError::ZeroRcm)
     );
-    let actions = bundle::Plan::new(vec![], vec![output], max_fee_note)
+    let actions = bundle::Plan::try_new(vec![], vec![output], max_fee_note, vec![])
+        .unwrap()
         .actions_plan(anchor)
         .prove(rng, app, vec![])
         .unwrap();
@@ -448,7 +451,8 @@ fn overlapping_stamps_cannot_aggregate() {
         pairs: desc_b,
         cm_change: change_b,
         fee: v_fee,
-    } = bundle::Plan::new(vec![], vec![plan_b], max_fee_note)
+    } = bundle::Plan::try_new(vec![], vec![plan_b], max_fee_note, vec![])
+        .unwrap()
         .actions_plan(anchor)
         .prove(rng, app, vec![])
         .unwrap()
@@ -472,14 +476,19 @@ fn overlapping_stamps_cannot_aggregate() {
         authority: wallet.pak.ak,
     };
     let output = output_plan(rng, wallet.random_note(600));
-    let plan = bundle::Plan::new(vec![spend_plan], vec![output], wallet.random_fee_note(0));
-    let signatures = plan
-        .sign(
-            rng,
-            &mock_sighash(plan.commitment().unwrap()),
-            &wallet.sk.derive_auth_private(),
-        )
-        .unwrap();
+    let plan = bundle::Plan::try_new(
+        vec![spend_plan],
+        vec![output],
+        wallet.random_fee_note(0),
+        vec![],
+    )
+    .unwrap();
+    let sighash = mock_sighash(plan.effects().commitment());
+    let mut action_sigs = plan.authorize(rng, &wallet.sk.derive_auth_private(), |digest| {
+        mock_sighash(*digest)
+    });
+    action_sigs.extend(plan.sign_outputs(rng, &sighash));
+    let binding_sig = plan.sign_binding(rng, &sighash);
     let autonome_parts = plan
         .actions_plan(anchor)
         .prove(
@@ -490,7 +499,10 @@ fn overlapping_stamps_cannot_aggregate() {
         .unwrap()
         .fee(rng, app, plan.max_fee_note(), value::Positive::ZERO)
         .unwrap();
-    let spend_b = plan.assemble(signatures, autonome_parts);
+    let spend_b = plan
+        .effects()
+        .clone()
+        .assemble(action_sigs, binding_sig, autonome_parts);
     let fixture_pairs = spend_a
         .actions
         .iter()

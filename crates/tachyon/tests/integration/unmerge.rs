@@ -23,8 +23,8 @@ use crate::fixtures::{
     mock_sighash, mock_txid,
     pool::PoolSim,
     wallet::{
-        WalletSim, alice, alice_max_fee_note, bob, later_output, lifted, merged, output_plan,
-        outputs_with_fees, shared_sk,
+        WalletSim, alice, alice_max_fee_note, alice_output_note, bob, later_output, lifted, merged,
+        output_plan, outputs_with_fees, shared_sk,
     },
 };
 
@@ -357,31 +357,26 @@ fn unmerge_splitting_a_bundle() {
     let rng = &mut StdRng::seed_from_u64(0);
     let wallet = WalletSim::new(shared_sk());
     let anchor = PoolSim::shared().mint_anchor();
-    let (alice_plan, alice) = alice(app);
     let kept_plan = output_plan(rng, wallet.random_note(300));
-    let removed_plan = alice_plan
-        .iter_actions(|_| None, |plan| Some(*plan))
-        .flatten()
-        .next()
-        .unwrap();
+    let removed_plan = output_plan(rng, alice_output_note());
     let kept_descriptor = kept_plan.descriptor();
 
     let max_fee_note = alice_max_fee_note();
-    let plan = bundle::Plan::new(vec![], vec![kept_plan, removed_plan], max_fee_note);
-    let autonome_parts = plan
-        .actions_plan(anchor)
-        .prove(rng, app, vec![])
-        .unwrap()
-        .fee(rng, app, plan.max_fee_note(), value::Positive::ZERO)
-        .unwrap();
-    let signatures = plan
-        .sign(
-            rng,
-            &mock_sighash(plan.commitment().unwrap()),
-            &wallet.sk.derive_auth_private(),
-        )
-        .unwrap();
-    let mut whole = plan.assemble(signatures, autonome_parts);
+    let [mut whole, part] = [vec![kept_plan, removed_plan], vec![removed_plan]].map(|outputs| {
+        let plan = bundle::Plan::try_new(vec![], outputs, max_fee_note, vec![]).unwrap();
+        let autonome_parts = plan
+            .actions_plan(anchor)
+            .prove(rng, app, vec![])
+            .unwrap()
+            .fee(rng, app, max_fee_note, value::Positive::ZERO)
+            .unwrap();
+        let sighash = mock_sighash(plan.effects().commitment());
+        let action_sigs = plan.sign_outputs(rng, &sighash);
+        let binding_sig = plan.sign_binding(rng, &sighash);
+        plan.effects()
+            .clone()
+            .assemble(action_sigs, binding_sig, autonome_parts)
+    });
     let kept_index = whole
         .actions
         .iter()
@@ -389,7 +384,7 @@ fn unmerge_splitting_a_bundle() {
         .unwrap();
     let kept_digest = whole.verify_covered::<StrippedStamp>(&[]).unwrap().0[kept_index];
 
-    let part_desc = alice
+    let part_desc = part
         .actions
         .iter()
         .map(|action| (action.descriptor, action.pair))
@@ -401,8 +396,8 @@ fn unmerge_splitting_a_bundle() {
         .map(|action| (action.descriptor, action.pair))
         .collect();
     let whole_fees = BTreeMap::from([(whole.fee, whole.fee_auth)]);
-    let part_txid = mock_txid(&alice);
-    let part = alice.stamp;
+    let part_txid = mock_txid(&part);
+    let part_stamp = part.stamp;
 
     let quotient = whole
         .stamp
@@ -411,7 +406,7 @@ fn unmerge_splitting_a_bundle() {
             rng,
             app,
             (&whole_desc, &whole_fees),
-            (part, part_txid, &part_desc, &part_fees),
+            (part_stamp, part_txid, &part_desc, &part_fees),
         )
         .unwrap();
     assert!(quotient.verify_proof(rng, app, [kept_digest]).unwrap());
@@ -437,21 +432,19 @@ fn unmerge_rejects_a_reproven_note_as_divisor() {
     let fee = value::Positive::try_from(40u64).unwrap();
     let [original, reproven] = [(), ()].map(|()| {
         let output = output_plan(rng, note);
-        let plan = bundle::Plan::new(vec![], vec![output], max_fee_note);
-        let signatures = plan
-            .sign(
-                rng,
-                &mock_sighash(plan.commitment().unwrap()),
-                &wallet.sk.derive_auth_private(),
-            )
-            .unwrap();
+        let plan = bundle::Plan::try_new(vec![], vec![output], max_fee_note, vec![]).unwrap();
+        let sighash = mock_sighash(plan.effects().commitment());
+        let action_sigs = plan.sign_outputs(rng, &sighash);
+        let binding_sig = plan.sign_binding(rng, &sighash);
         let autonome_parts = plan
             .actions_plan(anchor)
             .prove(rng, app, vec![])
             .unwrap()
             .fee(rng, app, plan.max_fee_note(), fee)
             .unwrap();
-        plan.assemble(signatures, autonome_parts)
+        plan.effects()
+            .clone()
+            .assemble(action_sigs, binding_sig, autonome_parts)
     });
     let (_, other) = wallet.bundle(
         app,

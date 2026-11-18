@@ -182,7 +182,7 @@ Each path consumes the same action plans but produces a different component of t
 - **Binding**: the [bundle commitment](#bundle-commitment) feeds into the transaction sighash, which the binding key signs.
 - **Proving**: each action plan yields `Actions`; leaves merge into one `Actions` PCD, and [$\mathsf{FeeFuse}$](./fee.md#fee-change-note) applies the fee to produce a stamp. A zero-action plan uses $\mathsf{FeeSeed}$.
 
-Authorizing and binding produce the descriptor-keyed action signatures and the binding signature. Proving returns the proof stamp, a descriptor-keyed pair map, the change commitment, and the chosen fee. `bundle::Plan::assemble` combines both outputs with the plan, checking that their descriptor keys match. The paths can run in either order or concurrently.
+Authorizing and binding produce the descriptor-keyed action signatures and the binding signature. Proving returns the proof stamp, a descriptor-keyed pair map, the change commitment, and the chosen fee. `bundle::Effects::assemble` combines the signatures and proving data with the effects, checking that their descriptor keys match. The paths can run in either order or concurrently.
 
 ```mermaid
 flowchart LR
@@ -206,12 +206,10 @@ flowchart LR
         other1@{ shape: st-doc, label: "other tx data" } 
     end
     pczt ~~~ sighash{sighash}
-    bundle_plan & other1 === sighash 
+    effects & other1 === sighash
 
 
-    action_plan & max_fee_note --> value_balance
-    max_fee_note --> cv_feemax
-    memo --> memo_2[memo]
+    action_plan & max_fee_note & memo --> effects["bundle effects"]
 
     subgraph tx[complete tx]
         subgraph bundle["stamped bundle"]
@@ -251,24 +249,26 @@ flowchart LR
         bsk 
         sign_binding_sig(("sign"))
     end
-    action_plan & max_fee_note --- bsk --- sign_binding_sig ==> signatures
+    action_plan & max_fee_note --- bsk --- sign_binding_sig ==> binding_signature["binding signature"]
     sighash === sign_binding_sig
 
     sighash ~~~ authorization
     subgraph authorization["authorizing flow"]
         subgraph custody["custody device"]
             rsk@{ shape: st-rect }
-            sign_action((("sign")))
+            sign_spends((("sign owned spends")))
         end
+        sign_outputs((("sign outputs")))
     end
-    sighash === sign_action
-    action_plan --- rsk --- sign_action ==> signatures
+    sighash === sign_spends & sign_outputs
+    action_plan --- rsk --- sign_spends ==> action_signatures["action signatures"]
+    action_plan --- sign_outputs ==> action_signatures
 
-    signatures["action and binding signatures"] --> join{"assemble bundle"}
-    pczt --> join
+    action_signatures & binding_signature --> join{"assemble bundle"}
+    effects --> join
     pairs --> join
     proved_stamp & chosen_fee & proved_change --> join
-    join --> action & binding_sig & stamp & fee & cm_change
+    join --> action & value_balance & cv_feemax & memo_2 & binding_sig & stamp & fee & cm_change
 
     other1 --> other2
     pczt ~~~ sighash
@@ -280,9 +280,8 @@ A modified descriptor breaks both checks. Changing a pair's members breaks stamp
 
 ## Detailed Sequence
 
-The sequence follows `bundle::Plan` through signing, `ActionsPlan::prove` and `ActionsProof::fee` (or `AutonomeParts::seed`) through proving, `bundle::Plan::assemble` through assembly, and `Bundle::verify` through consensus.
-Custody is drawn as a separate participant for a device-split integration that does not exist yet.
-`Plan::sign` takes an opaque sighash and signs it; the recomputation and sighash confirmation shown under Custody are requirements on such an integration, not implemented API.
+The sequence follows `bundle::Plan` through signing, `ActionsPlan::prove` and `ActionsProof::fee` (or `AutonomeParts::seed`) through proving, `bundle::Effects::assemble` through assembly, and `Bundle::verify` through consensus.
+Custody derives the effects from the plan's preimages. The device's transaction layer derives the sighash from that commitment and obtains approval before returning it to `authorize`.
 The spend lineage (`NoteSecret`, `NoteSpendable`, anchor spans) is built during wallet sync and is described in [Proof Tree](./proof-tree.md).
 Diagram notes drop the `Tachyon-` prefix from Poseidon and BLAKE2b domain tags and use the Rust field names; `cTachygrams` is the wire name of `tachygram_set`.
 
@@ -328,7 +327,7 @@ par Authorizing
 
         create participant Custody
 
-        User ->> Custody: bundle_plan, sighash
+        User ->> Custody: plan preimages and transaction context
 
         loop per action
             note over Custody: cm = Poseidon_CmDerive(rcm, pk, v, psi)
@@ -344,9 +343,9 @@ par Authorizing
         note over Custody: cv_feemax = Pedersen(-feemax, Poseidon_FeeBlind(pk, psi, rcm))
         note over Custody: hActionsTachyon = Blake2b(cv_i || rk_i)
         note over Custody: bundle_commitment = Blake2b(hActionsTachyon || value_balance || cv_feemax || hMemoTachyon)
-        note over Custody: confirm sighash (custody requirement, not performed by Plan::sign)
+        note over Custody: derive sighash and obtain user approval
 
-        loop per spend action
+        loop per spend whose ak belongs to custody
             note over Custody: rsk = ask + alpha
             note over Custody: sig = Sign(rsk, sighash)
         end
@@ -357,11 +356,9 @@ par Authorizing
             note over User: sig = Sign(alpha, sighash)
         end
 
-        critical apply_signatures
-            note over User: every planned descriptor (cv, rk) has exactly one signature
+        critical sign_binding
             note over User: bsk = Sum rcv_i + r
             note over User: binding_sig = Sign(bsk, sighash)
-            note over User: signatures (descriptor to signature map, binding_sig)
         end
     end
 
@@ -452,9 +449,9 @@ and Proving
 end
 
 critical stamp
-    note over User: bundle::Plan::assemble(signatures, autonome_parts)
-    note over User: panic if the plan, signature, and pair descriptor keys differ
-    note over User: join maps in descriptor order into actions[] (descriptor, signature, pair)
+    note over User: bundle::Effects::assemble(action_sigs, binding_sig, autonome_parts)
+    note over User: panic if the effects', signatures' and pairs' descriptor keys differ
+    note over User: join maps in effects order into actions[] (descriptor, signature, pair)
     note over User: attach fee, cm_change, and stamp; key matching alone does not verify the proof
 end
 break

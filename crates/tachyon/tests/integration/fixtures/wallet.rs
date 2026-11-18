@@ -30,22 +30,23 @@ use super::{Proved, keyed_rng, mock_sighash, mock_txid, pool::PoolSim, qr::QrBuc
 
 pub fn random_action<RNG: CryptoRng>(rng: &mut RNG) -> (action::Descriptor, action::Signature) {
     let wallet = WalletSim::random(rng);
-    let ask = wallet.sk.derive_auth_private();
     let note = wallet.random_note(400);
     let plan = output_plan(rng, note);
-    let bundle_plan = bundle::Plan::new(
+    let bundle_plan = bundle::Plan::try_new(
         vec![],
         vec![plan],
         WalletSim::new(shared_sk()).random_fee_note(0),
-    );
-    let sighash = mock_sighash(bundle_plan.commitment().unwrap());
-    let (action_sigs, _) = bundle_plan.sign(rng, &sighash, &ask).unwrap();
+        vec![],
+    )
+    .unwrap();
+    let sighash = mock_sighash(bundle_plan.effects().commitment());
+    let action_sigs = bundle_plan.sign_outputs(rng, &sighash);
     action_sigs.into_iter().next().unwrap()
 }
 
 pub fn output_plan<RNG: CryptoRng>(rng: &mut RNG, note: Note) -> action::Plan<effect::Output> {
     let (rcv, theta) = action_randomness::<effect::Output>(rng, note);
-    action::Plan {
+    action::Plan::<effect::Output> {
         note,
         theta,
         rcv,
@@ -398,11 +399,14 @@ impl WalletSim {
                 .copied()
                 .map(|note| output_plan(rng, note))
                 .collect();
-            let plan = bundle::Plan::new(spend_plans, output_plans, max_fee_note);
-            let sighash = mock_sighash(plan.commitment().unwrap());
-            let signatures = plan
-                .sign(rng, &sighash, &self.sk.derive_auth_private())
-                .unwrap();
+            let plan =
+                bundle::Plan::try_new(spend_plans, output_plans, max_fee_note, vec![]).unwrap();
+            let sighash = mock_sighash(plan.effects().commitment());
+            let mut action_sigs = plan.authorize(rng, &self.sk.derive_auth_private(), |digest| {
+                mock_sighash(*digest)
+            });
+            action_sigs.extend(plan.sign_outputs(rng, &sighash));
+            let binding_sig = plan.sign_binding(rng, &sighash);
             let autonome_parts = if spends.is_empty() && outputs.is_empty() {
                 assert_eq!(fee, value::Positive::ZERO);
                 stamp::AutonomeParts::seed(rng, app, plan.max_fee_note(), anchor).unwrap()
@@ -413,7 +417,10 @@ impl WalletSim {
                     .fee(rng, app, plan.max_fee_note(), fee)
                     .unwrap()
             };
-            let bundle = plan.assemble(signatures, autonome_parts);
+            let bundle = plan
+                .effects()
+                .clone()
+                .assemble(action_sigs, binding_sig, autonome_parts);
             (plan, bundle)
         })
     }
