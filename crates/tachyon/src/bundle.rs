@@ -406,6 +406,30 @@ impl Plan {
         stamp::Plan::new(spends, outputs, anchor, self.max_fee_note, fee)
     }
 
+    /// Collect the action witnesses for proving at `anchor`, without the fee.
+    #[must_use]
+    pub fn actions_plan(&self, anchor: Anchor) -> stamp::ActionsPlan {
+        let spends = self
+            .spends
+            .iter()
+            .map(|plan| (plan.descriptor(), plan.theta, plan.rcv))
+            .collect();
+
+        let outputs = self
+            .outputs
+            .iter()
+            .map(|plan| (plan.descriptor(), plan.theta, plan.note, plan.rcv))
+            .collect();
+
+        stamp::ActionsPlan::new(spends, outputs, anchor)
+    }
+
+    /// The opening for applying the fee after proving the actions.
+    #[must_use]
+    pub const fn max_fee_note(&self) -> Note {
+        self.max_fee_note
+    }
+
     /// Derive the binding signing key, which is the scalar sum of value
     /// commitment trapdoors, including the max fee note's blind $r$.
     ///
