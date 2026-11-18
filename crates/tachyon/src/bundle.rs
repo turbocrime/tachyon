@@ -177,7 +177,7 @@ impl StateByte {
         writer.write_all(&(self as u8).to_le_bytes())
     }
 
-    pub(super) fn unexpected() -> io::Error {
+    fn unexpected() -> io::Error {
         io::Error::new(io::ErrorKind::InvalidData, "unexpected tachyonBundleState")
     }
 }
@@ -649,12 +649,14 @@ impl<P: stamp::Proof> Bundle<ProofStamp<P>> {
         if state != StateByte::ProofStamp {
             return Err(StateByte::unexpected());
         }
-        let bundle = Self::read_body(state, reader)?;
+        let bundle = Self::read_body(reader, |trailer| ProofStamp::read(trailer))?;
         bundle.check_coverage_bound(bundle.stamp.adjuncts.len())?;
         Ok(bundle)
     }
 
-    /// Strip the bundle and return the removed proof stamp.
+    /// Remove the proof stamp, keeping the fee, fee change and tachygram pairs.
+    ///
+    /// A miner strips each bundle listed by a stamp in its block.
     #[must_use]
     pub fn strip(self) -> (Bundle<StrippedStamp>, ProofStamp<P>) {
         self.with_stamp(StrippedStamp)
@@ -893,7 +895,10 @@ impl<S: StampState> Bundle<S> {
     /// Read everything after the `tachyonBundleState` byte: value balance,
     /// action descriptors, max fee commitment, memo, signatures, tachygram
     /// pairs, fee, change, and the stamp trailer.
-    fn read_body<R: Read>(state: StateByte, mut reader: R) -> io::Result<Self> {
+    fn read_body<R: Read>(
+        mut reader: R,
+        read_stamp: impl FnOnce(&mut R) -> io::Result<S>,
+    ) -> io::Result<Self> {
         let value_balance = {
             let mut bytes = [0u8; size_of::<i64>()];
             reader.read_exact(&mut bytes)?;
@@ -988,7 +993,7 @@ impl<S: StampState> Bundle<S> {
             ));
         }
 
-        let stamp = S::read(state, &mut reader)?;
+        let stamp = read_stamp(&mut reader)?;
 
         Ok(Self {
             value_balance,
@@ -1107,7 +1112,7 @@ impl Bundle<StrippedStamp> {
         if state != StateByte::StrippedStamp {
             return Err(StateByte::unexpected());
         }
-        Self::read_body(state, reader)
+        Self::read_body(reader, |_reader| Ok(StrippedStamp))
     }
 }
 
@@ -1119,11 +1124,13 @@ impl<P: stamp::Proof> Bundle<Option<ProofStamp<P>>> {
     /// Returns an error for invalid encodings or too many actions and
     /// adjuncts for one tachygram set polynomial.
     pub fn read<R: Read>(mut reader: R) -> io::Result<Option<Self>> {
-        let state = StateByte::read(&mut reader)?;
-        if state == StateByte::NoBundle {
-            return Ok(None);
-        }
-        let bundle = Self::read_body(state, reader)?;
+        let bundle = match StateByte::read(&mut reader)? {
+            StateByte::NoBundle => return Ok(None),
+            StateByte::ProofStamp => {
+                Self::read_body(reader, |trailer| ProofStamp::read(trailer).map(Some))?
+            },
+            StateByte::StrippedStamp => Self::read_body(reader, |_reader| Ok(None))?,
+        };
         if let Some(stamp) = bundle.stamp.as_ref() {
             bundle.check_coverage_bound(stamp.adjuncts.len())?;
         }

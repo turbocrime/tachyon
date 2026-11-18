@@ -247,14 +247,12 @@ fn zero_action_bundle_requires_a_zero_balance() {
         bundle.write(&mut buf).unwrap();
         if value_balance == 0 {
             bundle.verify_signatures(&sighash).unwrap();
-            for decoded in [
-                Bundle::<StrippedStamp>::read(&*buf).unwrap(),
-                Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*buf)
-                    .unwrap()
-                    .unwrap()
-                    .with_stamp(StrippedStamp)
-                    .0,
-            ] {
+            let (determined, absent) = Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*buf)
+                .unwrap()
+                .unwrap()
+                .with_stamp(StrippedStamp);
+            assert!(absent.is_none());
+            for decoded in [Bundle::<StrippedStamp>::read(&*buf).unwrap(), determined] {
                 assert_eq!(decoded.commitment(), bundle.commitment());
                 assert_eq!(decoded.auth_digest(), bundle.auth_digest());
             }
@@ -871,14 +869,12 @@ fn bundles_round_trip_at_action_count_limits() {
         };
         let mut bytes = Vec::new();
         bundle.write(&mut bytes).unwrap();
-        for decoded in [
-            Bundle::<StrippedStamp>::read(&*bytes).unwrap(),
-            Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*bytes)
-                .unwrap()
-                .unwrap()
-                .with_stamp(StrippedStamp)
-                .0,
-        ] {
+        let (determined, absent) = Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*bytes)
+            .unwrap()
+            .unwrap()
+            .with_stamp(StrippedStamp);
+        assert!(absent.is_none());
+        for decoded in [Bundle::<StrippedStamp>::read(&*bytes).unwrap(), determined] {
             assert_eq!(decoded.actions, bundle.actions);
             assert_eq!(decoded.action_auth, bundle.action_auth);
             assert_eq!(decoded.fee_auth, bundle.fee_auth);

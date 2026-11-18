@@ -401,7 +401,6 @@ fn fee_applies_over_a_fee_bearing_adjunct() {
 
     let [(_, adjunct), _, _] = outputs_with_fees(app);
     let (host, aggregate_stamp) = signed.strip();
-    let adjunct_txid = mock_txid(&adjunct);
     let (stripped, adjunct_stamp) = adjunct.strip();
 
     let merged_stamp = aggregate_stamp
@@ -419,7 +418,7 @@ fn fee_applies_over_a_fee_bearing_adjunct() {
             ),
             (
                 adjunct_stamp,
-                adjunct_txid,
+                mock_txid(&stripped),
                 &stripped
                     .actions
                     .iter()

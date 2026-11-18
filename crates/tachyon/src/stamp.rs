@@ -4,7 +4,7 @@
 #![allow(
     clippy::multiple_inherent_impl,
     clippy::same_name_method,
-    reason = "todo: take read/write off StampState"
+    reason = "todo: take write off StampState"
 )]
 
 extern crate alloc;
@@ -76,16 +76,6 @@ pub trait StampState: stamp_sealed::Sealed {
     /// The `tachyonBundleState` wire byte for this state.
     fn state_byte(&self) -> StateByte;
 
-    /// Read the trailer of a bundle whose state byte was `state`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if reading fails, the state byte is unexpected, or
-    /// the trailer is not canonical.
-    fn read<R: Read>(state: StateByte, reader: &mut R) -> io::Result<Self>
-    where
-        Self: Sized;
-
     /// Write the stamp trailer in the consensus wire format.
     ///
     /// # Errors
@@ -101,13 +91,6 @@ impl StampState for StrippedStamp {
 
     fn state_byte(&self) -> StateByte {
         StateByte::StrippedStamp
-    }
-
-    fn read<R: Read>(state: StateByte, _reader: &mut R) -> io::Result<Self> {
-        match state {
-            StateByte::StrippedStamp => Ok(Self),
-            StateByte::ProofStamp | StateByte::NoBundle => Err(StateByte::unexpected()),
-        }
     }
 
     fn write<W: Write>(&self, _writer: &mut W) -> io::Result<()> {
@@ -244,13 +227,6 @@ impl<P: Proof> StampState for ProofStamp<P> {
         StateByte::ProofStamp
     }
 
-    fn read<R: Read>(state: StateByte, reader: &mut R) -> io::Result<Self> {
-        match state {
-            StateByte::ProofStamp => Self::read(reader),
-            StateByte::StrippedStamp | StateByte::NoBundle => Err(StateByte::unexpected()),
-        }
-    }
-
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         self.write(writer)
     }
@@ -265,14 +241,6 @@ impl<P: Proof> StampState for Option<ProofStamp<P>> {
     fn state_byte(&self) -> StateByte {
         self.as_ref()
             .map_or_else(|| StrippedStamp.state_byte(), StampState::state_byte)
-    }
-
-    fn read<R: Read>(state: StateByte, reader: &mut R) -> io::Result<Self> {
-        match state {
-            StateByte::ProofStamp => ProofStamp::read(reader).map(Some),
-            StateByte::StrippedStamp => Ok(None),
-            StateByte::NoBundle => Err(StateByte::unexpected()),
-        }
     }
 
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {

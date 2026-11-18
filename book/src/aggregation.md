@@ -156,12 +156,11 @@ A mempool node:
 1. Looks up each listed `txid`, and holds off while any is missing.
 2. Relies on each listed transaction having been accepted on its own stamp.
    Nothing in a mempool is unproven, so rule B below has no mempool form.
-3. Verifies the aggregate against the listed bundles. Coverage uses the same
-   bundle data whether the listed bundles are stamped in the mempool or
-   stripped in a block.
+3. Verifies the aggregate against the listed bundles.
+   Coverage uses the same bundle data whether the listed bundles are stamped in the mempool or stripped in a block.
 
-When a listed transaction is itself an aggregate, stripping removes its list
-with its stamp. The outer list already names those transactions.
+When a listed transaction is itself an aggregate, the node does not follow its list.
+The outer list already names those transactions.
 
 The aggregate then replaces the stamps of exactly the listed transactions.
 An aggregate and the stamped form of a transaction it lists are alternatives: a block holds that transaction stripped under the aggregate or stamped without it.
