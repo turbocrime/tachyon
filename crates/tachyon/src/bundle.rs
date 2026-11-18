@@ -108,7 +108,7 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
-use core::{iter, ops::Neg as _};
+use core::iter;
 
 use corez::io::{self, Read, Write};
 use derive_more::{Debug, Display, Eq as TotalEq, Error, PartialEq};
@@ -263,19 +263,16 @@ pub enum VerificationError {
     Disproved,
 }
 
-/// Errors that can occur while signing a bundle plan.
+/// Errors while deriving a bundle's effects.
 #[derive(Clone, Copy, Debug, Display, Error, PartialEq, TotalEq)]
 #[non_exhaustive]
 pub enum PlanError {
-    /// The signatures do not match the planned actions.
-    #[display("planned actions do not match signed actions")]
-    ActionSigMismatch,
-    /// The value balance overflows the representable range.
-    #[display("value balance overflow")]
-    BalanceOverflow,
     /// A note has a zero commitment trapdoor.
     #[display("zero note commitment trapdoor")]
     ZeroRcm,
+    /// The value balance overflows the representable range.
+    #[display("value balance overflow")]
+    BalanceOverflow,
     /// The action count exceeds the consensus bound.
     #[display("too many actions")]
     TooManyActions,
@@ -300,44 +297,25 @@ pub enum PlanError {
 #[derive(Clone, Debug)]
 pub struct Plan {
     /// Spend action plans.
-    spends: Vec<action::Plan<effect::Spend>>,
+    spends: Vec<(action::Descriptor, action::Plan<effect::Spend>)>,
 
     /// Output action plans.
-    outputs: Vec<action::Plan<effect::Output>>,
+    outputs: Vec<(action::Descriptor, action::Plan<effect::Output>)>,
 
     /// Max fee note.
     max_fee_note: Note,
 
-    /// Opaque recipient-directed payload, empty when absent.
-    memo: Vec<u8>,
-    effects: Option<Effects>,
+    effects: Effects,
 }
 
 impl Plan {
-    /// Create a new bundle plan from assembled action plans and a max fee note,
-    /// carrying no memo.
-    #[must_use]
-    pub const fn new(
-        spends: Vec<action::Plan<effect::Spend>>,
-        outputs: Vec<action::Plan<effect::Output>>,
-        max_fee_note: Note,
-    ) -> Self {
-        Self {
-            spends,
-            outputs,
-            max_fee_note,
-            memo: Vec::new(),
-            effects: None,
-        }
-    }
-
     /// Derive a bundle's effects from its action plans and fee opening.
     ///
     /// # Errors
     ///
     /// Returns [`PlanError`] if the notes or derived effects cannot form a
     /// bundle.
-    pub fn try_new(
+    pub fn new(
         spends: Vec<action::Plan<effect::Spend>>,
         outputs: Vec<action::Plan<effect::Output>>,
         max_fee_note: Note,
@@ -389,10 +367,18 @@ impl Plan {
         {
             return Err(PlanError::UnrepresentableFeeBlind);
         }
-        let mut actions: Vec<action::Descriptor> = spends
+        let spend_plans: Vec<_> = spends
+            .into_iter()
+            .map(|plan| (plan.descriptor(), plan))
+            .collect();
+        let output_plans: Vec<_> = outputs
+            .into_iter()
+            .map(|plan| (plan.descriptor(), plan))
+            .collect();
+        let mut actions: Vec<action::Descriptor> = spend_plans
             .iter()
-            .map(action::Plan::descriptor)
-            .chain(outputs.iter().map(action::Plan::descriptor))
+            .map(|&(desc, _)| desc)
+            .chain(output_plans.iter().map(|&(desc, _)| desc))
             .collect();
         actions.sort_unstable();
         if actions
@@ -410,119 +396,38 @@ impl Plan {
             return Err(PlanError::IdentityPoint);
         }
         Ok(Self {
-            spends,
-            outputs,
+            spends: spend_plans,
+            outputs: output_plans,
             max_fee_note,
-            memo: memo.clone(),
-            effects: Some(Effects {
+            effects: Effects {
                 value_balance,
                 actions,
                 cv_feemax,
                 memo,
-            }),
+            },
         })
     }
 
     /// The effecting data fixed by this plan.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the plan was not validated.
     #[must_use]
-    #[expect(clippy::expect_used, reason = "effects require a validated plan")]
     pub const fn effects(&self) -> &Effects {
-        self.effects.as_ref().expect("plan was not validated")
-    }
-
-    /// Attach an opaque recipient-directed payload, replacing any existing one.
-    ///
-    /// The payload is effecting data, so it must be set before
-    /// [`Self::commitment`] is taken for the sighash.
-    #[must_use]
-    pub fn with_memo(self, memo: Vec<u8>) -> Self {
-        Self {
-            memo,
-            effects: None,
-            ..self
-        }
-    }
-
-    /// Iterate over all actions in the plan, mapping with the provided
-    /// functions. It is equivalent to calling `transform_spend` for each spend
-    /// and `transform_output` for each output.
-    pub fn iter_actions<T>(
-        &self,
-        transform_spend: impl Fn(&action::Plan<effect::Spend>) -> T,
-        transform_output: impl Fn(&action::Plan<effect::Output>) -> T,
-    ) -> impl Iterator<Item = T> {
-        let spend_transform = self.spends.iter().map(transform_spend);
-        let output_transform = self.outputs.iter().map(transform_output);
-        spend_transform.chain(output_transform)
-    }
-
-    /// Collect the descriptors of all actions in the plan, sorted and
-    /// deduplicated.
-    ///
-    /// This is the prover-side set. Contrast [`Bundle::actions`], the wire
-    /// multiset that preserves order and duplicates.
-    #[must_use]
-    pub fn descriptors(&self) -> BTreeSet<action::Descriptor> {
-        self.iter_actions(action::Plan::descriptor, action::Plan::descriptor)
-            .collect()
-    }
-
-    /// Derive `value_balance` from note values.
-    ///
-    /// $$
-    ///   (\sum_i v_{\text{spend},i}) -
-    ///   (\sum_j v_{\text{output},j}) -
-    ///   v_\text{feemax}
-    /// $$
-    ///
-    /// # Errors
-    ///
-    /// Fails if the final balance falls outside `-MAX_MONEY..=MAX_MONEY`.
-    /// Intermediate accumulating states are not constrained.
-    pub fn value_balance(&self) -> Result<value::Balance, value::OutOfRange> {
-        value::Balance::try_from(
-            self.iter_actions(
-                |plan| i128::from(plan.note.value),
-                |plan| i128::from(plan.note.value).neg(),
-            )
-            .chain([i128::from(self.max_fee_note.value).neg()])
-            .sum::<i128>(),
-        )
-    }
-
-    /// Compute a digest of all the bundle's effecting data.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the value balance overflows the representable range.
-    pub fn commitment(&self) -> Result<[u8; 32], value::OutOfRange> {
-        let desc_bytes: Vec<[u8; 64]> = self.descriptors().into_iter().collect();
-
-        Ok(blake2b::bundle_commitment(
-            &blake2b::action_descriptor_digest(&desc_bytes),
-            self.value_balance()?.into(),
-            &self.max_fee_note.cv_feemax().into(),
-            &blake2b::memo_digest(&self.memo),
-        ))
+        &self.effects
     }
 
     /// Collect the action witnesses for proving at `anchor`, without the fee.
+    /// Spend PCDs follow the spend order passed to [`Self::new`].
     #[must_use]
     pub fn actions_plan(&self, anchor: Anchor) -> stamp::ActionsPlan {
         let spends = self
             .spends
             .iter()
-            .map(|plan| (plan.descriptor(), plan.theta, plan.rcv))
+            .map(|&(desc, plan)| (desc, plan.theta, plan.rcv))
             .collect();
 
         let outputs = self
             .outputs
             .iter()
-            .map(|plan| (plan.descriptor(), plan.theta, plan.note, plan.rcv))
+            .map(|&(desc, plan)| (desc, plan.theta, plan.note, plan.rcv))
             .collect();
 
         stamp::ActionsPlan::new(spends, outputs, anchor)
@@ -534,186 +439,8 @@ impl Plan {
         self.max_fee_note
     }
 
-    /// Derive the binding signing key, which is the scalar sum of value
-    /// commitment trapdoors, including the max fee note's blind $r$.
-    ///
-    /// $\mathsf{bsk} = \boxplus_i \mathsf{rcv}_i \boxplus r$.
-    #[must_use]
-    pub fn derive_bsk_private(&self) -> private::BindingSigningKey {
-        private::BindingSigningKey::from(
-            self.iter_actions(|plan| plan.rcv, |plan| plan.rcv)
-                .chain([self.max_fee_note.derive_feemax_blind()]),
-        )
-    }
-
-    /// Sign actions with the provided [`private::SpendAuthorizingKey`] and then
-    /// sign the bundle with the [`private::BindingSigningKey`].
-    ///
-    /// Derives each `alpha` from the action's `theta` and the commitment of
-    /// its note.
-    ///
-    /// Returns the descriptor-keyed action signatures and the binding
-    /// signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`value::OutOfRange`] if the planned balance is out of range.
-    pub fn sign<RNG: CryptoRng>(
-        &self,
-        rng: &mut RNG,
-        sighash: &[u8; 32],
-        ask: &private::SpendAuthorizingKey,
-    ) -> Result<(BTreeMap<action::Descriptor, action::Signature>, Signature), value::OutOfRange>
-    {
-        self.value_balance()?;
-        let mut authorized: BTreeMap<action::Descriptor, action::Signature> = BTreeMap::new();
-
-        for plan in &self.spends {
-            let cm = plan.note.commitment();
-            let alpha = plan.theta.randomizer::<effect::Spend>(cm);
-            let rsk = ask.derive_action_private(&alpha);
-            authorized.insert(plan.descriptor(), rsk.sign(rng, sighash));
-        }
-
-        for plan in &self.outputs {
-            let cm = plan.note.commitment();
-            let alpha = plan.theta.randomizer::<effect::Output>(cm);
-            let rsk = private::ActionSigningKey::new(&alpha);
-            authorized.insert(plan.descriptor(), rsk.sign(rng, sighash));
-        }
-
-        Ok((authorized, self.derive_bsk_private().sign(rng, sighash)))
-    }
-
-    /// Apply externally-produced action signatures and then sign the bundle
-    /// with the [`private::BindingSigningKey`].
-    ///
-    /// Returns the descriptor-keyed action signatures and the binding
-    /// signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PlanError`] if the planned actions do not balance or a
-    /// descriptor has no supplied signature.
-    pub fn apply_signatures<RNG: CryptoRng>(
-        &self,
-        rng: &mut RNG,
-        sighash: &[u8; 32],
-        authorized: BTreeMap<action::Descriptor, action::Signature>,
-    ) -> Result<(BTreeMap<action::Descriptor, action::Signature>, Signature), PlanError> {
-        self.value_balance()
-            .map_err(|_err| PlanError::BalanceOverflow)?;
-
-        if self.descriptors() != authorized.keys().copied().collect() {
-            return Err(PlanError::ActionSigMismatch);
-        }
-        let binding_sig = self.derive_bsk_private().sign(rng, sighash);
-
-        Ok((authorized, binding_sig))
-    }
-
-    /// Verify the binding signature and each keyed action signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SignatureError`] if any signature is invalid.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the plan's balance is out of range or the signature keys do
-    /// not match the plan.
-    pub fn verify_signatures(
-        &self,
-        sighash: &[u8; 32],
-        signatures: &(BTreeMap<action::Descriptor, action::Signature>, Signature),
-    ) -> Result<(), SignatureError> {
-        let action_sigs = &signatures.0;
-        let binding_sig = &signatures.1;
-        self.assert_signing_descriptors(action_sigs);
-        let bvk = public::BindingVerificationKey::derive(
-            action_sigs
-                .keys()
-                .map(|desc| desc.cv)
-                .chain([self.max_fee_note.cv_feemax()]),
-            self.signed_balance(),
-        );
-        bvk.verify(sighash, binding_sig)
-            .map_err(|_err| SignatureError::Binding(*binding_sig))?;
-        for (desc, sig) in action_sigs {
-            desc.rk
-                .verify(sighash, sig)
-                .map_err(|_err| SignatureError::Action(*sig))?;
-        }
-        Ok(())
-    }
-
-    fn assert_signing_descriptors(
-        &self,
-        action_sigs: &BTreeMap<action::Descriptor, action::Signature>,
-    ) {
-        assert!(
-            self.descriptors().iter().eq(action_sigs.keys()),
-            "action descriptors do not match"
-        );
-    }
-
-    #[expect(clippy::expect_used, reason = "signing checks the planned balance")]
-    fn signed_balance(&self) -> value::Balance {
-        self.value_balance().expect("planned balance is in range")
-    }
-
-    /// Assemble the bundle from signatures and independently produced proof
-    /// data.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the plan, signature and tachygram pair keys differ or the
-    /// plan's balance is out of range.
-    #[must_use]
-    pub fn assemble(
-        &self,
-        (action_sigs, binding_sig): (BTreeMap<action::Descriptor, action::Signature>, Signature),
-        autonome_parts: stamp::AutonomeParts,
-    ) -> Bundle<ProofStamp<stamp::Uncompressed>> {
-        let stamp::AutonomeParts {
-            stamp,
-            pairs,
-            fee,
-            cm_change,
-        } = autonome_parts;
-        assert!(
-            self.descriptors().iter().eq(action_sigs.keys()) && action_sigs.keys().eq(pairs.keys()),
-            "action descriptors do not match"
-        );
-        let actions = action_sigs
-            .into_iter()
-            .zip(pairs)
-            .map(|((descriptor, sig), (_, pair))| action::Authorized {
-                descriptor,
-                sig,
-                pair,
-            })
-            .collect();
-        Bundle {
-            actions,
-            value_balance: self.signed_balance(),
-            fee: fee::Descriptor {
-                cv_feemax: self.max_fee_note.cv_feemax(),
-                v_fee: fee,
-            },
-            fee_auth: cm_change,
-            binding_sig,
-            memo: self.memo.clone(),
-            stamp,
-        }
-    }
-
     /// Sign only spends owned by `ask`. The transaction layer derives the
     /// sighash from the plan's commitment before any signature is produced.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the plan was not validated.
     pub fn authorize<RNG: CryptoRng>(
         &self,
         rng: &mut RNG,
@@ -724,16 +451,17 @@ impl Plan {
         let owned: BTreeMap<_, _> = self
             .spends
             .iter()
-            .filter(|plan| plan.authority == ak)
-            .map(|plan| {
+            .copied()
+            .filter(|&(_, plan)| plan.authority == ak)
+            .map(|(desc, plan)| {
                 (
-                    plan.descriptor(),
+                    desc,
                     plan.theta
                         .randomizer::<effect::Spend>(plan.note.commitment()),
                 )
             })
             .collect();
-        let message = sighash(&self.effects().commitment());
+        let message = sighash(&self.effects.commitment());
         owned
             .into_iter()
             .map(|(desc, alpha)| (desc, ask.derive_action_private(&alpha).sign(rng, &message)))
@@ -748,12 +476,12 @@ impl Plan {
     ) -> BTreeMap<action::Descriptor, action::Signature> {
         self.outputs
             .iter()
-            .map(|plan| {
+            .map(|&(desc, plan)| {
                 let alpha = plan
                     .theta
                     .randomizer::<effect::Output>(plan.note.commitment());
                 (
-                    plan.descriptor(),
+                    desc,
                     private::ActionSigningKey::new(&alpha).sign(rng, sighash),
                 )
             })
@@ -765,8 +493,8 @@ impl Plan {
         private::BindingSigningKey::from(
             self.spends
                 .iter()
-                .map(|plan| plan.rcv)
-                .chain(self.outputs.iter().map(|plan| plan.rcv))
+                .map(|&(_, plan)| plan.rcv)
+                .chain(self.outputs.iter().map(|&(_, plan)| plan.rcv))
                 .chain([self.max_fee_note.derive_feemax_blind()]),
         )
         .sign(rng, sighash)

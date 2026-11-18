@@ -45,7 +45,7 @@ fn signing_verifies_for_every_plan_shape() {
         (&[][..], &[200][..]),
         (&[][..], &[][..]),
     ] {
-        let plan = Plan::try_new(
+        let plan = Plan::new(
             spends
                 .iter()
                 .map(|&amount| spend_plan_at(rng, &wallet, &ask, amount))
@@ -88,7 +88,7 @@ fn authorize_signs_only_owned_spends() {
     let other = WalletSim::random(rng);
     let other_ask = other.sk.derive_auth_private();
     let spend_b = spend_plan_at(rng, &other, &other_ask, 100);
-    let plan = Plan::try_new(
+    let plan = Plan::new(
         vec![spend_a, spend_b],
         vec![],
         wallet.random_fee_note(0),
@@ -229,7 +229,7 @@ fn edited_bundles_fail_binding_verification() {
 
 #[test]
 fn no_bundle_commitment_differs_from_empty_bundle() {
-    let empty_plan = Plan::try_new(
+    let empty_plan = Plan::new(
         vec![],
         vec![],
         WalletSim::new(shared_sk()).random_fee_note(0),
@@ -246,7 +246,7 @@ fn no_bundle_commitment_differs_from_empty_bundle() {
 fn zero_action_bundle_requires_a_zero_balance() {
     let rng = &mut StdRng::seed_from_u64(0);
     let max_fee_note = WalletSim::new(shared_sk()).random_fee_note(0);
-    let plan = Plan::try_new(vec![], vec![], max_fee_note, vec![]).unwrap();
+    let plan = Plan::new(vec![], vec![], max_fee_note, vec![]).unwrap();
     let sighash = mock_sighash(plan.effects().commitment());
     for value_balance in [0i64, 1] {
         let bundle = Bundle {
@@ -318,7 +318,7 @@ fn duplicated_spend_cannot_inflate() {
         pairs,
         cm_change,
         fee,
-    } = Plan::try_new(vec![plan], vec![], max_fee_note, vec![])
+    } = Plan::new(vec![plan], vec![], max_fee_note, vec![])
         .unwrap()
         .actions_plan(anchor)
         .prove(rng, app, vec![(wallet.pak, secret, spendable, vec![])])
@@ -618,7 +618,7 @@ fn read_preserves_action_order() {
             pair: (Tachygram::random(rng), Tachygram::random(rng)),
         })
         .collect();
-    let binding_sig = Plan::try_new(vec![], vec![plan_a, plan_b], max_fee_note, vec![])
+    let binding_sig = Plan::new(vec![], vec![plan_a, plan_b], max_fee_note, vec![])
         .unwrap()
         .sign_binding(rng, &sighash);
 
@@ -856,7 +856,7 @@ fn bundles_round_trip_at_action_count_limits() {
     let rng = &mut StdRng::seed_from_u64(0);
     let wallet = WalletSim::new(shared_sk());
     let max_fee_note = wallet.random_fee_note(0);
-    let plan = Plan::try_new(vec![], vec![], max_fee_note, vec![]).unwrap();
+    let plan = Plan::new(vec![], vec![], max_fee_note, vec![]).unwrap();
     let binding_sig = plan.sign_binding(rng, &mock_sighash(plan.effects().commitment()));
     let (descriptor, signature) = random_action(rng);
     assert_eq!((ProductionRank::num_coeffs() - 2) / 2, 4095);
@@ -1246,7 +1246,7 @@ fn plan_value_balance_is_bounded_by_max_money() {
         (&[MAX_MONEY, MAX_MONEY][..], &[][..], None),
         (&[][..], &[MAX_MONEY, MAX_MONEY][..], None),
     ] {
-        let plan = Plan::try_new(
+        let plan = Plan::new(
             spends
                 .iter()
                 .map(|&amount| spend_plan_at(rng, &wallet, &ask, amount))
@@ -1281,15 +1281,15 @@ fn plan_rejects_invalid_notes_and_effects() {
         ..max_fee_note
     };
     assert_matches!(
-        Plan::try_new(vec![], vec![], zero_rcm, vec![]),
+        Plan::new(vec![], vec![], zero_rcm, vec![]),
         Err(PlanError::ZeroRcm)
     );
     assert_matches!(
-        Plan::try_new(vec![], vec![], fee_without_actions, vec![]),
+        Plan::new(vec![], vec![], fee_without_actions, vec![]),
         Err(PlanError::FeeWithoutActions)
     );
     assert_matches!(
-        Plan::try_new(vec![], vec![output, output], max_fee_note, vec![]),
+        Plan::new(vec![], vec![output, output], max_fee_note, vec![]),
         Err(PlanError::DuplicateAction)
     );
     let identity = action::Plan {
@@ -1297,11 +1297,11 @@ fn plan_rejects_invalid_notes_and_effects() {
         ..output
     };
     assert_matches!(
-        Plan::try_new(vec![], vec![identity], max_fee_note, vec![]),
+        Plan::new(vec![], vec![identity], max_fee_note, vec![]),
         Err(PlanError::IdentityPoint)
     );
     assert_matches!(
-        Plan::try_new(vec![], vec![output; 4096], max_fee_note, vec![]),
+        Plan::new(vec![], vec![output; 4096], max_fee_note, vec![]),
         Err(PlanError::TooManyActions)
     );
 }
@@ -1419,7 +1419,7 @@ fn plan_memo_reaches_the_signed_bundle() {
     let wallet = WalletSim::new(shared_sk());
     let memo = vec![0x7Fu8; 900];
     let output = output_plan(rng, wallet.random_note(300));
-    let bundle_plan = Plan::try_new(
+    let bundle_plan = Plan::new(
         vec![],
         vec![output],
         wallet.random_fee_note(0),

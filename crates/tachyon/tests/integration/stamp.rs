@@ -333,7 +333,7 @@ fn partial_actions_proofs_lift_and_merge_before_fee() {
     let max_fee_note = wallet.random_fee_note(0);
     let [first, second] = [100, 200].map(|amount| output_plan(rng, wallet.random_note(amount)));
     let [left, right] = [(first, left_anchor), (second, right_anchor)].map(|(output, anchor)| {
-        bundle::Plan::try_new(vec![], vec![output], max_fee_note, vec![])
+        bundle::Plan::new(vec![], vec![output], max_fee_note, vec![])
             .unwrap()
             .actions_plan(anchor)
             .prove(rng, app, vec![])
@@ -359,7 +359,7 @@ fn partial_actions_proofs_lift_and_merge_before_fee() {
         left.pairs.into_iter().chain(right.pairs).collect()
     );
 
-    let plan = bundle::Plan::try_new(vec![], vec![first, second], max_fee_note, vec![]).unwrap();
+    let plan = bundle::Plan::new(vec![], vec![first, second], max_fee_note, vec![]).unwrap();
     let sighash = mock_sighash(plan.effects().commitment());
     let action_sigs = plan.sign_outputs(rng, &sighash);
     let binding_sig = plan.sign_binding(rng, &sighash);
@@ -408,7 +408,7 @@ fn proving_rejects_empty_actions_and_invalid_note_openings() {
         .prove(rng, app, vec![]),
         Err(ProveError::ZeroRcm)
     );
-    let actions = bundle::Plan::try_new(vec![], vec![output], max_fee_note, vec![])
+    let actions = bundle::Plan::new(vec![], vec![output], max_fee_note, vec![])
         .unwrap()
         .actions_plan(anchor)
         .prove(rng, app, vec![])
@@ -451,7 +451,7 @@ fn overlapping_stamps_cannot_aggregate() {
         pairs: desc_b,
         cm_change: change_b,
         fee: v_fee,
-    } = bundle::Plan::try_new(vec![], vec![plan_b], max_fee_note, vec![])
+    } = bundle::Plan::new(vec![], vec![plan_b], max_fee_note, vec![])
         .unwrap()
         .actions_plan(anchor)
         .prove(rng, app, vec![])
@@ -476,7 +476,7 @@ fn overlapping_stamps_cannot_aggregate() {
         authority: wallet.pak.ak,
     };
     let output = output_plan(rng, wallet.random_note(600));
-    let plan = bundle::Plan::try_new(
+    let plan = bundle::Plan::new(
         vec![spend_plan],
         vec![output],
         wallet.random_fee_note(0),

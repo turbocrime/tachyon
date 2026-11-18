@@ -74,7 +74,7 @@ fn fee_less_output_bundle(
             proof: Box::new(pcd.proof().clone()),
         };
 
-        let plan = bundle::Plan::try_new(vec![], vec![output_plan], max_fee_note, vec![]).unwrap();
+        let plan = bundle::Plan::new(vec![], vec![output_plan], max_fee_note, vec![]).unwrap();
         let sighash = mock_sighash(plan.effects().commitment());
         let action_sigs = plan.sign_outputs(rng, &sighash);
         let binding_sig = plan.sign_binding(rng, &sighash);

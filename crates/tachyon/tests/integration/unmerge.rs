@@ -363,7 +363,7 @@ fn unmerge_splitting_a_bundle() {
 
     let max_fee_note = alice_max_fee_note();
     let [mut whole, part] = [vec![kept_plan, removed_plan], vec![removed_plan]].map(|outputs| {
-        let plan = bundle::Plan::try_new(vec![], outputs, max_fee_note, vec![]).unwrap();
+        let plan = bundle::Plan::new(vec![], outputs, max_fee_note, vec![]).unwrap();
         let autonome_parts = plan
             .actions_plan(anchor)
             .prove(rng, app, vec![])
@@ -432,7 +432,7 @@ fn unmerge_rejects_a_reproven_note_as_divisor() {
     let fee = value::Positive::try_from(40u64).unwrap();
     let [original, reproven] = [(), ()].map(|()| {
         let output = output_plan(rng, note);
-        let plan = bundle::Plan::try_new(vec![], vec![output], max_fee_note, vec![]).unwrap();
+        let plan = bundle::Plan::new(vec![], vec![output], max_fee_note, vec![]).unwrap();
         let sighash = mock_sighash(plan.effects().commitment());
         let action_sigs = plan.sign_outputs(rng, &sighash);
         let binding_sig = plan.sign_binding(rng, &sighash);
