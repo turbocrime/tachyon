@@ -164,7 +164,7 @@ fn assemble_joins_by_descriptor() {
         pairs.values().copied().collect::<Vec<_>>()
     );
     joined
-        .verify(rng, app, &mock_sighash(joined.commitment()), &[])
+        .verify::<_, StrippedStamp>(rng, app, &mock_sighash(joined.commitment()), &[])
         .unwrap();
 }
 
@@ -249,7 +249,11 @@ fn zero_action_bundle_requires_a_zero_balance() {
             bundle.verify_signatures(&sighash).unwrap();
             for decoded in [
                 Bundle::<StrippedStamp>::read(&*buf).unwrap(),
-                Bundle::<StrippedStamp>::try_from(TachyonBundle::read(&*buf).unwrap()).unwrap(),
+                Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*buf)
+                    .unwrap()
+                    .unwrap()
+                    .with_stamp(StrippedStamp)
+                    .0,
             ] {
                 assert_eq!(decoded.commitment(), bundle.commitment());
                 assert_eq!(decoded.auth_digest(), bundle.auth_digest());
@@ -261,7 +265,7 @@ fn zero_action_bundle_requires_a_zero_balance() {
             );
             for err in [
                 Bundle::<StrippedStamp>::read(&*buf).unwrap_err(),
-                TachyonBundle::read(&*buf).unwrap_err(),
+                Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*buf).unwrap_err(),
             ] {
                 assert_eq!(err.kind(), io::ErrorKind::InvalidData);
                 assert_eq!(
@@ -346,7 +350,7 @@ fn duplicated_spend_cannot_inflate() {
     );
 
     assert_matches!(
-        bundle.verify(rng, app, &mock_sighash(bundle.commitment()), &[]),
+        bundle.verify::<_, StrippedStamp>(rng, app, &mock_sighash(bundle.commitment()), &[]),
         Err(VerificationError::Coverage(
             VerifyCoverageError::DuplicateActions
         ))
@@ -398,8 +402,8 @@ fn based_aggregate_with_two_adjuncts() {
 
     becomes_based.stamp = based_stamp;
 
-    let adjunct_a = autonome_a.strip();
-    let adjunct_b = autonome_b.strip();
+    let adjunct_a = autonome_a.strip().0;
+    let adjunct_b = autonome_b.strip().0;
     let adjuncts = [&adjunct_a, &adjunct_b];
 
     assert!(becomes_based.is_aggregate());
@@ -451,7 +455,9 @@ fn autonome_verify_rejects_flipped_signatures() {
     let rng = &mut StdRng::seed_from_u64(0);
     let (_, bundle) = spend(app);
     let sighash = mock_sighash(bundle.commitment());
-    bundle.verify(rng, app, &sighash, &[]).unwrap();
+    bundle
+        .verify::<_, StrippedStamp>(rng, app, &sighash, &[])
+        .unwrap();
 
     let mut binding_bytes = Vec::new();
     bundle.binding_sig.write(&mut binding_bytes).unwrap();
@@ -459,7 +465,7 @@ fn autonome_verify_rejects_flipped_signatures() {
     let mut bad_binding = bundle.clone();
     bad_binding.binding_sig = Signature::read(&mut binding_bytes.as_slice()).unwrap();
     assert_matches!(
-        bad_binding.verify(rng, app, &sighash, &[]),
+        bad_binding.verify::<_, StrippedStamp>(rng, app, &sighash, &[]),
         Err(VerificationError::Signatures(SignatureError::Binding(_)))
     );
 
@@ -470,7 +476,7 @@ fn autonome_verify_rejects_flipped_signatures() {
     let mut bad_action = bundle;
     bad_action.action_auth[0].0 = bad_sig;
     assert_matches!(
-        bad_action.verify(rng, app, &sighash, &[]),
+        bad_action.verify::<_, StrippedStamp>(rng, app, &sighash, &[]),
         Err(VerificationError::Signatures(SignatureError::Action(sig))) if sig == bad_sig
     );
 }
@@ -483,7 +489,7 @@ fn autonome_verify_rejects_exchanged_tachygrams() {
     let (first, rest) = bundle.action_auth.split_at_mut(1);
     mem::swap(&mut first[0].1.1, &mut rest[0].1.1);
     assert_matches!(
-        bundle.verify(rng, app, &mock_sighash(bundle.commitment()), &[]),
+        bundle.verify::<_, StrippedStamp>(rng, app, &mock_sighash(bundle.commitment()), &[]),
         Err(VerificationError::Disproved)
     );
 }
@@ -497,7 +503,9 @@ fn stamped_bundle_round_trips() {
     stamped.write(&mut buf).unwrap();
     let decoded = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*buf).unwrap();
     assert_eq!(
-        TachyonBundle::read(&*buf).unwrap_err().kind(),
+        Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*buf)
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::InvalidData
     );
     assert_eq!(decoded.actions, stamped.actions);
@@ -507,40 +515,38 @@ fn stamped_bundle_round_trips() {
     assert_eq!(decoded.fee_auth, stamped.fee_auth);
     assert_eq!(decoded.stamp.anchor, stamped.stamp.anchor);
     decoded
-        .verify(rng, app, &mock_sighash(decoded.commitment()), &[])
+        .verify::<_, StrippedStamp>(rng, app, &mock_sighash(decoded.commitment()), &[])
         .unwrap();
-    let compressed = Bundle {
-        stamp: stamped.stamp.compress(rng, app).unwrap(),
-        actions: stamped.actions,
-        action_auth: stamped.action_auth,
-        fee: stamped.fee,
-        fee_auth: stamped.fee_auth,
-        value_balance: stamped.value_balance,
-        binding_sig: stamped.binding_sig,
-        memo: stamped.memo,
-    };
+    let (stripped, stamp) = stamped.strip();
+    let compressed = stripped.with_stamp(stamp.compress(rng, app).unwrap()).0;
     let mut bytes = Vec::new();
     compressed.write(&mut bytes).unwrap();
-    let mut erased_buf = Vec::new();
-    let erased = TachyonBundle::from(compressed);
-    erased.write(&mut erased_buf).unwrap();
-    assert_eq!(erased_buf, bytes);
     let mut block = Bundle::<ProofStamp<stamp::Compressed>>::read(&*bytes).unwrap();
     assert_eq!(block.actions, decoded.actions);
     assert_eq!(block.action_auth, decoded.action_auth);
     assert_eq!(block.fee.v_fee, decoded.fee.v_fee);
     assert_eq!(block.fee_auth, decoded.fee_auth);
-    assert_eq!(TachyonBundle::read(&*bytes).unwrap(), erased);
-    Bundle::<StrippedStamp>::try_from(erased).unwrap_err();
+    let undetermined = Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*bytes)
+        .unwrap()
+        .unwrap();
+    assert_eq!(undetermined.commitment(), compressed.commitment());
+    assert_eq!(undetermined.auth_digest(), compressed.auth_digest());
+    let mut undetermined_bytes = Vec::new();
+    undetermined.write(&mut undetermined_bytes).unwrap();
+    assert_eq!(undetermined_bytes, bytes);
+    let (body, decoded_stamp) = undetermined.with_stamp(StrippedStamp);
+    assert_eq!(body.with_stamp(decoded_stamp.unwrap()).0, block);
     let sighash = mock_sighash(block.commitment());
-    block.verify(rng, app, &sighash, &[]).unwrap();
+    block
+        .verify::<_, StrippedStamp>(rng, app, &sighash, &[])
+        .unwrap();
     let (mut stripped_block, mut stripped_decoded) = (Vec::new(), Vec::new());
-    block.clone().strip().write(&mut stripped_block).unwrap();
-    decoded.strip().write(&mut stripped_decoded).unwrap();
+    block.clone().strip().0.write(&mut stripped_block).unwrap();
+    decoded.strip().0.write(&mut stripped_decoded).unwrap();
     assert_eq!(stripped_block, stripped_decoded);
     block.stamp.anchor = Anchor::random(rng);
     assert_matches!(
-        block.verify(rng, app, &sighash, &[]),
+        block.verify::<_, StrippedStamp>(rng, app, &sighash, &[]),
         Err(VerificationError::Disproved)
     );
 }
@@ -618,23 +624,23 @@ fn stripped_bundle_round_trips() {
     let (_, stamped) = spend(app);
     let mut stamped_bytes = Vec::new();
     stamped.write(&mut stamped_bytes).unwrap();
+    let (stripped, stamp) = stamped.strip();
     let mut trailer = Vec::new();
-    stamped.stamp.write(&mut trailer).unwrap();
-    let stripped = stamped.strip();
+    stamp.write(&mut trailer).unwrap();
     let mut buf = Vec::new();
     stripped.write(&mut buf).unwrap();
     assert_eq!(buf.len(), stamped_bytes.len() - trailer.len());
     assert_eq!(&buf[1..], &stamped_bytes[1..buf.len()]);
-    let mut erased_buf = Vec::new();
-    TachyonBundle::from(stripped.clone())
-        .write(&mut erased_buf)
+    let undetermined = Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*buf)
+        .unwrap()
         .unwrap();
-    assert_eq!(erased_buf, buf);
+    let mut undetermined_bytes = Vec::new();
+    undetermined.write(&mut undetermined_bytes).unwrap();
+    assert_eq!(undetermined_bytes, buf);
+    let (determined, absent) = undetermined.with_stamp(StrippedStamp);
+    assert!(absent.is_none());
 
-    for decoded in [
-        Bundle::<StrippedStamp>::read(&*buf).unwrap(),
-        Bundle::<StrippedStamp>::try_from(TachyonBundle::read(&*buf).unwrap()).unwrap(),
-    ] {
+    for decoded in [Bundle::<StrippedStamp>::read(&*buf).unwrap(), determined] {
         assert_eq!(decoded.commitment(), stripped.commitment());
         assert_eq!(decoded.auth_digest(), stripped.auth_digest());
         assert_eq!(decoded.actions, stripped.actions);
@@ -708,7 +714,7 @@ fn phase_order_wire_offsets_and_empty_stripped_trailer() {
     bundle.stamp.write(&mut expected).unwrap();
     assert_eq!(&bytes[offset..], expected);
     let mut stripped = Vec::new();
-    bundle.strip().write(&mut stripped).unwrap();
+    bundle.strip().0.write(&mut stripped).unwrap();
     assert_eq!(stripped[0], 0x02);
     assert_eq!(stripped.len(), offset);
 }
@@ -730,7 +736,7 @@ fn read_bounds_the_fee() {
     let signing_end = effecting_end + 64 * bundle.action_auth.len() + 64;
     let fee_at = signing_end + 64 * bundle.action_auth.len();
     let mut stripped = Vec::new();
-    bundle.strip().write(&mut stripped).unwrap();
+    bundle.strip().0.write(&mut stripped).unwrap();
 
     let mut maximum_fee = bytes.clone();
     maximum_fee[fee_at..fee_at + 8].copy_from_slice(&MAX_MONEY.to_le_bytes());
@@ -747,7 +753,8 @@ fn read_bounds_the_fee() {
     maximum_stripped[fee_at..fee_at + 8].copy_from_slice(&MAX_MONEY.to_le_bytes());
     assert_eq!(
         u64::from(
-            Bundle::<StrippedStamp>::try_from(TachyonBundle::read(&*maximum_stripped).unwrap())
+            Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*maximum_stripped)
+                .unwrap()
                 .unwrap()
                 .fee
                 .v_fee
@@ -761,9 +768,9 @@ fn read_bounds_the_fee() {
         invalid_stripped[fee_at..fee_at + 8].copy_from_slice(&amount.to_le_bytes());
         for err in [
             Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*invalid).unwrap_err(),
-            TachyonBundle::read(&*invalid).unwrap_err(),
+            Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*invalid).unwrap_err(),
             Bundle::<StrippedStamp>::read(&*invalid_stripped).unwrap_err(),
-            TachyonBundle::read(&*invalid_stripped).unwrap_err(),
+            Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*invalid_stripped).unwrap_err(),
         ] {
             assert_eq!(err.kind(), io::ErrorKind::InvalidData);
             assert_eq!(err.to_string(), "fee out of range");
@@ -785,7 +792,7 @@ fn read_rejects_identity_action_and_fee_points() {
     let mut bytes = Vec::new();
     bundle.write(&mut bytes).unwrap();
     let mut stripped = Vec::new();
-    bundle.strip().write(&mut stripped).unwrap();
+    bundle.strip().0.write(&mut stripped).unwrap();
     let identity = <[u8; 32]>::from(value::Commitment::from(Ep::identity()));
     for (point_at, message) in [
         (actions_at, "action commitment is the identity"),
@@ -797,7 +804,7 @@ fn read_rejects_identity_action_and_fee_points() {
         stripped_action[point_at..point_at + 32].copy_from_slice(&identity);
         for action_error in [
             Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*invalid_action).unwrap_err(),
-            TachyonBundle::read(&*stripped_action).unwrap_err(),
+            Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*stripped_action).unwrap_err(),
         ] {
             assert_eq!(action_error.kind(), io::ErrorKind::InvalidData);
             assert_eq!(action_error.to_string(), message);
@@ -809,9 +816,9 @@ fn read_rejects_identity_action_and_fee_points() {
     invalid_stripped[cv_feemax_at..cv_feemax_at + 32].copy_from_slice(&identity);
     for err in [
         Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*invalid).unwrap_err(),
-        TachyonBundle::read(&*invalid).unwrap_err(),
+        Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*invalid).unwrap_err(),
         Bundle::<StrippedStamp>::read(&*invalid_stripped).unwrap_err(),
-        TachyonBundle::read(&*invalid_stripped).unwrap_err(),
+        Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*invalid_stripped).unwrap_err(),
     ] {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert_eq!(err.to_string(), "fee commitment is the identity");
@@ -866,7 +873,11 @@ fn bundles_round_trip_at_action_count_limits() {
         bundle.write(&mut bytes).unwrap();
         for decoded in [
             Bundle::<StrippedStamp>::read(&*bytes).unwrap(),
-            Bundle::<StrippedStamp>::try_from(TachyonBundle::read(&*bytes).unwrap()).unwrap(),
+            Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*bytes)
+                .unwrap()
+                .unwrap()
+                .with_stamp(StrippedStamp)
+                .0,
         ] {
             assert_eq!(decoded.actions, bundle.actions);
             assert_eq!(decoded.action_auth, bundle.action_auth);
@@ -875,16 +886,7 @@ fn bundles_round_trip_at_action_count_limits() {
             decoded.write(&mut round_trip).unwrap();
             assert_eq!(round_trip, bytes);
         }
-        let proof_bundle = Bundle {
-            value_balance: bundle.value_balance,
-            actions: bundle.actions,
-            action_auth: bundle.action_auth,
-            fee: bundle.fee,
-            fee_auth: bundle.fee_auth,
-            binding_sig: bundle.binding_sig,
-            memo: bundle.memo,
-            stamp: stamped.stamp.clone(),
-        };
+        let proof_bundle = bundle.with_stamp(stamped.stamp.clone()).0;
         bytes.clear();
         proof_bundle.write(&mut bytes).unwrap();
         let decoded = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*bytes).unwrap();
@@ -904,16 +906,20 @@ fn bundle_state_mismatches_are_rejected() {
     for err in [
         Bundle::<ProofStamp<stamp::Uncompressed>>::read(buf).unwrap_err(),
         Bundle::<StrippedStamp>::read(buf).unwrap_err(),
-        TachyonBundle::read(buf).unwrap_err(),
+        Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(buf).unwrap_err(),
     ] {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert_eq!(err.to_string(), "invalid bundle state");
     }
 
-    assert!(TachyonBundle::read(&[0x00][..]).unwrap().is_no_bundle());
+    assert!(
+        Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&[0x00][..])
+            .unwrap()
+            .is_none()
+    );
 
     let (_, stamped) = spend(app);
-    let adjunct = stamped.clone().strip();
+    let adjunct = stamped.clone().strip().0;
     let mut stamped_buf = Vec::new();
     stamped.write(&mut stamped_buf).unwrap();
     let mut adjunct_buf = Vec::new();
@@ -930,7 +936,6 @@ fn bundle_state_mismatches_are_rejected() {
             .to_string(),
         "unexpected tachyonBundleState"
     );
-    Bundle::<ProofStamp<stamp::Compressed>>::try_from(TachyonBundle::from(adjunct)).unwrap_err();
 }
 
 #[test]
@@ -939,7 +944,7 @@ fn auth_digest_invariants() {
     let rng = &mut StdRng::seed_from_u64(0);
     let (_, stamped) = spend(app);
     let (commitment, auth_digest) = (stamped.commitment(), stamped.auth_digest());
-    let stripped = stamped.clone().strip();
+    let stripped = stamped.clone().strip().0;
     // Set by hand so that only the list differs from `stamped`. A merge would
     // also change the proof and the tachygram set.
     let mut aggregate_a = stamped.clone();
@@ -949,8 +954,11 @@ fn auth_digest_invariants() {
     aggregate_b.stamp.adjuncts.insert([0x11u8; 32]);
     assert_eq!(stripped.commitment(), commitment);
     assert_ne!(stripped.auth_digest(), auth_digest);
-    let erased_stripped: TachyonBundle = stripped.clone().into();
-    assert_eq!(erased_stripped.auth_digest(), stripped.auth_digest());
+    let undetermined = stripped
+        .clone()
+        .with_stamp(None::<ProofStamp<stamp::Compressed>>)
+        .0;
+    assert_eq!(undetermined.auth_digest(), stripped.auth_digest());
     let mut refeed = stripped.clone();
     refeed.fee.v_fee = value::Positive::try_from(u64::from(stripped.fee.v_fee) + 1).unwrap();
     assert_ne!(refeed.auth_digest(), stripped.auth_digest());
@@ -1010,7 +1018,8 @@ fn a_pair_verifies_in_either_order_but_not_repeated() {
     bundle.write(&mut bytes).unwrap();
     let decoded = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*bytes).unwrap();
     assert_eq!(decoded.action_auth, bundle.action_auth);
-    let verified = decoded.verify(rng, app, &mock_sighash(decoded.commitment()), &[]);
+    let verified =
+        decoded.verify::<_, StrippedStamp>(rng, app, &mock_sighash(decoded.commitment()), &[]);
     assert_eq!(verified.unwrap(), decoded.stamp.tachygram_set);
 
     bundle.action_auth[0].1 = (first, first);
@@ -1020,7 +1029,7 @@ fn a_pair_verifies_in_either_order_but_not_repeated() {
     assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     assert_eq!(err.to_string(), "tachygrams are not unique");
     assert_matches!(
-        bundle.verify_covered(&[]),
+        bundle.verify_covered::<StrippedStamp>(&[]),
         Err(VerifyCoverageError::DuplicateTachygrams)
     );
 }
@@ -1040,7 +1049,7 @@ fn read_bounds_the_action_count() {
             .unwrap();
         for err in [
             Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*bytes).unwrap_err(),
-            TachyonBundle::read(&*bytes).unwrap_err(),
+            Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*bytes).unwrap_err(),
         ] {
             assert_eq!(err.kind(), kind);
             if kind == io::ErrorKind::InvalidData {
@@ -1080,7 +1089,7 @@ fn adjunct_list_round_trips_and_read_rejects_noncanonical_lists() {
         edited[list.clone()].copy_from_slice(&edited_list);
         for err in [
             Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*edited).unwrap_err(),
-            TachyonBundle::read(&*edited).unwrap_err(),
+            Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*edited).unwrap_err(),
         ] {
             assert_eq!(err.kind(), io::ErrorKind::InvalidData);
             assert_eq!(err.to_string(), "adjunct txids are not strictly ascending");
@@ -1098,7 +1107,7 @@ fn adjunct_list_round_trips_and_read_rejects_noncanonical_lists() {
             .unwrap();
         for err in [
             Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*bytes).unwrap_err(),
-            TachyonBundle::read(&*bytes).unwrap_err(),
+            Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*bytes).unwrap_err(),
         ] {
             assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
         }
@@ -1119,19 +1128,12 @@ fn adjunct_list_round_trips_and_read_rejects_noncanonical_lists() {
     assert_eq!(overcap_error.kind(), io::ErrorKind::InvalidData);
     assert_eq!(overcap_error.to_string(), "too many adjuncts");
     let rng = &mut StdRng::seed_from_u64(0);
-    let compressed = Bundle {
-        stamp: oversized.stamp.compress(rng, app).unwrap(),
-        actions: oversized.actions,
-        action_auth: oversized.action_auth,
-        value_balance: oversized.value_balance,
-        fee: oversized.fee,
-        fee_auth: oversized.fee_auth,
-        binding_sig: oversized.binding_sig,
-        memo: oversized.memo,
-    };
+    let (stripped, stamp) = oversized.strip();
+    let compressed = stripped.with_stamp(stamp.compress(rng, app).unwrap()).0;
     complete.clear();
     compressed.write(&mut complete).unwrap();
-    let compressed_error = TachyonBundle::read(&*complete).unwrap_err();
+    let compressed_error =
+        Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*complete).unwrap_err();
     assert_eq!(compressed_error.kind(), io::ErrorKind::InvalidData);
     assert_eq!(compressed_error.to_string(), "too many adjuncts");
 
@@ -1150,7 +1152,7 @@ fn adjunct_list_round_trips_and_read_rejects_noncanonical_lists() {
     bytes.extend_from_slice(&trailer);
     for standalone_error in [
         Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*bytes).unwrap_err(),
-        TachyonBundle::read(&*bytes).unwrap_err(),
+        Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*bytes).unwrap_err(),
     ] {
         assert_eq!(standalone_error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(standalone_error.to_string(), "too many adjuncts");
@@ -1166,7 +1168,7 @@ fn read_rejects_an_identity_tachygram_set() {
     bundle.write(&mut bytes).unwrap();
     for err in [
         Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*bytes).unwrap_err(),
-        TachyonBundle::read(&*bytes).unwrap_err(),
+        Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*bytes).unwrap_err(),
     ] {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert_eq!(err.to_string(), "tachygram set commitment is the identity");
@@ -1177,7 +1179,7 @@ fn read_rejects_an_identity_tachygram_set() {
 fn verify_covered_bounds_the_covered_tachygrams() {
     let app = &application();
     let (_, bundle) = alice(app);
-    let adjunct = bundle.clone().strip();
+    let adjunct = bundle.clone().strip().0;
     // Two bundles' fee changes leave room for this many actions' pairs.
     let most = (ProductionRank::num_coeffs() - 3) / 2;
     for (n_actions, expected) in [
@@ -1282,7 +1284,7 @@ fn read_bounds_the_value_balance() {
         buf[1..9].copy_from_slice(&value_balance.to_le_bytes());
         for err in [
             Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*buf).unwrap_err(),
-            TachyonBundle::read(&*buf).unwrap_err(),
+            Bundle::<Option<ProofStamp<stamp::Compressed>>>::read(&*buf).unwrap_err(),
         ] {
             assert_eq!(err.kind(), io::ErrorKind::InvalidData);
             assert_eq!(err.to_string(), "value balance out of range");
@@ -1299,7 +1301,7 @@ fn verify_covered_rejects_an_edited_tachygram() {
     let mut change = stamped.clone();
     change.fee_auth = Tachygram::random(rng);
     assert_matches!(
-        change.verify_covered(&[]),
+        change.verify_covered::<StrippedStamp>(&[]),
         Err(VerifyCoverageError::WrongTachygramSet)
     );
 
@@ -1323,7 +1325,7 @@ fn verify_covered_rejects_an_edited_tachygram() {
         (stamped.stamp, pairs, stamped.fee_auth, stamped.fee.v_fee),
     );
     assert_matches!(
-        bundle.verify_covered(&[]),
+        bundle.verify_covered::<StrippedStamp>(&[]),
         Err(VerifyCoverageError::WrongTachygramSet)
     );
 }
@@ -1338,7 +1340,7 @@ fn memo_binds_the_commitment_but_not_the_auth_digest() {
     assert_ne!(bundle.commitment(), commitment);
     assert_eq!(bundle.auth_digest(), auth_digest);
 
-    let adjunct = bundle.clone().strip();
+    let adjunct = bundle.clone().strip().0;
     assert_eq!(adjunct.memo, bundle.memo);
     assert_eq!(adjunct.commitment(), bundle.commitment());
 }
@@ -1404,11 +1406,14 @@ fn bundle_lift_preserves_coverage() {
     let pool = PoolSim::shared();
     let (_, bundle) = spend(app);
 
-    let covered = bundle.verify_covered(&[]).unwrap();
+    let covered = bundle.verify_covered::<StrippedStamp>(&[]).unwrap();
 
     let mut original_bytes = Vec::new();
     bundle.write(&mut original_bytes).unwrap();
-    let unchanged = bundle.clone().lift(rng, app, &[], vec![]).unwrap();
+    let unchanged = bundle
+        .clone()
+        .lift::<_, StrippedStamp>(rng, app, &[], vec![])
+        .unwrap();
     let mut unchanged_bytes = Vec::new();
     unchanged.write(&mut unchanged_bytes).unwrap();
     assert_eq!(unchanged_bytes, original_bytes);
@@ -1423,18 +1428,23 @@ fn bundle_lift_preserves_coverage() {
     unchanged_stamp.write(&mut unchanged_stamp_bytes).unwrap();
     assert_eq!(unchanged_stamp_bytes, stamp_bytes);
     let mut body_before = Vec::new();
-    bundle.clone().strip().write(&mut body_before).unwrap();
+    bundle.clone().strip().0.write(&mut body_before).unwrap();
 
     let span = pool.anchor_span(app, BlockHeight(1)..=BlockHeight(2));
 
-    let lifted = bundle.lift(rng, app, &[], vec![span]).unwrap();
+    let lifted = bundle
+        .lift::<_, StrippedStamp>(rng, app, &[], vec![span])
+        .unwrap();
     let mut body_after = Vec::new();
-    lifted.clone().strip().write(&mut body_after).unwrap();
+    lifted.clone().strip().0.write(&mut body_after).unwrap();
     assert_eq!(body_after, body_before);
 
     assert_eq!(lifted.stamp.anchor, pool.block(BlockHeight(2)).anchor());
     assert!(lifted.is_autonome());
-    assert_eq!(lifted.verify_covered(&[]).unwrap(), covered);
+    assert_eq!(
+        lifted.verify_covered::<StrippedStamp>(&[]).unwrap(),
+        covered
+    );
     assert!(lifted.verify_proof(rng, app, &covered.0).unwrap());
 }
 
@@ -1491,8 +1501,8 @@ fn bundle_lift_over_an_aggregate() {
         BTreeSet::from([mock_txid(&autonome_a), mock_txid(&autonome_b)])
     );
 
-    let adjunct_a = autonome_a.strip();
-    let adjunct_b = autonome_b.strip();
+    let adjunct_a = autonome_a.strip().0;
+    let adjunct_b = autonome_b.strip().0;
     innocent
         .verify(
             rng,
@@ -1501,7 +1511,7 @@ fn bundle_lift_over_an_aggregate() {
             &[&adjunct_a, &adjunct_b],
         )
         .unwrap();
-    let adjuncts = [adjunct_a.as_dyn(), adjunct_b.as_dyn()];
+    let adjuncts = [&adjunct_a, &adjunct_b];
     let adjunct_txids = innocent.stamp.adjuncts.clone();
 
     let first = epoch1.first_block();

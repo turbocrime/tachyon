@@ -7,8 +7,8 @@ use ragu::{ProductionRank, pasta::Pasta};
 use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 use udon::{curve::Projective as _, field::Field as _};
 use zcash_tachyon::{
-    ActionSetPoly, Anchor, AnchorSetPoly, BlockHeight, EpochIndex, NfSeqPoly, Note, Tachygram,
-    TachygramSetPoly, action,
+    ActionSetPoly, Anchor, AnchorSetPoly, BlockHeight, EpochIndex, NfSeqPoly, Note, StrippedStamp,
+    Tachygram, TachygramSetPoly, action,
     constants::EPOCH_MAX,
     digest::poseidon,
     entropy::ActionEntropy,
@@ -215,7 +215,7 @@ fn stamp_lift_accepts_only_anchors_the_span_holds() {
         (anchor_end, end_bundle, None),
         (fork, fork_bundle, Some("a stamp anchor outside the span")),
     ] {
-        let (digests, _) = bundle.verify_covered(&[]).unwrap();
+        let (digests, _) = bundle.verify_covered::<StrippedStamp>(&[]).unwrap();
         let stamp = bundle.stamp;
         let stamp_pcd = stamp.proof.carry::<stamp::Stamp>((
             app.bridge_hash(stamp.tachygram_set.as_ref().to_affine())

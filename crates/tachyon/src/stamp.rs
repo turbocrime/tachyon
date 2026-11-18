@@ -63,9 +63,10 @@ mod stamp_sealed {
     pub trait Sealed {}
     impl<P: super::Proof> Sealed for super::ProofStamp<P> {}
     impl Sealed for super::StrippedStamp {}
+    impl<P: super::Proof> Sealed for Option<super::ProofStamp<P>> {}
 }
 
-/// Bundle states that carry a stamp: [`ProofStamp`] or [`StrippedStamp`].
+/// Stamped, stripped, or undetermined bundle states.
 pub trait StampState: stamp_sealed::Sealed {
     /// A stamp's `hStampTachyon`. See [`blake2b::stamp_digest`].
     ///
@@ -73,17 +74,15 @@ pub trait StampState: stamp_sealed::Sealed {
     fn stamp_digest(&self) -> [u8; 32];
 
     /// The `tachyonBundleState` wire byte for this state.
-    fn state_byte() -> StateByte
-    where
-        Self: Sized;
+    fn state_byte(&self) -> StateByte;
 
-    /// Read the stamp trailer from the consensus wire format.
+    /// Read the trailer of a bundle whose state byte was `state`.
     ///
     /// # Errors
     ///
-    /// Returns an error if reading fails or the trailer is not a canonical
-    /// encoding of this state.
-    fn read<R: Read>(reader: &mut R) -> io::Result<Self>
+    /// Returns an error if reading fails, the state byte is unexpected, or
+    /// the trailer is not canonical.
+    fn read<R: Read>(state: StateByte, reader: &mut R) -> io::Result<Self>
     where
         Self: Sized;
 
@@ -92,9 +91,7 @@ pub trait StampState: stamp_sealed::Sealed {
     /// # Errors
     ///
     /// Returns an error if writing fails.
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>
-    where
-        Self: Sized;
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>;
 }
 
 impl StampState for StrippedStamp {
@@ -102,12 +99,15 @@ impl StampState for StrippedStamp {
         *blake2b::STAMP_DIGEST_EMPTY
     }
 
-    fn state_byte() -> StateByte {
+    fn state_byte(&self) -> StateByte {
         StateByte::StrippedStamp
     }
 
-    fn read<R: Read>(_reader: &mut R) -> io::Result<Self> {
-        Ok(Self)
+    fn read<R: Read>(state: StateByte, _reader: &mut R) -> io::Result<Self> {
+        match state {
+            StateByte::StrippedStamp => Ok(Self),
+            StateByte::ProofStamp | StateByte::NoBundle => Err(StateByte::unexpected()),
+        }
     }
 
     fn write<W: Write>(&self, _writer: &mut W) -> io::Result<()> {
@@ -240,16 +240,46 @@ impl<P: Proof> StampState for ProofStamp<P> {
         )
     }
 
-    fn state_byte() -> StateByte {
+    fn state_byte(&self) -> StateByte {
         StateByte::ProofStamp
     }
 
-    fn read<R: Read>(reader: &mut R) -> io::Result<Self> {
-        Self::read(reader)
+    fn read<R: Read>(state: StateByte, reader: &mut R) -> io::Result<Self> {
+        match state {
+            StateByte::ProofStamp => Self::read(reader),
+            StateByte::StrippedStamp | StateByte::NoBundle => Err(StateByte::unexpected()),
+        }
     }
 
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         self.write(writer)
+    }
+}
+
+impl<P: Proof> StampState for Option<ProofStamp<P>> {
+    fn stamp_digest(&self) -> [u8; 32] {
+        self.as_ref()
+            .map_or_else(|| StrippedStamp.stamp_digest(), StampState::stamp_digest)
+    }
+
+    fn state_byte(&self) -> StateByte {
+        self.as_ref()
+            .map_or_else(|| StrippedStamp.state_byte(), StampState::state_byte)
+    }
+
+    fn read<R: Read>(state: StateByte, reader: &mut R) -> io::Result<Self> {
+        match state {
+            StateByte::ProofStamp => ProofStamp::read(reader).map(Some),
+            StateByte::StrippedStamp => Ok(None),
+            StateByte::NoBundle => Err(StateByte::unexpected()),
+        }
+    }
+
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        match self.as_ref() {
+            Some(stamp) => stamp.write(writer),
+            None => StrippedStamp.write(writer),
+        }
     }
 }
 

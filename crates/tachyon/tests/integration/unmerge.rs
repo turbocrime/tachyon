@@ -9,8 +9,8 @@ use core::assert_matches;
 use rand::{SeedableRng as _, rngs::StdRng};
 use udon::curve::Projective as _;
 use zcash_tachyon::{
-    ActionSetPoly, Anchor, BlockHeight, Tachygram, TachygramSetPoly, VerificationError,
-    VerifyCoverageError, bundle,
+    ActionSetPoly, Anchor, BlockHeight, StrippedStamp, Tachygram, TachygramSetPoly,
+    VerificationError, VerifyCoverageError, bundle,
     stamp::{
         self, ProofStamp,
         proof::stamp::{Stamp, StampUnmerge},
@@ -125,7 +125,10 @@ fn unmerge_removes_a_divisor_across_merge_boundaries() {
                 (divisor, bob_txid, divisor_covered.0, divisor_covered.1),
             )
             .unwrap();
-        let stripped: Vec<_> = adjuncts.into_iter().map(bundle::Bundle::strip).collect();
+        let stripped: Vec<_> = adjuncts
+            .into_iter()
+            .map(|bundle| bundle.strip().0)
+            .collect();
         assert_eq!(
             unmerged.stamp.adjuncts,
             stripped.iter().map(mock_txid).collect()
@@ -204,7 +207,7 @@ fn unmerge_hostless_quotient_fails_coverage_on_its_host() {
         )
         .unwrap();
     assert!(kept.is_autonome());
-    kept.verify(rng, app, &mock_sighash(kept.commitment()), &[])
+    kept.verify::<_, StrippedStamp>(rng, app, &mock_sighash(kept.commitment()), &[])
         .unwrap();
 
     let mut hostless = alice.clone();
@@ -219,7 +222,7 @@ fn unmerge_hostless_quotient_fails_coverage_on_its_host() {
         .unwrap();
     assert_eq!(hostless.stamp.adjuncts, BTreeSet::from([bob_txid]));
     assert_matches!(
-        hostless.verify(rng, app, &mock_sighash(hostless.commitment()), &[]),
+        hostless.verify::<_, StrippedStamp>(rng, app, &mock_sighash(hostless.commitment()), &[]),
         Err(VerificationError::Coverage(
             VerifyCoverageError::WrongTachygramSet
         ))
@@ -247,7 +250,7 @@ fn unmerge_hostless_quotient_fails_coverage_on_its_host() {
         .unwrap();
     assert_eq!(carol.fee.v_fee, carol_fee);
     assert_eq!(carol.stamp.adjuncts, BTreeSet::from([bob_txid]));
-    let stripped_bob = bob.strip();
+    let stripped_bob = bob.strip().0;
     carol
         .verify(
             rng,
@@ -296,7 +299,11 @@ fn unmerge_by_a_lifted_divisor() {
         .unwrap();
     assert!(
         !unaligned
-            .verify_proof(rng, app, later.verify_covered(&[]).unwrap().0)
+            .verify_proof(
+                rng,
+                app,
+                later.verify_covered::<StrippedStamp>(&[]).unwrap().0
+            )
             .unwrap()
     );
 
@@ -309,7 +316,7 @@ fn unmerge_by_a_lifted_divisor() {
         )
         .unwrap();
     later
-        .verify(rng, app, &mock_sighash(later.commitment()), &[])
+        .verify::<_, StrippedStamp>(rng, app, &mock_sighash(later.commitment()), &[])
         .unwrap();
 }
 
@@ -341,7 +348,7 @@ fn unmerge_by_itself_leaves_no_leaves() {
 
     alice.stamp = quotient;
     assert_matches!(
-        alice.verify(rng, app, &mock_sighash(alice.commitment()), &[]),
+        alice.verify::<_, StrippedStamp>(rng, app, &mock_sighash(alice.commitment()), &[]),
         Err(VerificationError::Coverage(
             VerifyCoverageError::WrongTachygramSet
         ))
@@ -382,7 +389,7 @@ fn unmerge_splitting_a_bundle() {
         .iter()
         .position(|&descriptor| descriptor == kept_descriptor)
         .unwrap();
-    let kept_digest = whole.verify_covered(&[]).unwrap().0[kept_index];
+    let kept_digest = whole.verify_covered::<StrippedStamp>(&[]).unwrap().0[kept_index];
 
     let part_desc = alice
         .actions
@@ -416,7 +423,7 @@ fn unmerge_splitting_a_bundle() {
 
     whole.stamp = quotient;
     assert_matches!(
-        whole.verify(rng, app, &mock_sighash(whole.commitment()), &[]),
+        whole.verify::<_, StrippedStamp>(rng, app, &mock_sighash(whole.commitment()), &[]),
         Err(VerificationError::Coverage(
             VerifyCoverageError::WrongTachygramSet
         ))
@@ -492,9 +499,9 @@ fn unmerge_rejects_a_reproven_note_as_divisor() {
         .map(|(&desc, &(_, pair))| (desc, pair))
         .collect();
     let divisor_fees = BTreeMap::from([(reproven.fee, reproven.fee_auth)]);
-    let (original_digests, _) = original.verify_covered(&[]).unwrap();
+    let (original_digests, _) = original.verify_covered::<StrippedStamp>(&[]).unwrap();
     let (_, original_action_digests) = original_digests.split_last().unwrap();
-    let (other_digests, _) = other.verify_covered(&[]).unwrap();
+    let (other_digests, _) = other.verify_covered::<StrippedStamp>(&[]).unwrap();
     let quotient = dividend
         .unmerge(
             rng,
@@ -549,9 +556,19 @@ fn unmerge_binds_its_sets() {
         .chain([bob.fee_auth]);
     let alice_bob_tachygrams: TachygramSetPoly =
         alice_members.clone().chain(bob_members.clone()).collect();
-    let alice_actions: ActionSetPoly = alice.verify_covered(&[]).unwrap().0.into_iter().collect();
+    let alice_actions: ActionSetPoly = alice
+        .verify_covered::<StrippedStamp>(&[])
+        .unwrap()
+        .0
+        .into_iter()
+        .collect();
     let alice_tachygrams: TachygramSetPoly = alice_members.clone().collect();
-    let bob_actions: ActionSetPoly = bob.verify_covered(&[]).unwrap().0.into_iter().collect();
+    let bob_actions: ActionSetPoly = bob
+        .verify_covered::<StrippedStamp>(&[])
+        .unwrap()
+        .0
+        .into_iter()
+        .collect();
     let bob_tachygrams: TachygramSetPoly = bob_members.clone().collect();
     let dividend_header = (
         app.bridge_hash(alice_bob_tachygrams.commit().as_ref().to_affine())
