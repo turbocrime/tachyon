@@ -398,8 +398,8 @@ fn based_aggregate_with_two_adjuncts() {
 
     becomes_based.stamp = based_stamp;
 
-    let adjunct_a = autonome_a.strip();
-    let adjunct_b = autonome_b.strip();
+    let adjunct_a = autonome_a.strip().0;
+    let adjunct_b = autonome_b.strip().0;
     let adjuncts = [&adjunct_a, &adjunct_b];
 
     assert!(becomes_based.is_aggregate());
@@ -509,16 +509,8 @@ fn stamped_bundle_round_trips() {
     decoded
         .verify(rng, app, &mock_sighash(decoded.commitment()), &[])
         .unwrap();
-    let compressed = Bundle {
-        stamp: stamped.stamp.compress(rng, app).unwrap(),
-        actions: stamped.actions,
-        action_auth: stamped.action_auth,
-        fee: stamped.fee,
-        fee_auth: stamped.fee_auth,
-        value_balance: stamped.value_balance,
-        binding_sig: stamped.binding_sig,
-        memo: stamped.memo,
-    };
+    let (stripped, stamp) = stamped.strip();
+    let compressed = stripped.with_stamp(stamp.compress(rng, app).unwrap()).0;
     let mut bytes = Vec::new();
     compressed.write(&mut bytes).unwrap();
     let mut erased_buf = Vec::new();
@@ -535,8 +527,8 @@ fn stamped_bundle_round_trips() {
     let sighash = mock_sighash(block.commitment());
     block.verify(rng, app, &sighash, &[]).unwrap();
     let (mut stripped_block, mut stripped_decoded) = (Vec::new(), Vec::new());
-    block.clone().strip().write(&mut stripped_block).unwrap();
-    decoded.strip().write(&mut stripped_decoded).unwrap();
+    block.clone().strip().0.write(&mut stripped_block).unwrap();
+    decoded.strip().0.write(&mut stripped_decoded).unwrap();
     assert_eq!(stripped_block, stripped_decoded);
     block.stamp.anchor = Anchor::random(rng);
     assert_matches!(
@@ -618,9 +610,9 @@ fn stripped_bundle_round_trips() {
     let (_, stamped) = spend(app);
     let mut stamped_bytes = Vec::new();
     stamped.write(&mut stamped_bytes).unwrap();
+    let (stripped, stamp) = stamped.strip();
     let mut trailer = Vec::new();
-    stamped.stamp.write(&mut trailer).unwrap();
-    let stripped = stamped.strip();
+    stamp.write(&mut trailer).unwrap();
     let mut buf = Vec::new();
     stripped.write(&mut buf).unwrap();
     assert_eq!(buf.len(), stamped_bytes.len() - trailer.len());
@@ -708,7 +700,7 @@ fn phase_order_wire_offsets_and_empty_stripped_trailer() {
     bundle.stamp.write(&mut expected).unwrap();
     assert_eq!(&bytes[offset..], expected);
     let mut stripped = Vec::new();
-    bundle.strip().write(&mut stripped).unwrap();
+    bundle.strip().0.write(&mut stripped).unwrap();
     assert_eq!(stripped[0], 0x02);
     assert_eq!(stripped.len(), offset);
 }
@@ -730,7 +722,7 @@ fn read_bounds_the_fee() {
     let signing_end = effecting_end + 64 * bundle.action_auth.len() + 64;
     let fee_at = signing_end + 64 * bundle.action_auth.len();
     let mut stripped = Vec::new();
-    bundle.strip().write(&mut stripped).unwrap();
+    bundle.strip().0.write(&mut stripped).unwrap();
 
     let mut maximum_fee = bytes.clone();
     maximum_fee[fee_at..fee_at + 8].copy_from_slice(&MAX_MONEY.to_le_bytes());
@@ -785,7 +777,7 @@ fn read_rejects_identity_action_and_fee_points() {
     let mut bytes = Vec::new();
     bundle.write(&mut bytes).unwrap();
     let mut stripped = Vec::new();
-    bundle.strip().write(&mut stripped).unwrap();
+    bundle.strip().0.write(&mut stripped).unwrap();
     let identity = <[u8; 32]>::from(value::Commitment::from(Ep::identity()));
     for (point_at, message) in [
         (actions_at, "action commitment is the identity"),
@@ -875,16 +867,7 @@ fn bundles_round_trip_at_action_count_limits() {
             decoded.write(&mut round_trip).unwrap();
             assert_eq!(round_trip, bytes);
         }
-        let proof_bundle = Bundle {
-            value_balance: bundle.value_balance,
-            actions: bundle.actions,
-            action_auth: bundle.action_auth,
-            fee: bundle.fee,
-            fee_auth: bundle.fee_auth,
-            binding_sig: bundle.binding_sig,
-            memo: bundle.memo,
-            stamp: stamped.stamp.clone(),
-        };
+        let proof_bundle = bundle.with_stamp(stamped.stamp.clone()).0;
         bytes.clear();
         proof_bundle.write(&mut bytes).unwrap();
         let decoded = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*bytes).unwrap();
@@ -913,7 +896,7 @@ fn bundle_state_mismatches_are_rejected() {
     assert!(TachyonBundle::read(&[0x00][..]).unwrap().is_no_bundle());
 
     let (_, stamped) = spend(app);
-    let adjunct = stamped.clone().strip();
+    let adjunct = stamped.clone().strip().0;
     let mut stamped_buf = Vec::new();
     stamped.write(&mut stamped_buf).unwrap();
     let mut adjunct_buf = Vec::new();
@@ -939,7 +922,7 @@ fn auth_digest_invariants() {
     let rng = &mut StdRng::seed_from_u64(0);
     let (_, stamped) = spend(app);
     let (commitment, auth_digest) = (stamped.commitment(), stamped.auth_digest());
-    let stripped = stamped.clone().strip();
+    let stripped = stamped.clone().strip().0;
     // Set by hand so that only the list differs from `stamped`. A merge would
     // also change the proof and the tachygram set.
     let mut aggregate_a = stamped.clone();
@@ -1119,16 +1102,8 @@ fn adjunct_list_round_trips_and_read_rejects_noncanonical_lists() {
     assert_eq!(overcap_error.kind(), io::ErrorKind::InvalidData);
     assert_eq!(overcap_error.to_string(), "too many adjuncts");
     let rng = &mut StdRng::seed_from_u64(0);
-    let compressed = Bundle {
-        stamp: oversized.stamp.compress(rng, app).unwrap(),
-        actions: oversized.actions,
-        action_auth: oversized.action_auth,
-        value_balance: oversized.value_balance,
-        fee: oversized.fee,
-        fee_auth: oversized.fee_auth,
-        binding_sig: oversized.binding_sig,
-        memo: oversized.memo,
-    };
+    let (stripped, stamp) = oversized.strip();
+    let compressed = stripped.with_stamp(stamp.compress(rng, app).unwrap()).0;
     complete.clear();
     compressed.write(&mut complete).unwrap();
     let compressed_error = TachyonBundle::read(&*complete).unwrap_err();
@@ -1177,7 +1152,7 @@ fn read_rejects_an_identity_tachygram_set() {
 fn verify_covered_bounds_the_covered_tachygrams() {
     let app = &application();
     let (_, bundle) = alice(app);
-    let adjunct = bundle.clone().strip();
+    let adjunct = bundle.clone().strip().0;
     // Two bundles' fee changes leave room for this many actions' pairs.
     let most = (ProductionRank::num_coeffs() - 3) / 2;
     for (n_actions, expected) in [
@@ -1338,7 +1313,7 @@ fn memo_binds_the_commitment_but_not_the_auth_digest() {
     assert_ne!(bundle.commitment(), commitment);
     assert_eq!(bundle.auth_digest(), auth_digest);
 
-    let adjunct = bundle.clone().strip();
+    let adjunct = bundle.clone().strip().0;
     assert_eq!(adjunct.memo, bundle.memo);
     assert_eq!(adjunct.commitment(), bundle.commitment());
 }
@@ -1423,13 +1398,13 @@ fn bundle_lift_preserves_coverage() {
     unchanged_stamp.write(&mut unchanged_stamp_bytes).unwrap();
     assert_eq!(unchanged_stamp_bytes, stamp_bytes);
     let mut body_before = Vec::new();
-    bundle.clone().strip().write(&mut body_before).unwrap();
+    bundle.clone().strip().0.write(&mut body_before).unwrap();
 
     let span = pool.anchor_span(app, BlockHeight(1)..=BlockHeight(2));
 
     let lifted = bundle.lift(rng, app, &[], vec![span]).unwrap();
     let mut body_after = Vec::new();
-    lifted.clone().strip().write(&mut body_after).unwrap();
+    lifted.clone().strip().0.write(&mut body_after).unwrap();
     assert_eq!(body_after, body_before);
 
     assert_eq!(lifted.stamp.anchor, pool.block(BlockHeight(2)).anchor());
@@ -1491,8 +1466,8 @@ fn bundle_lift_over_an_aggregate() {
         BTreeSet::from([mock_txid(&autonome_a), mock_txid(&autonome_b)])
     );
 
-    let adjunct_a = autonome_a.strip();
-    let adjunct_b = autonome_b.strip();
+    let adjunct_a = autonome_a.strip().0;
+    let adjunct_b = autonome_b.strip().0;
     innocent
         .verify(
             rng,

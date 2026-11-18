@@ -346,7 +346,7 @@ fn verify_rejects_a_fee_descriptor_shared_by_two_covered_bundles() {
         )
         .unwrap();
 
-    let mut adjunct = fee_bearing.strip();
+    let mut adjunct = fee_bearing.strip().0;
     adjunct.fee = aggregate.fee;
     assert_matches!(
         aggregate.verify(rng, app, &sighash, &[&adjunct]),
@@ -393,40 +393,36 @@ fn fee_applies_over_a_fee_bearing_adjunct() {
     let sighash = mock_sighash(signed.commitment());
 
     let [(_, adjunct), _, _] = outputs_with_fees(app);
-    let aggregate_stamp = signed.stamp.clone();
+    let (host, aggregate_stamp) = signed.strip();
+    let (stripped, adjunct_stamp) = adjunct.strip();
 
     let merged_stamp = aggregate_stamp
         .merge(
             rng,
             app,
             (
-                &signed
+                &host
                     .actions
                     .iter()
-                    .zip(&signed.action_auth)
+                    .zip(&host.action_auth)
                     .map(|(&desc, &(_, pair))| (desc, pair))
                     .collect(),
-                &BTreeMap::from([(signed.fee, signed.fee_auth)]),
+                &BTreeMap::from([(host.fee, host.fee_auth)]),
             ),
             (
-                adjunct.stamp.clone(),
-                mock_txid(&adjunct),
-                &adjunct
+                adjunct_stamp,
+                mock_txid(&stripped),
+                &stripped
                     .actions
                     .iter()
-                    .zip(&adjunct.action_auth)
+                    .zip(&stripped.action_auth)
                     .map(|(&desc, &(_, pair))| (desc, pair))
                     .collect(),
-                &BTreeMap::from([(adjunct.fee, adjunct.fee_auth)]),
+                &BTreeMap::from([(stripped.fee, stripped.fee_auth)]),
             ),
         )
         .unwrap();
-    let aggregate = Bundle {
-        stamp: merged_stamp,
-        ..signed
-    };
-
-    let stripped = adjunct.strip();
+    let aggregate = host.with_stamp(merged_stamp).0;
     aggregate.verify(rng, app, &sighash, &[&stripped]).unwrap();
 }
 
@@ -545,7 +541,11 @@ fn fee_bearing_aggregates_merge_and_lift() {
             rng,
             app,
             &sighash,
-            &[&left_auto.strip(), &right.strip(), &right_auto.strip()],
+            &[
+                &left_auto.strip().0,
+                &right.strip().0,
+                &right_auto.strip().0,
+            ],
         )
         .unwrap();
 }
@@ -644,7 +644,7 @@ fn innocent_seed_merges_and_strips() {
             rng,
             app,
             &mock_sighash(parent.commitment()),
-            &[&adjunct.strip(), &innocent.strip()],
+            &[&adjunct.strip().0, &innocent.strip().0],
         )
         .unwrap();
 }

@@ -707,23 +707,12 @@ impl<P: stamp::Proof> Bundle<ProofStamp<P>> {
         Ok(bundle)
     }
 
-    /// Remove the stamp proof, keeping the fee, fee change and tachygram pairs.
+    /// Remove the proof stamp, keeping the fee, fee change and tachygram pairs.
     ///
-    /// The miner strips the bundle of each transaction an aggregate in its
-    /// block lists. Stripping writes nothing, and the stripped bundle's bytes
-    /// depend on nothing outside it.
+    /// A miner strips each bundle listed by a stamp in its block.
     #[must_use]
-    pub fn strip(self) -> Bundle<StrippedStamp> {
-        Bundle {
-            actions: self.actions,
-            action_auth: self.action_auth,
-            value_balance: self.value_balance,
-            fee: self.fee,
-            fee_auth: self.fee_auth,
-            binding_sig: self.binding_sig,
-            memo: self.memo,
-            stamp: StrippedStamp,
-        }
+    pub fn strip(self) -> (Bundle<StrippedStamp>, ProofStamp<P>) {
+        self.with_stamp(StrippedStamp)
     }
 
     /// Whether the stamp lists no adjuncts.
@@ -885,6 +874,24 @@ impl<P: stamp::Proof> Bundle<ProofStamp<P>> {
 }
 
 impl<S: StampState> Bundle<S> {
+    /// Replace the stamp, returning the bundle and its previous stamp.
+    #[must_use]
+    pub fn with_stamp<T: StampState>(self, stamp: T) -> (Bundle<T>, S) {
+        (
+            Bundle {
+                value_balance: self.value_balance,
+                actions: self.actions,
+                action_auth: self.action_auth,
+                fee: self.fee,
+                fee_auth: self.fee_auth,
+                binding_sig: self.binding_sig,
+                memo: self.memo,
+                stamp,
+            },
+            self.stamp,
+        )
+    }
+
     /// Borrow this bundle as a trait object.
     #[must_use]
     pub fn as_dyn(&self) -> &Bundle<dyn StampState>

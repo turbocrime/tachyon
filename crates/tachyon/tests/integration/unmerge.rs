@@ -125,7 +125,10 @@ fn unmerge_removes_a_divisor_across_merge_boundaries() {
                 (divisor, bob_txid, divisor_covered.0, divisor_covered.1),
             )
             .unwrap();
-        let stripped: Vec<_> = adjuncts.into_iter().map(bundle::Bundle::strip).collect();
+        let stripped: Vec<_> = adjuncts
+            .into_iter()
+            .map(|bundle| bundle.strip().0)
+            .collect();
         assert_eq!(
             unmerged.stamp.adjuncts,
             stripped.iter().map(mock_txid).collect()
@@ -247,7 +250,7 @@ fn unmerge_hostless_quotient_fails_coverage_on_its_host() {
         .unwrap();
     assert_eq!(carol.fee.v_fee, carol_fee);
     assert_eq!(carol.stamp.adjuncts, BTreeSet::from([bob_txid]));
-    let stripped_bob = bob.strip();
+    let stripped_bob = bob.strip().0;
     carol
         .verify(
             rng,

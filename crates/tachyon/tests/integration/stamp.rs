@@ -593,7 +593,7 @@ fn empty_lift_does_not_digest_invalid_coverage() {
     let app = &application();
     let rng = &mut StdRng::seed_from_u64(0);
     let (_, bundle) = alice(app);
-    let mut invalid = bundle.clone().strip();
+    let mut invalid = bundle.clone().strip().0;
     invalid.actions[0].cv = value::Trapdoor::ZERO.commit(value::Positive::ZERO);
     invalid.fee.cv_feemax = invalid.actions[0].cv;
     let descriptors = invalid
