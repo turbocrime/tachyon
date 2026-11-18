@@ -21,7 +21,7 @@ use zcash_tachyon::{
     fee,
     pasta::Fp,
     stamp::{
-        self, AutonomeParts, FeeError, ProveError, SeedError,
+        self, AutonomeParts, FeeError, MergeError, ProveError, SeedError,
         proof::{
             App,
             stamp::{Stamp, StampMerge},
@@ -304,6 +304,57 @@ fn plan_prove_lifts_a_spend_along_spans() {
         .digest(cm_change)])
         .collect();
     assert!(!forged.verify_proof(rng, app, digests).unwrap());
+}
+
+#[test]
+fn partial_actions_proofs_lift_and_merge_before_fee() {
+    let app = &application();
+    let rng = &mut StdRng::seed_from_u64(0);
+    let pool = PoolSim::shared();
+    let wallet = WalletSim::new(shared_sk());
+    let start = BlockHeight(1);
+    let end = BlockHeight(2);
+    let left_anchor = pool.block(start).anchor();
+    let right_anchor = pool.block(end).anchor();
+    let max_fee_note = wallet.random_note(0);
+    let [first, second] = [100, 200].map(|amount| output_plan(rng, wallet.random_note(amount)));
+    let [left, right] = [(first, left_anchor), (second, right_anchor)].map(|(output, anchor)| {
+        bundle::Plan::new(vec![], vec![output], max_fee_note)
+            .actions_plan(anchor)
+            .prove(rng, app, vec![])
+            .unwrap()
+    });
+    assert_matches!(
+        left.clone().merge(rng, app, right.clone()),
+        Err(MergeError::AnchorMismatch)
+    );
+    assert_matches!(
+        left.clone().merge(rng, app, left.clone()),
+        Err(MergeError::OverlappingActions)
+    );
+    let lifted = left
+        .clone()
+        .lift(rng, app, vec![pool.anchor_span(app, start..=end)])
+        .unwrap();
+    assert_eq!(lifted.anchor, right_anchor);
+    assert_eq!(lifted.pairs, left.pairs);
+    let merged = lifted.merge(rng, app, right.clone()).unwrap();
+    assert_eq!(
+        merged.pairs,
+        left.pairs.into_iter().chain(right.pairs).collect()
+    );
+
+    let plan = bundle::Plan::new(vec![], vec![first, second], max_fee_note);
+    let sighash = mock_sighash(plan.commitment().unwrap());
+    let signatures = plan
+        .sign(rng, &sighash, &wallet.sk.derive_auth_private())
+        .unwrap();
+    let autonome_parts = merged
+        .fee(rng, app, plan.max_fee_note(), value::Positive::ZERO)
+        .unwrap();
+    plan.assemble(signatures, autonome_parts)
+        .verify::<_, StrippedStamp>(rng, app, &sighash, &[])
+        .unwrap();
 }
 
 #[test]
