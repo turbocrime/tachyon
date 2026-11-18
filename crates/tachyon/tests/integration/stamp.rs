@@ -13,14 +13,15 @@ use corez::io;
 use ragu::{ProductionRank, pasta::Pasta};
 use rand::{SeedableRng as _, rngs::StdRng};
 use rand_core::CryptoRng;
-use udon::curve::Projective as _;
+use udon::{curve::Projective as _, field::Field as _};
 use zcash_tachyon::{
     ActionDigest, ActionSetPoly, BlockHeight, CompactSize, ProofStamp, StrippedStamp, Tachygram,
     TachygramSetPoly, action, bundle,
     entropy::ActionEntropy,
     fee,
+    pasta::Fp,
     stamp::{
-        self, ProveError,
+        self, AutonomeParts, FeeError, ProveError, SeedError,
         proof::{
             App,
             stamp::{Stamp, StampMerge},
@@ -112,38 +113,36 @@ fn plan_prove_rejects_invalid_inputs() {
     .digest(max_fee_note.commitment().into());
     let secret_a = user.note_secret(app, note_a);
     let secret_b = user.note_secret(app, note_b);
-    let plan = stamp::Plan::new(
+    let plan = stamp::ActionsPlan::new(
         vec![
             (plan_a.descriptor(), theta_a, rcv_a),
             (plan_b.descriptor(), theta_b, rcv_b),
         ],
         vec![],
         anchor,
-        max_fee_note,
-        value::Positive::ZERO,
     );
 
     for (pcds, expected) in [
         (
-            vec![(secret_a.clone(), sp_a.clone(), vec![])],
+            vec![(user.pak, secret_a.clone(), sp_a.clone(), vec![])],
             "cannot prove 2 spend actions with 1 spendbind inputs",
         ),
         (
             vec![
-                (secret_a.clone(), sp_a.clone(), vec![]),
-                (secret_b.clone(), sp_b.clone(), vec![]),
-                (secret_a.clone(), sp_a.clone(), vec![]),
+                (user.pak, secret_a.clone(), sp_a.clone(), vec![]),
+                (user.pak, secret_b.clone(), sp_b.clone(), vec![]),
+                (user.pak, secret_a.clone(), sp_a.clone(), vec![]),
             ],
             "cannot prove 2 spend actions with 3 spendbind inputs",
         ),
     ] {
         assert_matches!(
-            plan.clone().prove(rng, app, &user.pak, pcds),
+            plan.clone().prove(rng, app, pcds),
             Err(ProveError::MissingPcd(reason)) if reason.to_string() == expected
         );
     }
 
-    let stamp::AutonomeParts {
+    let AutonomeParts {
         stamp: swapped,
         pairs: swapped_pairs,
         ..
@@ -151,12 +150,13 @@ fn plan_prove_rejects_invalid_inputs() {
         .prove(
             rng,
             app,
-            &user.pak,
             vec![
-                (secret_b, sp_b, vec![]),
-                (secret_a.clone(), sp_a.clone(), vec![]),
+                (user.pak, secret_b, sp_b, vec![]),
+                (user.pak, secret_a.clone(), sp_a.clone(), vec![]),
             ],
         )
+        .unwrap()
+        .fee(rng, app, max_fee_note, value::Positive::ZERO)
         .unwrap();
     assert!(
         !swapped
@@ -175,18 +175,18 @@ fn plan_prove_rejects_invalid_inputs() {
     let foreign_a = action::Plan::spend(note_a, theta_a, rcv_a, |alpha| {
         other.pak.ak.derive_action_public(&alpha)
     });
-    let stamp::AutonomeParts {
+    let AutonomeParts {
         stamp: foreign,
         pairs: foreign_pairs,
         ..
-    } = stamp::Plan::new(
+    } = stamp::ActionsPlan::new(
         vec![(foreign_a.descriptor(), theta_a, rcv_a)],
         vec![],
         anchor,
-        max_fee_note,
-        value::Positive::ZERO,
     )
-    .prove(rng, app, &user.pak, vec![(secret_a, sp_a, vec![])])
+    .prove(rng, app, vec![(user.pak, secret_a, sp_a, vec![])])
+    .unwrap()
+    .fee(rng, app, max_fee_note, value::Positive::ZERO)
     .unwrap();
     assert!(
         !foreign
@@ -222,12 +222,10 @@ fn plan_prove_lifts_a_spend_along_spans() {
     let output = output_plan(rng, user.random_note(200));
     let secret = user.note_secret(app, note);
     let max_fee_note = user.random_note(0);
-    let plan = stamp::Plan::new(
+    let plan = stamp::ActionsPlan::new(
         vec![(spend.descriptor(), theta, rcv)],
         vec![(output.descriptor(), output.theta, output.note, output.rcv)],
         plan_anchor,
-        max_fee_note,
-        value::Positive::ZERO,
     );
 
     for spans in [
@@ -241,7 +239,7 @@ fn plan_prove_lifts_a_spend_along_spans() {
             pool.anchor_span(app, middle..=plan_height),
         ],
     ] {
-        let stamp::AutonomeParts {
+        let AutonomeParts {
             stamp,
             pairs,
             cm_change,
@@ -251,9 +249,10 @@ fn plan_prove_lifts_a_spend_along_spans() {
             .prove(
                 rng,
                 app,
-                &user.pak,
-                vec![(secret.clone(), spendable.clone(), spans)],
+                vec![(user.pak, secret.clone(), spendable.clone(), spans)],
             )
+            .unwrap()
+            .fee(rng, app, max_fee_note, value::Positive::ZERO)
             .unwrap();
         assert!(pairs.values().all(|&(first, second)| first < second));
         let digests: Vec<ActionDigest> = pairs
@@ -274,8 +273,7 @@ fn plan_prove_lifts_a_spend_along_spans() {
             plan.clone().prove(
                 rng,
                 app,
-                &user.pak,
-                vec![(secret.clone(), spendable.clone(), spans)],
+                vec![(user.pak, secret.clone(), spendable.clone(), spans)],
             ),
             Err(ProveError::MissingPcd(reason))
                 if reason.to_string() == "spend 0 does not reach the plan's anchor"
@@ -286,13 +284,15 @@ fn plan_prove_lifts_a_spend_along_spans() {
         pool.anchor_span(app, cm_height..=cm_height),
         pool.anchor_span(app, plan_height..=plan_height),
     ];
-    let stamp::AutonomeParts {
+    let AutonomeParts {
         stamp: forged,
         pairs,
         cm_change,
         fee: v_fee,
     } = plan
-        .prove(rng, app, &user.pak, vec![(secret, spendable, gapped)])
+        .prove(rng, app, vec![(user.pak, secret, spendable, gapped)])
+        .unwrap()
+        .fee(rng, app, max_fee_note, value::Positive::ZERO)
         .unwrap();
     let digests: Vec<ActionDigest> = pairs
         .iter()
@@ -304,6 +304,60 @@ fn plan_prove_lifts_a_spend_along_spans() {
         .digest(cm_change)])
         .collect();
     assert!(!forged.verify_proof(rng, app, digests).unwrap());
+}
+
+#[test]
+fn proving_rejects_empty_actions_and_invalid_note_openings() {
+    let app = &application();
+    let rng = &mut StdRng::seed_from_u64(0);
+    let anchor = PoolSim::shared().mint_anchor();
+    let wallet = WalletSim::new(shared_sk());
+    let zero = value::Positive::ZERO;
+    let max_fee_note = wallet.random_note(0);
+    let mut zero_rcm = max_fee_note;
+    zero_rcm.rcm = Fp::ZERO.into();
+
+    assert_matches!(
+        stamp::ActionsPlan::new(vec![], vec![], anchor).prove(rng, app, vec![]),
+        Err(ProveError::NoActions)
+    );
+    assert_matches!(
+        AutonomeParts::seed(rng, app, zero_rcm, anchor),
+        Err(SeedError::ZeroRcm)
+    );
+    assert_matches!(
+        AutonomeParts::seed(rng, app, wallet.random_note(1), anchor),
+        Err(SeedError::NonzeroMaxFee)
+    );
+
+    let output = output_plan(rng, wallet.random_note(1));
+    let desc = output.descriptor();
+    assert_matches!(
+        stamp::ActionsPlan::new(
+            vec![],
+            vec![(desc, output.theta, zero_rcm, output.rcv)],
+            anchor
+        )
+        .prove(rng, app, vec![]),
+        Err(ProveError::ZeroRcm)
+    );
+    let actions = bundle::Plan::new(vec![], vec![output], max_fee_note)
+        .actions_plan(anchor)
+        .prove(rng, app, vec![])
+        .unwrap();
+    assert_matches!(
+        actions.clone().fee(rng, app, zero_rcm, zero),
+        Err(FeeError::ZeroRcm)
+    );
+    assert_matches!(
+        actions.fee(
+            rng,
+            app,
+            max_fee_note,
+            value::Positive::try_from(1u64).unwrap()
+        ),
+        Err(FeeError::FeeAboveMax)
+    );
 }
 
 #[test]
@@ -324,14 +378,16 @@ fn overlapping_stamps_cannot_aggregate() {
     let output_a = alice_bundle.stamp;
     let plan_b = output_plan(rng, alice_note);
     let max_fee_note = wallet.random_note(0);
-    let stamp::AutonomeParts {
+    let AutonomeParts {
         stamp: output_b,
         pairs: desc_b,
         cm_change: change_b,
         fee: v_fee,
     } = bundle::Plan::new(vec![], vec![plan_b], max_fee_note)
-        .stamp_plan(anchor, value::Positive::ZERO)
-        .prove(rng, app, &wallet.pak, vec![])
+        .actions_plan(anchor)
+        .prove(rng, app, vec![])
+        .unwrap()
+        .fee(rng, app, max_fee_note, value::Positive::ZERO)
         .unwrap();
     let fees_b = BTreeMap::from([(
         fee::Descriptor {
@@ -357,16 +413,17 @@ fn overlapping_stamps_cannot_aggregate() {
             &wallet.sk.derive_auth_private(),
         )
         .unwrap();
-    let proof = plan
-        .stamp_plan(anchor, value::Positive::ZERO)
+    let autonome_parts = plan
+        .actions_plan(anchor)
         .prove(
             rng,
             app,
-            &wallet.pak,
-            vec![(wallet.note_secret(app, note), spendable, vec![])],
+            vec![(wallet.pak, wallet.note_secret(app, note), spendable, vec![])],
         )
+        .unwrap()
+        .fee(rng, app, plan.max_fee_note(), value::Positive::ZERO)
         .unwrap();
-    let spend_b = plan.assemble(signatures, proof);
+    let spend_b = plan.assemble(signatures, autonome_parts);
     let fixture_pairs = spend_a
         .actions
         .iter()
