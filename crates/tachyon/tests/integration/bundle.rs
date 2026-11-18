@@ -146,12 +146,12 @@ fn assemble_joins_by_descriptor() {
         .collect();
     let joined = plan.assemble(
         signatures,
-        (
-            original.stamp,
-            pairs.clone(),
-            original.fee_auth,
-            original.fee.v_fee,
-        ),
+        stamp::AutonomeParts {
+            stamp: original.stamp,
+            pairs: pairs.clone(),
+            cm_change: original.fee_auth,
+            fee: original.fee.v_fee,
+        },
     );
     assert_eq!(
         joined
@@ -182,12 +182,12 @@ fn assemble_panics_on_mismatched_descriptors() {
         .unwrap();
     let _bundle = plan.assemble(
         signatures,
-        (
-            original.stamp,
-            BTreeMap::new(),
-            original.fee_auth,
-            original.fee.v_fee,
-        ),
+        stamp::AutonomeParts {
+            stamp: original.stamp,
+            pairs: BTreeMap::new(),
+            cm_change: original.fee_auth,
+            fee: original.fee.v_fee,
+        },
     );
 }
 
@@ -290,7 +290,12 @@ fn duplicated_spend_cannot_inflate() {
     let secret = wallet.note_secret(app, note);
     let max_fee_note = wallet.random_note(0);
     let cv_feemax = max_fee_note.cv_feemax();
-    let (honest_stamp, pairs, cm_change, fee) = Plan::new(vec![plan], vec![], max_fee_note)
+    let stamp::AutonomeParts {
+        stamp: honest_stamp,
+        pairs,
+        cm_change,
+        fee,
+    } = Plan::new(vec![plan], vec![], max_fee_note)
         .stamp_plan(anchor, value::Positive::ZERO)
         .prove(rng, app, &wallet.pak, vec![(secret, spendable, vec![])])
         .unwrap();
@@ -1313,7 +1318,12 @@ fn verify_covered_rejects_an_edited_tachygram() {
     pairs.first_entry().unwrap().get_mut().1 = Tachygram::random(rng);
     let bundle = plan.assemble(
         signatures,
-        (stamped.stamp, pairs, stamped.fee_auth, stamped.fee.v_fee),
+        stamp::AutonomeParts {
+            stamp: stamped.stamp,
+            pairs,
+            cm_change: stamped.fee_auth,
+            fee: stamped.fee.v_fee,
+        },
     );
     assert_matches!(
         bundle.verify_covered::<StrippedStamp>(&[]),
@@ -1381,7 +1391,12 @@ fn plan_memo_reaches_the_signed_bundle() {
         .collect();
     let bundle = bundle_plan.assemble(
         signatures,
-        (original.stamp, pairs, original.fee_auth, original.fee.v_fee),
+        stamp::AutonomeParts {
+            stamp: original.stamp,
+            pairs,
+            cm_change: original.fee_auth,
+            fee: original.fee.v_fee,
+        },
     );
 
     assert_eq!(bundle.memo, memo);

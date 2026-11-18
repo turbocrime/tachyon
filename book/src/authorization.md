@@ -441,12 +441,12 @@ and Proving
         note over Stamper: adjuncts = empty
         destroy Stamper
         note over Stamper: each pair smaller tachygram first, pairs in descriptor order
-        Stamper ->> User: (ProofStamp { anchor, tachygram_set, adjuncts, proof }, descriptor to pair map, cm_change, fee)
+        Stamper ->> User: AutonomeParts { stamp, pairs, fee, cm_change }
     end
 end
 
 critical stamp
-    note over User: bundle::Plan::assemble(signatures, proof)
+    note over User: bundle::Plan::assemble(signatures, autonome_parts)
     note over User: panic if the plan, signature, and pair descriptor keys differ
     note over User: join maps in descriptor order into actions[] (descriptor, signature, pair)
     note over User: attach fee, cm_change, and stamp; key matching alone does not verify the proof

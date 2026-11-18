@@ -542,20 +542,17 @@ impl Plan {
     /// Panics if the plan, signature and tachygram pair keys differ or the
     /// plan's balance is out of range.
     #[must_use]
-    #[expect(
-        clippy::type_complexity,
-        reason = "takes the prover's outputs as returned"
-    )]
     pub fn assemble(
         &self,
         (action_sigs, binding_sig): (BTreeMap<action::Descriptor, action::Signature>, Signature),
-        (stamp, pairs, cm_change, fee): (
-            ProofStamp<stamp::Uncompressed>,
-            BTreeMap<action::Descriptor, (Tachygram, Tachygram)>,
-            Tachygram,
-            value::Positive,
-        ),
+        autonome_parts: stamp::AutonomeParts,
     ) -> Bundle<ProofStamp<stamp::Uncompressed>> {
+        let stamp::AutonomeParts {
+            stamp,
+            pairs,
+            fee,
+            cm_change,
+        } = autonome_parts;
         assert!(
             self.descriptors().iter().eq(action_sigs.keys()) && action_sigs.keys().eq(pairs.keys()),
             "action descriptors do not match"
