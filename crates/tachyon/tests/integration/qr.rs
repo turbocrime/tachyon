@@ -591,11 +591,13 @@ fn qr_side_select_checks_the_exceptional_value_at_its_depth() {
         (intake, discriminant, value)
     });
     let [_, _, deep_intake, _] = pool.qr_descent(app, span0, disc, absent);
-    for (intake, discriminant, value) in [
+    for (intake, discriminant, value) in vec![
         root_case,
         child_case,
         (deep_intake, disc, exceptional_value),
-    ] {
+    ]
+    .into_boxed_slice()
+    {
         let (.., profile) = *intake.pcd.data();
         let depth = profile.depth;
         let exceptional = Tachygram::from(value);
