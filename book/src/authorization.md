@@ -310,7 +310,7 @@ rect rgb(100, 149, 237, 0.1)
             note over User: rk = [alpha]G
             note over User: cv = Pedersen(-v, rcv)
         end
-        note over User: action_plan { rk, note, theta, rcv, effect }
+        note over User: action_plan { note, theta, rcv, authority }
     end
 
     note over User: max_fee_note { pk, feemax, psi, rcm }
