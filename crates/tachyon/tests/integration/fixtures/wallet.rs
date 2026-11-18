@@ -365,7 +365,7 @@ impl WalletSim {
                 spend_plans.push(action::Plan::spend(note, theta, rcv, |alpha| {
                     self.pak.ak.derive_action_public(&alpha)
                 }));
-                spend_pcds.push((self.note_secret(app, note), spendable, vec![]));
+                spend_pcds.push((self.pak, self.note_secret(app, note), spendable, vec![]));
             }
             let output_plans = outputs
                 .iter()
@@ -381,11 +381,17 @@ impl WalletSim {
             let signatures = plan
                 .sign(rng, &sighash, &self.sk.derive_auth_private())
                 .unwrap();
-            let proof = plan
-                .stamp_plan(anchor, fee)
-                .prove(rng, app, &self.pak, spend_pcds)
-                .unwrap();
-            let bundle = plan.assemble(signatures, proof);
+            let autonome_parts = if spends.is_empty() && outputs.is_empty() {
+                assert_eq!(fee, value::Positive::ZERO);
+                stamp::AutonomeParts::seed(rng, app, plan.max_fee_note(), anchor).unwrap()
+            } else {
+                plan.actions_plan(anchor)
+                    .prove(rng, app, spend_pcds)
+                    .unwrap()
+                    .fee(rng, app, plan.max_fee_note(), fee)
+                    .unwrap()
+            };
+            let bundle = plan.assemble(signatures, autonome_parts);
             (plan, bundle)
         })
     }
