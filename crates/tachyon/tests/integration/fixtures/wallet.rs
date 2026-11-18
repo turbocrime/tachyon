@@ -32,7 +32,7 @@ pub fn random_action<RNG: CryptoRng>(rng: &mut RNG) -> (action::Descriptor, acti
     let wallet = WalletSim::random(rng);
     let note = wallet.random_note(400);
     let plan = output_plan(rng, note);
-    let bundle_plan = bundle::Plan::try_new(
+    let bundle_plan = bundle::Plan::new(
         vec![],
         vec![plan],
         WalletSim::new(shared_sk()).random_note(0),
@@ -408,8 +408,7 @@ impl WalletSim {
                 .copied()
                 .map(|note| output_plan(rng, note))
                 .collect();
-            let plan =
-                bundle::Plan::try_new(spend_plans, output_plans, max_fee_note, vec![]).unwrap();
+            let plan = bundle::Plan::new(spend_plans, output_plans, max_fee_note, vec![]).unwrap();
             let sighash = mock_sighash(plan.effects().commitment());
             let mut action_sigs = plan.authorize(rng, &self.sk.derive_auth_private(), |digest| {
                 mock_sighash(*digest)
