@@ -168,7 +168,7 @@ Signing a `bundle::Plan` returns a descriptor-keyed action signature map and the
 
 `bundle::Plan::assemble(signatures, autonome_parts)` requires the plan, pair map, and signature map to have identical descriptor keys and panics if they differ. It joins the maps in descriptor order into `actions` and attaches the fee, change, and stamp. This checks keys, not pair values or proof validity. Signing and proving may run in either order or concurrently.
 
-To change the fee, apply it again to the retained action proof and assemble with the same signatures.
+Provers can lift partial action proofs to a common anchor and merge them before applying the fee. To change the fee, apply it again to the retained action proof. To change the anchor, lift that proof or prove the actions again if the epoch changes the pairs, then apply the fee. In either case, assemble again with the same signatures.
 
 Users create transactions containing their individual actions and individual stamp, known as **autonomes**. These are broadcast to the p2p network. Before block inclusion, aggregators strip and merge stamps from selected transactions, producing **aggregates** (transactions carrying merged stamps) and **adjuncts** (transactions stripped of their stamp).
 

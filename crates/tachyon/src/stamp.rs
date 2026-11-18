@@ -500,6 +500,24 @@ pub struct ActionsProof {
 }
 
 impl ActionsProof {
+    /// Advance the anchor along spans without changing the pairs. Each span
+    /// must contain the anchor reached so far.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ragu::Error`] if Ragu cannot construct the proof.
+    pub fn lift<RNG: CryptoRng>(
+        self,
+        rng: &mut RNG,
+        app: &App<'_>,
+        spans: Vec<ragu::Pcd<Pasta, ProductionRank, pool::AnchorSpan>>,
+    ) -> Result<Self, ragu::Error> {
+        if spans.is_empty() {
+            return Ok(self);
+        }
+        self.fuse_lift(rng, app, spans)?.rerandomize(rng, app)
+    }
+
     fn fuse_lift<RNG: CryptoRng>(
         self,
         rng: &mut RNG,
@@ -516,6 +534,33 @@ impl ActionsProof {
             anchor,
             proof: Box::new(proof),
         })
+    }
+
+    /// Merge and rerandomize proofs of disjoint actions at a common anchor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MergeError`] if the anchors differ, descriptors overlap,
+    /// or Ragu cannot construct the proof.
+    ///
+    /// # Panics
+    ///
+    /// Panics when digesting a descriptor with an identity `cv` or `rk`.
+    pub fn merge<RNG: CryptoRng>(
+        self,
+        rng: &mut RNG,
+        app: &App<'_>,
+        right: Self,
+    ) -> Result<Self, MergeError> {
+        if self.anchor != right.anchor {
+            return Err(MergeError::AnchorMismatch);
+        }
+        if right.pairs.keys().any(|desc| self.pairs.contains_key(desc)) {
+            return Err(MergeError::OverlappingActions);
+        }
+        self.fuse_merge(rng, app, right)
+            .and_then(|proof| proof.rerandomize(rng, app))
+            .map_err(MergeError::ProofFailed)
     }
 
     fn fuse_merge<RNG: CryptoRng>(
@@ -763,6 +808,21 @@ pub enum ProveError {
     #[display("zero output note commitment trapdoor")]
     ZeroRcm,
     /// Proof construction failed; carries the underlying Ragu error.
+    #[display("proof failed: {_0}")]
+    ProofFailed(ragu::Error),
+}
+
+/// Errors while merging proofs of actions.
+#[derive(Debug, Display, Error)]
+#[non_exhaustive]
+pub enum MergeError {
+    /// The proofs are at different anchors.
+    #[display("action proofs have different anchors")]
+    AnchorMismatch,
+    /// Both proofs cover the same descriptor.
+    #[display("action proofs overlap")]
+    OverlappingActions,
+    /// Ragu cannot construct the proof.
     #[display("proof failed: {_0}")]
     ProofFailed(ragu::Error),
 }
