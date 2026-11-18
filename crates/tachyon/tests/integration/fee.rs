@@ -14,7 +14,7 @@ use zcash_tachyon::{
     constants::MAX_MONEY,
     pasta::Fp,
     stamp::{
-        self, Proof as _, ProofStamp,
+        self, Proof as _, ProofStamp, StrippedStamp,
         proof::{
             App, output,
             stamp::{Actions, FeeFuse, FeeSeed, OutputAction, Stamp},
@@ -258,7 +258,9 @@ fn fee_is_chosen_after_signing_up_to_the_max_and_applies_once() {
     let bundles = [without_fee, at_fixture_fee, maximum_fee];
     for bundle in &bundles {
         assert_eq!(bundle.commitment(), commitment);
-        bundle.verify(rng, app, &sighash, &[]).unwrap();
+        bundle
+            .verify::<_, StrippedStamp>(rng, app, &sighash, &[])
+            .unwrap();
     }
     assert_eq!(bundles[0].fee.v_fee, value::Positive::ZERO);
     assert_eq!(
@@ -269,7 +271,12 @@ fn fee_is_chosen_after_signing_up_to_the_max_and_applies_once() {
     assert_ne!(bundles[0].auth_digest(), bundles[2].auth_digest());
 
     let [_, once, _] = bundles;
-    let digests: BTreeSet<_> = once.verify_covered(&[]).unwrap().0.into_iter().collect();
+    let digests: BTreeSet<_> = once
+        .verify_covered::<StrippedStamp>(&[])
+        .unwrap()
+        .0
+        .into_iter()
+        .collect();
     let repeated_witness = witness::fee_fuse(
         (anchor, ()),
         max_fee_note,
@@ -300,7 +307,7 @@ fn fee_is_chosen_after_signing_up_to_the_max_and_applies_once() {
     };
 
     assert_matches!(
-        twice.verify(rng, app, &sighash, &[]),
+        twice.verify::<_, StrippedStamp>(rng, app, &sighash, &[]),
         Err(VerificationError::Coverage(
             VerifyCoverageError::WrongTachygramSet
         ))
@@ -366,7 +373,7 @@ fn verify_rejects_a_stamp_without_its_fee() {
     let sighash = mock_sighash(fee_less.commitment());
 
     assert_matches!(
-        fee_less.verify(rng, app, &sighash, &[]),
+        fee_less.verify::<_, StrippedStamp>(rng, app, &sighash, &[]),
         Err(VerificationError::Coverage(
             VerifyCoverageError::WrongTachygramSet
         ))
@@ -380,7 +387,7 @@ fn verify_rejects_a_stamp_without_its_fee() {
         .collect::<TachygramSetPoly>()
         .commit();
     assert_matches!(
-        fee_less.verify(rng, app, &sighash, &[]),
+        fee_less.verify::<_, StrippedStamp>(rng, app, &sighash, &[]),
         Err(VerificationError::Disproved)
     );
 }
@@ -527,26 +534,12 @@ fn fee_bearing_aggregates_merge_and_lift() {
 
     let span = pool.anchor_span(app, BlockHeight(1)..=BlockHeight(2));
     let lifted = left
-        .lift(
-            rng,
-            app,
-            &[left_auto.as_dyn(), right.as_dyn(), right_auto.as_dyn()],
-            vec![span],
-        )
+        .lift(rng, app, &[&left_auto, &right, &right_auto], vec![span])
         .unwrap();
     assert_eq!(lifted.stamp.adjuncts, adjunct_txids);
 
     lifted
-        .verify(
-            rng,
-            app,
-            &sighash,
-            &[
-                &left_auto.strip().0,
-                &right.strip().0,
-                &right_auto.strip().0,
-            ],
-        )
+        .verify(rng, app, &sighash, &[&left_auto, &right, &right_auto])
         .unwrap();
 }
 
@@ -556,12 +549,16 @@ fn zero_action_fee_seed_round_trips_and_verifies() {
     let rng = &mut StdRng::seed_from_u64(0);
     let (_, bundle) = zero_action(app, PoolSim::shared().mint_anchor());
     let sighash = mock_sighash(bundle.commitment());
-    bundle.verify(rng, app, &sighash, &[]).unwrap();
+    bundle
+        .verify::<_, StrippedStamp>(rng, app, &sighash, &[])
+        .unwrap();
     let mut bytes = Vec::new();
     bundle.write(&mut bytes).unwrap();
     let decoded = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*bytes).unwrap();
     assert_eq!(decoded.auth_digest(), bundle.auth_digest());
-    decoded.verify(rng, app, &sighash, &[]).unwrap();
+    decoded
+        .verify::<_, StrippedStamp>(rng, app, &sighash, &[])
+        .unwrap();
 }
 
 #[test]

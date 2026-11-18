@@ -184,7 +184,7 @@ impl StateByte {
 
 /// A Tachyon transaction bundle parameterized by bundle state `S`.
 #[derive(Clone, Debug)]
-pub struct Bundle<S: StampState + ?Sized> {
+pub struct Bundle<S: StampState> {
     /// Net value of spends minus outputs and max fee.
     pub value_balance: value::Balance,
 
@@ -207,68 +207,13 @@ pub struct Bundle<S: StampState + ?Sized> {
     /// Opaque recipient-directed payload, empty when absent.
     pub memo: Vec<u8>,
 
-    /// Bundle stamp, kept last to permit a dynamically sized stamp state.
+    /// Bundle stamp.
     pub stamp: S,
 }
 
-impl<S: StampState + 'static> PartialEq for Bundle<S> {
+impl<S: StampState> PartialEq for Bundle<S> {
     fn eq(&self, other: &Self) -> bool {
         self.commitment() == other.commitment() && self.auth_digest() == other.auth_digest()
-    }
-}
-
-impl<S: StampState + ?Sized> Bundle<S> {
-    /// Digest the bundle's effecting data.
-    ///
-    /// This contributes to the transaction sighash. The stamp and the fee are
-    /// excluded because they are considered authorizing data, and are malleable
-    /// during aggregation. The max fee note's value commitment is included,
-    /// fixing the maximum fee and the fee change note's owner. The memo is
-    /// included, so a miner cannot strip the payload and leave the block
-    /// committing to the same transaction.
-    ///
-    /// The digest binds actions in wire order and is therefore sensitive to
-    /// their ordering.
-    #[must_use]
-    pub fn commitment(&self) -> [u8; 32] {
-        let descriptors: Vec<[u8; 64]> = self.actions.iter().copied().collect();
-        blake2b::bundle_commitment(
-            &blake2b::action_descriptor_digest(&descriptors),
-            self.value_balance.into(),
-            &self.fee.cv_feemax.into(),
-            &blake2b::memo_digest(&self.memo),
-        )
-    }
-
-    /// Verify the bundle's binding signature and all action signatures.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SignatureError`] if the binding signature does not verify,
-    /// or if any action signature does not verify under its own `rk`.
-    pub fn verify_signatures(&self, sighash: &[u8; 32]) -> Result<(), SignatureError> {
-        // 1. Derive bvk from public data
-        let bvk = public::BindingVerificationKey::derive(
-            self.actions
-                .iter()
-                .map(|desc| desc.cv)
-                .chain([self.fee.cv_feemax]),
-            self.value_balance,
-        );
-
-        // 2. Verify binding signature
-        bvk.verify(sighash, &self.binding_sig)
-            .map_err(|_err| SignatureError::Binding(self.binding_sig))?;
-
-        // 3. Verify each action signature
-        for (action, &(sig, _)) in self.actions.iter().zip(&self.action_auth) {
-            action
-                .rk
-                .verify(sighash, &sig)
-                .map_err(|_err| SignatureError::Action(sig))?;
-        }
-
-        Ok(())
     }
 }
 
@@ -657,28 +602,32 @@ impl Bundle<ProofStamp<stamp::Uncompressed>> {
     ///
     /// Panics when digesting a hand-built bundle holding an identity `cv` or
     /// `rk`.
-    pub fn lift<RNG: CryptoRng>(
+    pub fn lift<RNG: CryptoRng, A: StampState>(
         self,
         rng: &mut RNG,
         app: &App<'_>,
-        adjuncts: &[&Bundle<dyn StampState>],
+        adjuncts: &[&Bundle<A>],
         spans: Vec<ragu::Pcd<Pasta, ProductionRank, pool::AnchorSpan>>,
     ) -> Result<Self, ragu::Error> {
         if spans.is_empty() {
             return Ok(self);
         }
-        let covered = iter::once(self.as_dyn()).chain(adjuncts.iter().copied());
+        let covered = iter::once((&self.actions, &self.action_auth, self.fee, self.fee_auth))
+            .chain(
+                adjuncts
+                    .iter()
+                    .map(|adj| (&adj.actions, &adj.action_auth, adj.fee, adj.fee_auth)),
+            );
         let mut descriptors = BTreeMap::new();
         let mut fee_descriptors = BTreeMap::new();
-        for bundle in covered {
+        for (actions, action_auth, fee, fee_auth) in covered {
             descriptors.extend(
-                bundle
-                    .actions
+                actions
                     .iter()
                     .copied()
-                    .zip(bundle.action_auth.iter().map(|&(_, pair)| pair)),
+                    .zip(action_auth.iter().map(|&(_, pair)| pair)),
             );
-            fee_descriptors.insert(bundle.fee, bundle.fee_auth);
+            fee_descriptors.insert(fee, fee_auth);
         }
         let stamp = self
             .stamp
@@ -743,9 +692,9 @@ impl<P: stamp::Proof> Bundle<ProofStamp<P>> {
     ///
     /// Panics when digesting a hand-built bundle holding an identity `cv` or
     /// `rk`.
-    pub fn verify_covered(
+    pub fn verify_covered<A: StampState>(
         &self,
-        adjuncts: &[&Bundle<StrippedStamp>],
+        adjuncts: &[&Bundle<A>],
     ) -> Result<(Vec<ActionDigest>, TachygramSetCommit), VerifyCoverageError> {
         let n_actions =
             self.actions.len() + adjuncts.iter().map(|&adj| adj.actions.len()).sum::<usize>();
@@ -831,7 +780,7 @@ impl<P: stamp::Proof> Bundle<ProofStamp<P>> {
     /// - The stamp covers this bundle and the adjuncts
     /// - Proof is correct
     ///
-    /// The adjuncts are the stripped bundles the stamp's
+    /// The adjuncts are the bundles the stamp's
     /// [`adjuncts`](ProofStamp::adjuncts) lists, looked up by txid. This method
     /// does not read the list.
     ///
@@ -846,12 +795,12 @@ impl<P: stamp::Proof> Bundle<ProofStamp<P>> {
     ///
     /// Panics when digesting a hand-built bundle holding an identity `cv` or
     /// `rk`.
-    pub fn verify<RNG: CryptoRng>(
+    pub fn verify<RNG: CryptoRng, A: StampState>(
         &self,
         rng: &mut RNG,
         app: &App<'_>,
         sighash: &[u8; 32],
-        adjuncts: &[&Bundle<StrippedStamp>],
+        adjuncts: &[&Bundle<A>],
     ) -> Result<TachygramSetCommit, VerificationError> {
         self.verify_signatures(sighash)
             .map_err(VerificationError::Signatures)?;
@@ -872,6 +821,59 @@ impl<P: stamp::Proof> Bundle<ProofStamp<P>> {
 }
 
 impl<S: StampState> Bundle<S> {
+    /// Digest the bundle's effecting data.
+    ///
+    /// This contributes to the transaction sighash. The stamp and the fee are
+    /// excluded because they are considered authorizing data, and are malleable
+    /// during aggregation. The max fee note's value commitment is included,
+    /// fixing the maximum fee and the fee change note's owner. The memo is
+    /// included, so a miner cannot strip the payload and leave the block
+    /// committing to the same transaction.
+    ///
+    /// The digest binds actions in wire order and is therefore sensitive to
+    /// their ordering.
+    #[must_use]
+    pub fn commitment(&self) -> [u8; 32] {
+        let descriptors: Vec<[u8; 64]> = self.actions.iter().copied().collect();
+        blake2b::bundle_commitment(
+            &blake2b::action_descriptor_digest(&descriptors),
+            self.value_balance.into(),
+            &self.fee.cv_feemax.into(),
+            &blake2b::memo_digest(&self.memo),
+        )
+    }
+
+    /// Verify the bundle's binding signature and all action signatures.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignatureError`] if the binding signature does not verify,
+    /// or if any action signature does not verify under its own `rk`.
+    pub fn verify_signatures(&self, sighash: &[u8; 32]) -> Result<(), SignatureError> {
+        // 1. Derive bvk from public data
+        let bvk = public::BindingVerificationKey::derive(
+            self.actions
+                .iter()
+                .map(|desc| desc.cv)
+                .chain([self.fee.cv_feemax]),
+            self.value_balance,
+        );
+
+        // 2. Verify binding signature
+        bvk.verify(sighash, &self.binding_sig)
+            .map_err(|_err| SignatureError::Binding(self.binding_sig))?;
+
+        // 3. Verify each action signature
+        for (action, &(sig, _)) in self.actions.iter().zip(&self.action_auth) {
+            action
+                .rk
+                .verify(sighash, &sig)
+                .map_err(|_err| SignatureError::Action(sig))?;
+        }
+
+        Ok(())
+    }
+
     /// Replace the stamp, returning the bundle and its previous stamp.
     #[must_use]
     pub fn with_stamp<T: StampState>(self, stamp: T) -> (Bundle<T>, S) {
@@ -888,15 +890,6 @@ impl<S: StampState> Bundle<S> {
             },
             self.stamp,
         )
-    }
-
-    /// Borrow this bundle as a trait object.
-    #[must_use]
-    pub fn as_dyn(&self) -> &Bundle<dyn StampState>
-    where
-        S: 'static,
-    {
-        self
     }
 
     /// Read everything after the `tachyonBundleState` byte: value balance,

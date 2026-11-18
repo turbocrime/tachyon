@@ -15,8 +15,8 @@ use rand::{SeedableRng as _, rngs::StdRng};
 use rand_core::CryptoRng;
 use udon::curve::Projective as _;
 use zcash_tachyon::{
-    ActionDigest, ActionSetPoly, BlockHeight, CompactSize, ProofStamp, Tachygram, TachygramSetPoly,
-    action, bundle,
+    ActionDigest, ActionSetPoly, BlockHeight, CompactSize, ProofStamp, StrippedStamp, Tachygram,
+    TachygramSetPoly, action, bundle,
     entropy::ActionEntropy,
     fee,
     stamp::{
@@ -426,7 +426,7 @@ fn verify_proof_action_multiset_invariants() {
     let rng = &mut StdRng::seed_from_u64(0);
     let (_, stamped) = spend(app);
 
-    let (digests, _) = stamped.verify_covered(&[]).unwrap();
+    let (digests, _) = stamped.verify_covered::<StrippedStamp>(&[]).unwrap();
 
     assert!(
         stamped
@@ -514,7 +514,7 @@ fn output_stamp_round_trips_and_binds_its_tachygram_set() {
     let app = &application();
     let rng = &mut StdRng::seed_from_u64(0);
     let (_, alice) = alice(app);
-    let (digests, _) = alice.verify_covered(&[]).unwrap();
+    let (digests, _) = alice.verify_covered::<StrippedStamp>(&[]).unwrap();
     let stamp = alice.stamp;
 
     let mut buf: Vec<u8> = Vec::new();
@@ -542,7 +542,7 @@ fn lift_moves_the_anchor_and_keeps_the_proof_valid() {
     let rng = &mut StdRng::seed_from_u64(0);
     let pool = PoolSim::shared();
     let (_, alice) = alice(app);
-    let (digests, _) = alice.verify_covered(&[]).unwrap();
+    let (digests, _) = alice.verify_covered::<StrippedStamp>(&[]).unwrap();
     let descriptors: BTreeMap<_, _> = alice
         .actions
         .iter()
@@ -610,7 +610,7 @@ fn empty_lift_does_not_digest_invalid_coverage() {
         .clone()
         .lift(rng, app, &descriptors, &fees, vec![])
         .unwrap();
-    bundle.lift(rng, app, &[invalid.as_dyn()], vec![]).unwrap();
+    bundle.lift(rng, app, &[&invalid], vec![]).unwrap();
 }
 
 #[test]
@@ -638,11 +638,11 @@ fn merge_after_lift() {
     let fees_b = BTreeMap::from([(bundle_b.fee, bundle_b.fee_auth)]);
 
     let digests: Vec<ActionDigest> = bundle_a
-        .verify_covered(&[])
+        .verify_covered::<StrippedStamp>(&[])
         .unwrap()
         .0
         .into_iter()
-        .chain(bundle_b.verify_covered(&[]).unwrap().0)
+        .chain(bundle_b.verify_covered::<StrippedStamp>(&[]).unwrap().0)
         .collect();
     let unlifted = stamp_a
         .clone()
@@ -685,11 +685,11 @@ fn mismatched_merge_descriptors_fail_verification() {
     let fees_b = BTreeMap::from([(bundle_b.fee, bundle_b.fee_auth)]);
 
     let digests: Vec<ActionDigest> = bundle_a
-        .verify_covered(&[])
+        .verify_covered::<StrippedStamp>(&[])
         .unwrap()
         .0
         .into_iter()
-        .chain(bundle_b.verify_covered(&[]).unwrap().0)
+        .chain(bundle_b.verify_covered::<StrippedStamp>(&[]).unwrap().0)
         .collect();
 
     let mismatched = bundle_a
@@ -708,7 +708,7 @@ fn mismatched_merge_descriptors_fail_verification() {
         )
         .unwrap();
     let mismatched_digests: Vec<ActionDigest> = bundle_a
-        .verify_covered(&[])
+        .verify_covered::<StrippedStamp>(&[])
         .unwrap()
         .0
         .into_iter()

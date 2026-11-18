@@ -81,9 +81,7 @@ pub trait StampState: stamp_sealed::Sealed {
     /// # Errors
     ///
     /// Returns an error if writing fails.
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>
-    where
-        Self: Sized;
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>;
 }
 
 impl StampState for StrippedStamp {

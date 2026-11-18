@@ -164,7 +164,7 @@ fn assemble_joins_by_descriptor() {
         pairs.values().copied().collect::<Vec<_>>()
     );
     joined
-        .verify(rng, app, &mock_sighash(joined.commitment()), &[])
+        .verify::<_, StrippedStamp>(rng, app, &mock_sighash(joined.commitment()), &[])
         .unwrap();
 }
 
@@ -348,7 +348,7 @@ fn duplicated_spend_cannot_inflate() {
     );
 
     assert_matches!(
-        bundle.verify(rng, app, &mock_sighash(bundle.commitment()), &[]),
+        bundle.verify::<_, StrippedStamp>(rng, app, &mock_sighash(bundle.commitment()), &[]),
         Err(VerificationError::Coverage(
             VerifyCoverageError::DuplicateActions
         ))
@@ -453,7 +453,9 @@ fn autonome_verify_rejects_flipped_signatures() {
     let rng = &mut StdRng::seed_from_u64(0);
     let (_, bundle) = spend(app);
     let sighash = mock_sighash(bundle.commitment());
-    bundle.verify(rng, app, &sighash, &[]).unwrap();
+    bundle
+        .verify::<_, StrippedStamp>(rng, app, &sighash, &[])
+        .unwrap();
 
     let mut binding_bytes = Vec::new();
     bundle.binding_sig.write(&mut binding_bytes).unwrap();
@@ -461,7 +463,7 @@ fn autonome_verify_rejects_flipped_signatures() {
     let mut bad_binding = bundle.clone();
     bad_binding.binding_sig = Signature::read(&mut binding_bytes.as_slice()).unwrap();
     assert_matches!(
-        bad_binding.verify(rng, app, &sighash, &[]),
+        bad_binding.verify::<_, StrippedStamp>(rng, app, &sighash, &[]),
         Err(VerificationError::Signatures(SignatureError::Binding(_)))
     );
 
@@ -472,7 +474,7 @@ fn autonome_verify_rejects_flipped_signatures() {
     let mut bad_action = bundle;
     bad_action.action_auth[0].0 = bad_sig;
     assert_matches!(
-        bad_action.verify(rng, app, &sighash, &[]),
+        bad_action.verify::<_, StrippedStamp>(rng, app, &sighash, &[]),
         Err(VerificationError::Signatures(SignatureError::Action(sig))) if sig == bad_sig
     );
 }
@@ -485,7 +487,7 @@ fn autonome_verify_rejects_exchanged_tachygrams() {
     let (first, rest) = bundle.action_auth.split_at_mut(1);
     mem::swap(&mut first[0].1.1, &mut rest[0].1.1);
     assert_matches!(
-        bundle.verify(rng, app, &mock_sighash(bundle.commitment()), &[]),
+        bundle.verify::<_, StrippedStamp>(rng, app, &mock_sighash(bundle.commitment()), &[]),
         Err(VerificationError::Disproved)
     );
 }
@@ -511,7 +513,7 @@ fn stamped_bundle_round_trips() {
     assert_eq!(decoded.fee_auth, stamped.fee_auth);
     assert_eq!(decoded.stamp.anchor, stamped.stamp.anchor);
     decoded
-        .verify(rng, app, &mock_sighash(decoded.commitment()), &[])
+        .verify::<_, StrippedStamp>(rng, app, &mock_sighash(decoded.commitment()), &[])
         .unwrap();
     let (stripped, stamp) = stamped.strip();
     let compressed = stripped.with_stamp(stamp.compress(rng, app).unwrap()).0;
@@ -533,14 +535,16 @@ fn stamped_bundle_round_trips() {
     let (body, decoded_stamp) = undetermined.with_stamp(StrippedStamp);
     assert_eq!(body.with_stamp(decoded_stamp.unwrap()).0, block);
     let sighash = mock_sighash(block.commitment());
-    block.verify(rng, app, &sighash, &[]).unwrap();
+    block
+        .verify::<_, StrippedStamp>(rng, app, &sighash, &[])
+        .unwrap();
     let (mut stripped_block, mut stripped_decoded) = (Vec::new(), Vec::new());
     block.clone().strip().0.write(&mut stripped_block).unwrap();
     decoded.strip().0.write(&mut stripped_decoded).unwrap();
     assert_eq!(stripped_block, stripped_decoded);
     block.stamp.anchor = Anchor::random(rng);
     assert_matches!(
-        block.verify(rng, app, &sighash, &[]),
+        block.verify::<_, StrippedStamp>(rng, app, &sighash, &[]),
         Err(VerificationError::Disproved)
     );
 }
@@ -1010,7 +1014,8 @@ fn a_pair_verifies_in_either_order_but_not_repeated() {
     bundle.write(&mut bytes).unwrap();
     let decoded = Bundle::<ProofStamp<stamp::Uncompressed>>::read(&*bytes).unwrap();
     assert_eq!(decoded.action_auth, bundle.action_auth);
-    let verified = decoded.verify(rng, app, &mock_sighash(decoded.commitment()), &[]);
+    let verified =
+        decoded.verify::<_, StrippedStamp>(rng, app, &mock_sighash(decoded.commitment()), &[]);
     assert_eq!(verified.unwrap(), decoded.stamp.tachygram_set);
 
     bundle.action_auth[0].1 = (first, first);
@@ -1020,7 +1025,7 @@ fn a_pair_verifies_in_either_order_but_not_repeated() {
     assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     assert_eq!(err.to_string(), "tachygrams are not unique");
     assert_matches!(
-        bundle.verify_covered(&[]),
+        bundle.verify_covered::<StrippedStamp>(&[]),
         Err(VerifyCoverageError::DuplicateTachygrams)
     );
 }
@@ -1292,7 +1297,7 @@ fn verify_covered_rejects_an_edited_tachygram() {
     let mut change = stamped.clone();
     change.fee_auth = Tachygram::random(rng);
     assert_matches!(
-        change.verify_covered(&[]),
+        change.verify_covered::<StrippedStamp>(&[]),
         Err(VerifyCoverageError::WrongTachygramSet)
     );
 
@@ -1316,7 +1321,7 @@ fn verify_covered_rejects_an_edited_tachygram() {
         (stamped.stamp, pairs, stamped.fee_auth, stamped.fee.v_fee),
     );
     assert_matches!(
-        bundle.verify_covered(&[]),
+        bundle.verify_covered::<StrippedStamp>(&[]),
         Err(VerifyCoverageError::WrongTachygramSet)
     );
 }
@@ -1397,11 +1402,14 @@ fn bundle_lift_preserves_coverage() {
     let pool = PoolSim::shared();
     let (_, bundle) = spend(app);
 
-    let covered = bundle.verify_covered(&[]).unwrap();
+    let covered = bundle.verify_covered::<StrippedStamp>(&[]).unwrap();
 
     let mut original_bytes = Vec::new();
     bundle.write(&mut original_bytes).unwrap();
-    let unchanged = bundle.clone().lift(rng, app, &[], vec![]).unwrap();
+    let unchanged = bundle
+        .clone()
+        .lift::<_, StrippedStamp>(rng, app, &[], vec![])
+        .unwrap();
     let mut unchanged_bytes = Vec::new();
     unchanged.write(&mut unchanged_bytes).unwrap();
     assert_eq!(unchanged_bytes, original_bytes);
@@ -1420,14 +1428,19 @@ fn bundle_lift_preserves_coverage() {
 
     let span = pool.anchor_span(app, BlockHeight(1)..=BlockHeight(2));
 
-    let lifted = bundle.lift(rng, app, &[], vec![span]).unwrap();
+    let lifted = bundle
+        .lift::<_, StrippedStamp>(rng, app, &[], vec![span])
+        .unwrap();
     let mut body_after = Vec::new();
     lifted.clone().strip().0.write(&mut body_after).unwrap();
     assert_eq!(body_after, body_before);
 
     assert_eq!(lifted.stamp.anchor, pool.block(BlockHeight(2)).anchor());
     assert!(lifted.is_autonome());
-    assert_eq!(lifted.verify_covered(&[]).unwrap(), covered);
+    assert_eq!(
+        lifted.verify_covered::<StrippedStamp>(&[]).unwrap(),
+        covered
+    );
     assert!(lifted.verify_proof(rng, app, &covered.0).unwrap());
 }
 
@@ -1494,7 +1507,7 @@ fn bundle_lift_over_an_aggregate() {
             &[&adjunct_a, &adjunct_b],
         )
         .unwrap();
-    let adjuncts = [adjunct_a.as_dyn(), adjunct_b.as_dyn()];
+    let adjuncts = [&adjunct_a, &adjunct_b];
     let adjunct_txids = innocent.stamp.adjuncts.clone();
 
     let first = epoch1.first_block();

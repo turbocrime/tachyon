@@ -156,10 +156,11 @@ A mempool node:
 1. Looks up each listed `txid`, and holds off while any is missing.
 2. Relies on each listed transaction having been accepted on its own stamp.
    Nothing in a mempool is unproven, so rule B below has no mempool form.
-3. Strips a copy of each and verifies the aggregate with them.
-   This is the check a block validator runs, on the bytes a block holds.
-4. Strips a listed transaction that is itself an aggregate like any other.
-   Its own list goes with its stamp, and the outer list already names those transactions.
+3. Verifies the aggregate against the listed bundles.
+   Coverage uses the same bundle data whether the listed bundles are stamped in the mempool or stripped in a block.
+
+When a listed transaction is itself an aggregate, the node does not follow its list.
+The outer list already names those transactions.
 
 The aggregate then replaces the stamps of exactly the listed transactions.
 An aggregate and the stamped form of a transaction it lists are alternatives: a block holds that transaction stripped under the aggregate or stamped without it.
@@ -213,7 +214,7 @@ A listed bundle the stamp does not cover adds to the derived tachygram union, an
 
 A `txid` names a transaction and not one of its authorization forms.
 Several forms of one `txid` can sit in a mempool, differing in fee, fee change or pairs.
-A node strips the form it holds and verifies the aggregate with it.
+A node verifies the aggregate against the form it holds.
 A wrong form fails before stamp proof verification, at the tachygram set check or at the stamp proof's output slot comparison.
 
 A stripped adjunct keeps its entire bundle body, including `cvFeeMaxTachyon`, `vActionTachygramsTachyon`, `vFeeTachyon`, and `cmChangeTachyon`. Its trailer is empty. The covering verifier collects the pairs and fee descriptors from the published bodies.
