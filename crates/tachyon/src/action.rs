@@ -1,18 +1,18 @@
 //! Tachyon Action descriptions.
 
 use alloc::vec::Vec;
-use core::{cmp, cmp::Ord, marker::PhantomData};
+use core::{cmp, cmp::Ord};
 
 use corez::io::{self, Read, Write};
 use derive_more::{Debug, Display, Eq as TotalEq, PartialEq};
 use udon::curve::Affine as _;
 
 use crate::{
-    entropy::{ActionEntropy, ActionRandomizer},
-    keys::{private, public},
+    entropy::ActionEntropy,
+    keys::public,
     note::Note,
     pasta::EpAffine,
-    primitives::{ActionDigest, Effect, Tachygram, effect},
+    primitives::{ActionDigest, Effect, Tachygram},
     reddsa, serialization, value,
 };
 
@@ -115,82 +115,15 @@ pub struct Authorized {
 /// A planned Tachyon action, not yet authorized.
 #[derive(Clone, Copy, Debug)]
 pub struct Plan<E: Effect> {
-    /// Randomized action verification key.
-    pub rk: public::ActionVerificationKey,
     /// The note being spent or created.
     pub note: Note,
     /// Per-action entropy for alpha derivation.
     pub theta: ActionEntropy,
     /// Value commitment trapdoor.
     pub rcv: value::Trapdoor,
-    /// Effect marker (zero-sized).
-    pub _effect: PhantomData<E>,
-}
-
-impl<E: Effect> PartialEq for Plan<E> {
-    fn eq(&self, other: &Self) -> bool {
-        self.descriptor() == other.descriptor()
-    }
-}
-
-impl<E: Effect> PartialOrd for Plan<E> {
-    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        self.descriptor().partial_cmp(&other.descriptor())
-    }
-}
-
-impl Plan<effect::Spend> {
-    /// Assemble a spend action plan.
-    ///
-    /// $\mathsf{rk} = \mathsf{ak} + [\alpha]\mathcal{G}$
-    ///
-    /// # Caller contract
-    ///
-    /// The caller confirms that the randomizer $\alpha$ its `theta` gives fits
-    /// `Fp::CAPACITY` bits, or it risks producing a proof that is false.
-    #[must_use]
-    pub fn spend(
-        note: Note,
-        theta: ActionEntropy,
-        rcv: value::Trapdoor,
-        derive_rk: impl FnOnce(ActionRandomizer<effect::Spend>) -> public::ActionVerificationKey,
-    ) -> Self {
-        let cm = note.commitment();
-        let alpha = theta.randomizer::<effect::Spend>(cm);
-
-        Self {
-            rk: derive_rk(alpha),
-            note,
-            theta,
-            rcv,
-            _effect: PhantomData,
-        }
-    }
-}
-
-impl Plan<effect::Output> {
-    /// Assemble an output action plan.
-    ///
-    /// $\mathsf{rk} = [\alpha]\mathcal{G}$.
-    ///
-    /// # Caller contract
-    ///
-    /// The caller confirms that the randomizer $\alpha$ its `theta` gives fits
-    /// `Fp::CAPACITY` bits, or it risks producing a proof that is false.
-    #[must_use]
-    pub fn output(note: Note, theta: ActionEntropy, rcv: value::Trapdoor) -> Self {
-        let cm = note.commitment();
-        let alpha = theta.randomizer::<effect::Output>(cm);
-        let rsk = private::ActionSigningKey::new(&alpha);
-
-        Self {
-            rk: rsk.derive_action_public(),
-            note,
-            theta,
-            rcv,
-            _effect: PhantomData,
-        }
-    }
+    /// The spend owner, or `()` for an output.
+    #[debug(skip)]
+    pub authority: E::Authority,
 }
 
 impl<E: Effect> Plan<E> {
@@ -204,23 +137,19 @@ impl<E: Effect> Plan<E> {
         E::commit_value(self.rcv, self.note.value)
     }
 
-    /// Derive the action digest.
+    /// Obtain a descriptor for this planned action.
     ///
     /// # Panics
     ///
-    /// Panics if this plan's value commitment or `rk` is the identity point.
-    /// Callers constructing plans must ensure both points are non-identity.
-    #[must_use]
-    pub fn digest(&self, tachygrams: (Tachygram, Tachygram)) -> ActionDigest {
-        ActionDigest::new(self.cv(), self.rk, tachygrams)
-    }
-
-    /// Obtain a descriptor for this planned action.
+    /// Panics if the note's `rcm` is zero.
     #[must_use]
     pub fn descriptor(&self) -> Descriptor {
         Descriptor {
             cv: self.cv(),
-            rk: self.rk,
+            rk: E::derive_rk(
+                &self.authority,
+                &self.theta.randomizer::<E>(self.note.commitment()),
+            ),
         }
     }
 }

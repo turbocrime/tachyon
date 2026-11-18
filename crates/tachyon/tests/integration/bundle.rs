@@ -283,9 +283,12 @@ fn duplicated_spend_cannot_inflate() {
     let anchor = spendable.data().2;
     let rcv = value::Trapdoor::random(rng);
     let theta = ActionEntropy::random(rng);
-    let plan = action::Plan::spend(note, theta, rcv, |alpha| {
-        wallet.pak.ak.derive_action_public(&alpha)
-    });
+    let plan = action::Plan::<effect::Spend> {
+        note,
+        theta,
+        rcv,
+        authority: wallet.pak.ak,
+    };
     let descriptor = plan.descriptor();
     let secret = wallet.note_secret(app, note);
     let max_fee_note = wallet.random_note(0);
@@ -1207,9 +1210,12 @@ fn spend_plan_at(
 ) -> action::Plan<effect::Spend> {
     let note = wallet.random_note(value);
     let (rcv, theta) = (value::Trapdoor::random(rng), ActionEntropy::random(rng));
-    action::Plan::spend(note, theta, rcv, |alpha| {
-        ask.derive_action_private(&alpha).derive_action_public()
-    })
+    action::Plan {
+        note,
+        theta,
+        rcv,
+        authority: ask.derive_auth_public(),
+    }
 }
 
 #[test]

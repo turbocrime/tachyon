@@ -46,7 +46,12 @@ pub fn random_action<RNG: CryptoRng>(rng: &mut RNG) -> (action::Descriptor, acti
 pub fn output_plan<RNG: CryptoRng>(rng: &mut RNG, note: Note) -> action::Plan<effect::Output> {
     let rcv = value::Trapdoor::random(rng);
     let theta = ActionEntropy::random(rng);
-    action::Plan::output(note, theta, rcv)
+    action::Plan {
+        note,
+        theta,
+        rcv,
+        authority: (),
+    }
 }
 
 pub(crate) fn shared_sk() -> private::SpendingKey {
@@ -362,19 +367,18 @@ impl WalletSim {
                 );
                 let rcv = value::Trapdoor::random(rng);
                 let theta = ActionEntropy::random(rng);
-                spend_plans.push(action::Plan::spend(note, theta, rcv, |alpha| {
-                    self.pak.ak.derive_action_public(&alpha)
-                }));
+                spend_plans.push(action::Plan {
+                    note,
+                    theta,
+                    rcv,
+                    authority: self.pak.ak,
+                });
                 spend_pcds.push((self.pak, self.note_secret(app, note), spendable, vec![]));
             }
             let output_plans = outputs
                 .iter()
                 .copied()
-                .map(|note| {
-                    let rcv = value::Trapdoor::random(rng);
-                    let theta = ActionEntropy::random(rng);
-                    action::Plan::output(note, theta, rcv)
-                })
+                .map(|note| output_plan(rng, note))
                 .collect();
             let plan = bundle::Plan::new(spend_plans, output_plans, max_fee_note);
             let sighash = mock_sighash(plan.commitment().unwrap());

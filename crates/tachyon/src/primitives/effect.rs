@@ -2,7 +2,7 @@
 //!
 //! [`Spend`] and [`Output`] are zero-sized marker types that parameterize
 //! [`Plan`](crate::action::Plan),
-//! [`ActionRandomizer`](crate::entropy::ActionRandomizer),
+//! [`ActionRandomizer`],
 //! [`ActionSigningKey`](crate::keys::private::ActionSigningKey), and key types
 //! to enforce the spend/output distinction at compile time.
 
@@ -10,7 +10,8 @@ use udon::field::Field as _;
 
 use crate::{
     digest::poseidon,
-    entropy::ActionEntropy,
+    entropy::{ActionEntropy, ActionRandomizer},
+    keys::{SpendValidatingKey, private, public},
     note,
     pasta::{Fp, Fq},
     value,
@@ -33,6 +34,15 @@ mod sealed {
 
 /// Sealed trait marking an action effect (spend or output).
 pub trait Effect: sealed::Sealed {
+    /// The spend owner, or `()` for an output.
+    type Authority: Copy;
+
+    /// Derive the action verification key from its randomizer and authority.
+    fn derive_rk(
+        authority: &Self::Authority,
+        alpha: &ActionRandomizer<Self>,
+    ) -> public::ActionVerificationKey;
+
     /// Derive this effect's $\alpha$ scalar from per-action entropy and a note
     /// commitment.
     fn derive_alpha(theta: ActionEntropy, cm: note::Commitment) -> Fq;
@@ -51,6 +61,15 @@ pub struct Spend;
 pub struct Output;
 
 impl Effect for Spend {
+    type Authority = SpendValidatingKey;
+
+    fn derive_rk(
+        authority: &Self::Authority,
+        alpha: &ActionRandomizer<Self>,
+    ) -> public::ActionVerificationKey {
+        authority.derive_action_public(alpha)
+    }
+
     fn derive_alpha(theta: ActionEntropy, cm: note::Commitment) -> Fq {
         embed(poseidon::alpha_spend(theta.0, cm.into()))
     }
@@ -61,6 +80,15 @@ impl Effect for Spend {
 }
 
 impl Effect for Output {
+    type Authority = ();
+
+    fn derive_rk(
+        _authority: &Self::Authority,
+        alpha: &ActionRandomizer<Self>,
+    ) -> public::ActionVerificationKey {
+        private::ActionSigningKey::new(alpha).derive_action_public()
+    }
+
     fn derive_alpha(theta: ActionEntropy, cm: note::Commitment) -> Fq {
         embed(poseidon::alpha_output(theta.0, cm.into()))
     }

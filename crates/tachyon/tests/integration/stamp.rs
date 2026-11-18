@@ -16,7 +16,7 @@ use rand_core::CryptoRng;
 use udon::{curve::Projective as _, field::Field as _};
 use zcash_tachyon::{
     ActionDigest, ActionSetPoly, BlockHeight, CompactSize, ProofStamp, StrippedStamp, Tachygram,
-    TachygramSetPoly, action, bundle,
+    TachygramSetPoly, action, bundle, effect,
     entropy::ActionEntropy,
     fee,
     pasta::Fp,
@@ -98,13 +98,19 @@ fn plan_prove_rejects_invalid_inputs() {
     let anchor = sp_a.data().2;
 
     let (rcv_a, theta_a) = (value::Trapdoor::random(rng), ActionEntropy::random(rng));
-    let plan_a = action::Plan::spend(note_a, theta_a, rcv_a, |alpha| {
-        user.pak.ak.derive_action_public(&alpha)
-    });
+    let plan_a = action::Plan::<effect::Spend> {
+        note: note_a,
+        theta: theta_a,
+        rcv: rcv_a,
+        authority: user.pak.ak,
+    };
     let (rcv_b, theta_b) = (value::Trapdoor::random(rng), ActionEntropy::random(rng));
-    let plan_b = action::Plan::spend(note_b, theta_b, rcv_b, |alpha| {
-        user.pak.ak.derive_action_public(&alpha)
-    });
+    let plan_b = action::Plan::<effect::Spend> {
+        note: note_b,
+        theta: theta_b,
+        rcv: rcv_b,
+        authority: user.pak.ak,
+    };
     let max_fee_note = user.random_note(0);
     let fee_digest = fee::Descriptor {
         cv_feemax: max_fee_note.cv_feemax(),
@@ -164,17 +170,22 @@ fn plan_prove_rejects_invalid_inputs() {
                 rng,
                 app,
                 [
-                    plan_a.digest(swapped_pairs[&plan_a.descriptor()]),
-                    plan_b.digest(swapped_pairs[&plan_b.descriptor()]),
+                    plan_a
+                        .descriptor()
+                        .digest(swapped_pairs[&plan_a.descriptor()]),
+                    plan_b
+                        .descriptor()
+                        .digest(swapped_pairs[&plan_b.descriptor()]),
                     fee_digest
                 ]
             )
             .unwrap()
     );
 
-    let foreign_a = action::Plan::spend(note_a, theta_a, rcv_a, |alpha| {
-        other.pak.ak.derive_action_public(&alpha)
-    });
+    let foreign_a = action::Plan {
+        authority: other.pak.ak,
+        ..plan_a
+    };
     let AutonomeParts {
         stamp: foreign,
         pairs: foreign_pairs,
@@ -194,7 +205,9 @@ fn plan_prove_rejects_invalid_inputs() {
                 rng,
                 app,
                 [
-                    foreign_a.digest(foreign_pairs[&foreign_a.descriptor()]),
+                    foreign_a
+                        .descriptor()
+                        .digest(foreign_pairs[&foreign_a.descriptor()]),
                     fee_digest
                 ]
             )
@@ -216,9 +229,12 @@ fn plan_prove_lifts_a_spend_along_spans() {
     let plan_anchor = pool.block(plan_height).anchor();
 
     let (rcv, theta) = (value::Trapdoor::random(rng), ActionEntropy::random(rng));
-    let spend = action::Plan::spend(note, theta, rcv, |alpha| {
-        user.pak.ak.derive_action_public(&alpha)
-    });
+    let spend = action::Plan::<effect::Spend> {
+        note,
+        theta,
+        rcv,
+        authority: user.pak.ak,
+    };
     let output = output_plan(rng, user.random_note(200));
     let secret = user.note_secret(app, note);
     let max_fee_note = user.random_note(0);
@@ -452,9 +468,12 @@ fn overlapping_stamps_cannot_aggregate() {
     let spendable = wallet.spendable_init(app, pool, &note, BlockHeight(1));
     let rcv = value::Trapdoor::random(rng);
     let theta = ActionEntropy::random(rng);
-    let spend_plan = action::Plan::spend(note, theta, rcv, |alpha| {
-        wallet.pak.ak.derive_action_public(&alpha)
-    });
+    let spend_plan = action::Plan {
+        note,
+        theta,
+        rcv,
+        authority: wallet.pak.ak,
+    };
     let output = output_plan(rng, wallet.random_note(600));
     let plan = bundle::Plan::new(vec![spend_plan], vec![output], wallet.random_note(0));
     let signatures = plan

@@ -57,7 +57,7 @@ impl ProofAuthorizingKey {
 /// [`derive_action_public`](Self::derive_action_public) to compute the
 /// per-action `rk` for the proof witness. Component of
 /// [`ProofAuthorizingKey`] for proof authorization without spend authority.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpendValidatingKey(
     #[debug(skip)] pub(crate) reddsa::VerificationKey<reddsa::ActionAuth>,
 );
