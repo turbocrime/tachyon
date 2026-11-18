@@ -164,9 +164,11 @@ end
 
 ## Lifecycle
 
-Signing a `bundle::Plan` returns a descriptor-keyed action signature map and the binding signature. Independently, `stamp::Plan::prove` returns `AutonomeParts`: the proof stamp, tachygram pairs keyed by descriptor, fee, and change commitment.
+Signing a `bundle::Plan` returns a descriptor-keyed action signature map and the binding signature. Independently, `ActionsPlan::prove` proves the actions at a chosen anchor, and `ActionsProof::fee` applies the fee. For a bundle with no actions, `AutonomeParts::seed` proves a zero-fee stamp directly. Both paths return `AutonomeParts`: the proof stamp, tachygram pairs keyed by descriptor, fee, and change commitment.
 
 `bundle::Plan::assemble(signatures, autonome_parts)` requires the plan, pair map, and signature map to have identical descriptor keys and panics if they differ. It joins the maps in descriptor order into `actions` and attaches the fee, change, and stamp. This checks keys, not pair values or proof validity. Signing and proving may run in either order or concurrently.
+
+To change the fee, apply it again to the retained action proof and assemble with the same signatures.
 
 Users create transactions containing their individual actions and individual stamp, known as **autonomes**. These are broadcast to the p2p network. Before block inclusion, aggregators strip and merge stamps from selected transactions, producing **aggregates** (transactions carrying merged stamps) and **adjuncts** (transactions stripped of their stamp).
 

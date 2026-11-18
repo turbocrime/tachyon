@@ -82,13 +82,13 @@ fn fee_less_output_bundle(
                 &wallet.sk.derive_auth_private(),
             )
             .unwrap();
-        let proof = stamp::AutonomeParts {
+        let autonome_parts = stamp::AutonomeParts {
             stamp,
             pairs: BTreeMap::from([(output_plan.descriptor(), (cm.min(pad), cm.max(pad)))]),
             cm_change: max_fee_note.commitment().into(),
             fee: value::Positive::ZERO,
         };
-        plan.assemble(signatures, proof)
+        plan.assemble(signatures, autonome_parts)
     })
 }
 
@@ -231,6 +231,7 @@ fn fee_is_chosen_after_signing_up_to_the_max_and_applies_once() {
     let max_fee_note = spend_with_fee_max_fee_note();
     let note = PoolSim::shared_note(1000);
     let spend_pcds = vec![(
+        wallet.pak,
         wallet.note_secret(app, note),
         wallet.spendable_init(app, PoolSim::shared(), &note, BlockHeight(1)),
         vec![],
@@ -246,13 +247,17 @@ fn fee_is_chosen_after_signing_up_to_the_max_and_applies_once() {
         at_fixture_fee.binding_sig,
     );
 
+    let actions = bundle_plan
+        .actions_plan(anchor)
+        .prove(rng, app, spend_pcds)
+        .unwrap();
     let [without_fee, maximum_fee] = [0u64, 300].map(|amount| {
         let fee = value::Positive::try_from(amount).unwrap();
-        let proof = bundle_plan
-            .stamp_plan(anchor, fee)
-            .prove(rng, app, &wallet.pak, spend_pcds.clone())
+        let autonome_parts = actions
+            .clone()
+            .fee(rng, app, bundle_plan.max_fee_note(), fee)
             .unwrap();
-        bundle_plan.assemble(signatures.clone(), proof)
+        bundle_plan.assemble(signatures.clone(), autonome_parts)
     });
     let bundles = [without_fee, at_fixture_fee, maximum_fee];
     for bundle in &bundles {

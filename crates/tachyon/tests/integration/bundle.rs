@@ -296,8 +296,10 @@ fn duplicated_spend_cannot_inflate() {
         cm_change,
         fee,
     } = Plan::new(vec![plan], vec![], max_fee_note)
-        .stamp_plan(anchor, value::Positive::ZERO)
-        .prove(rng, app, &wallet.pak, vec![(secret, spendable, vec![])])
+        .actions_plan(anchor)
+        .prove(rng, app, vec![(wallet.pak, secret, spendable, vec![])])
+        .unwrap()
+        .fee(rng, app, max_fee_note, value::Positive::ZERO)
         .unwrap();
     let doubled = 2 * i64::try_from(u64::from(note.value)).unwrap();
     let value_balance = value::Balance::try_from(doubled).unwrap();

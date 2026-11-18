@@ -280,7 +280,7 @@ A modified descriptor breaks both checks. Changing a pair's members breaks stamp
 
 ## Detailed Sequence
 
-The sequence follows `bundle::Plan` through signing, `stamp::Plan::prove` through proving, `bundle::Plan::assemble` through assembly, and `Bundle::verify` through consensus.
+The sequence follows `bundle::Plan` through signing, `ActionsPlan::prove` and `ActionsProof::fee` (or `AutonomeParts::seed`) through proving, `bundle::Plan::assemble` through assembly, and `Bundle::verify` through consensus.
 Custody is drawn as a separate participant for a device-split integration that does not exist yet.
 `Plan::sign` takes an opaque sighash and signs it; the recomputation and sighash confirmation shown under Custody are requirements on such an integration, not implemented API.
 The spend lineage (`NoteSecret`, `NoteSpendable`, anchor spans) is built during wallet sync and is described in [Proof Tree](./proof-tree.md).
@@ -368,58 +368,63 @@ par Authorizing
 and Proving
     rect rgb(138, 43, 226, 0.1)
         note over User: select anchor
-        note over User: stamp_plan { spends (desc, theta, rcv), outputs (desc, theta, note, rcv), anchor, max_fee_note, fee }
-
         create participant Stamper
-        User ->> Stamper: stamp_plan, pak { ak, nk }, per spend (NoteSecret, NoteSpendable, anchor spans)
+        User ->> Stamper: stamp request
+        opt has actions
+            create participant Prover
+            User ->> Prover: ActionsPlan, per spend (pak, NoteSecret, NoteSpendable, anchor spans)
 
         loop per spend action
-            note over Stamper: checked first, with spans the last must end at stamp_plan.anchor, without spans the spendable anchor must already equal it
+            note over Prover: with spans the last must end at the plan anchor, without spans the spendable anchor must already equal it
             critical SpendBind(NoteSpendable, NoteSecret), witness rcv
-                note over Stamper: spendable.cm == secret.cm
-                note over Stamper: mk = Poseidon_NfMaster(psi, nk), carried by NoteSecret
-                note over Stamper: nf_e = PRF(mk, e), nf_next = PRF(mk, e + 1)
-                note over Stamper: cv = Pedersen(v, rcv)
-                note over Stamper: SpendHeader (cm, nf_e, nf_next, anchor, pk, cv)
+                note over Prover: spendable.cm == secret.cm
+                note over Prover: mk = Poseidon_NfMaster(psi, nk), carried by NoteSecret
+                note over Prover: nf_e = PRF(mk, e), nf_next = PRF(mk, e + 1)
+                note over Prover: cv = Pedersen(v, rcv)
+                note over Prover: SpendHeader (cm, nf_e, nf_next, anchor, pk, cv)
             end
             critical SpendAction(SpendHeader), witness theta, pak
-                note over Stamper: pk == Poseidon_PkDerive(x(ak), y(ak), nk)
-                note over Stamper: alpha = Poseidon_Spend(theta, cm)
-                note over Stamper: rk = ak + [alpha]G
-                note over Stamper: d = Poseidon_ActionDg(x(cv), y(cv), x(rk), y(rk), nf_e + nf_next, nf_e * nf_next)
-                note over Stamper: Actions (Commit(X - d), Commit((X - nf_e)(X - nf_next)), anchor)
+                note over Prover: pk == Poseidon_PkDerive(x(ak), y(ak), nk)
+                note over Prover: alpha = Poseidon_Spend(theta, cm)
+                note over Prover: rk = ak + [alpha]G
+                note over Prover: d = Poseidon_ActionDg(x(cv), y(cv), x(rk), y(rk), nf_e + nf_next, nf_e * nf_next)
+                note over Prover: Actions (Commit(X - d), Commit((X - nf_e)(X - nf_next)), anchor)
             end
             loop per supplied anchor span, possibly none
-                note over Stamper: ActionLift, anchor is the span start or a member, becomes the span end
+                note over Prover: ActionLift, anchor is the span start or a member, becomes the span end
             end
         end
 
         loop per output action
             critical OutputBind, witness note, rcv
-                note over Stamper: cm = Poseidon_CmDerive(rcm, pk, v, psi)
-                note over Stamper: pad = Poseidon_CmOutPad(rcm, pk, v, psi)
-                note over Stamper: cv = Pedersen(-v, rcv)
-                note over Stamper: OutputHeader (cm, pad, cv)
+                note over Prover: cm = Poseidon_CmDerive(rcm, pk, v, psi)
+                note over Prover: pad = Poseidon_CmOutPad(rcm, pk, v, psi)
+                note over Prover: cv = Pedersen(-v, rcv)
+                note over Prover: OutputHeader (cm, pad, cv)
             end
             critical OutputAction(OutputHeader), witness theta, anchor
-                note over Stamper: alpha = Poseidon_Output(theta, cm)
-                note over Stamper: rk = [alpha]G
-                note over Stamper: d = Poseidon_ActionDg(x(cv), y(cv), x(rk), y(rk), cm + pad, cm * pad)
-                note over Stamper: Actions (Commit(X - d), Commit((X - cm)(X - pad)), anchor)
+                note over Prover: alpha = Poseidon_Output(theta, cm)
+                note over Prover: rk = [alpha]G
+                note over Prover: d = Poseidon_ActionDg(x(cv), y(cv), x(rk), y(rk), cm + pad, cm * pad)
+                note over Prover: Actions (Commit(X - d), Commit((X - cm)(X - pad)), anchor)
             end
         end
 
         loop while Actions > 1
             critical ActionMerge(left, right)
-                note over Stamper: left.anchor == right.anchor
-                note over Stamper: merged_action = left.action_poly * right.action_poly
-                note over Stamper: merged_tg = left.tg_poly * right.tg_poly
-                note over Stamper: Actions (Commit(merged_action), Commit(merged_tg), anchor)
+                note over Prover: left.anchor == right.anchor
+                note over Prover: merged_action = left.action_poly * right.action_poly
+                note over Prover: merged_tg = left.tg_poly * right.tg_poly
+                note over Prover: Actions (Commit(merged_action), Commit(merged_tg), anchor)
             end
         end
 
+        note over Prover: rerandomize ActionsProof before handoff
+        Prover ->> Stamper: ActionsProof with pairs and anchor
+        end
         note over Stamper: cv_feemax = Pedersen(-feemax, Poseidon_FeeBlind(pk, psi, rcm))
         alt no actions
+            User ->> Stamper: max fee note and anchor
             critical FeeSeed, witness max_fee_note, anchor
                 note over Stamper: feemax == 0, so fee == 0
                 note over Stamper: cm_chg = Poseidon_CmDerive(rcm, pk, 0, psi)
@@ -428,6 +433,7 @@ and Proving
                 note over Stamper: Stamp header (bridge(cTachygrams), anchor)
             end
         else
+            User ->> Stamper: max fee note and chosen fee
             critical FeeFuse(Actions), witness max_fee_note, fee
                 note over Stamper: cm_chg = Poseidon_CmDerive(rcm, pk, feemax - fee, psi)
                 note over Stamper: d_fee = Poseidon_FeeDg(x(cv_feemax), y(cv_feemax), fee, cm_chg)
@@ -437,16 +443,16 @@ and Proving
                 note over Stamper: Stamp header (bridge(cTachygrams), anchor)
             end
         end
-        note over Stamper: rerandomize proof
+        note over Stamper: rerandomize the stamp proof
         note over Stamper: adjuncts = empty
         destroy Stamper
         note over Stamper: each pair smaller tachygram first, pairs in descriptor order
-        Stamper ->> User: (ProofStamp { anchor, tachygram_set, adjuncts, proof }, descriptor to pair map, cm_change, fee)
+        Stamper ->> User: AutonomeParts { stamp, pairs, fee, cm_change }
     end
 end
 
 critical stamp
-    note over User: bundle::Plan::assemble(signatures, proof)
+    note over User: bundle::Plan::assemble(signatures, autonome_parts)
     note over User: panic if the plan, signature, and pair descriptor keys differ
     note over User: join maps in descriptor order into actions[] (descriptor, signature, pair)
     note over User: attach fee, cm_change, and stamp; key matching alone does not verify the proof
