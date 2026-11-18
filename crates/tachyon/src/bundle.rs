@@ -380,32 +380,6 @@ impl Plan {
         ))
     }
 
-    /// Build a [`stamp::Plan`] from this bundle plan.
-    ///
-    /// Collects each action's descriptor and proof witnesses, and the max fee
-    /// note with `fee`. The returned plan is ready to prove with
-    /// [`stamp::Plan::prove`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if `fee` exceeds the max fee note's value.
-    #[must_use]
-    pub fn stamp_plan(&self, anchor: Anchor, fee: value::Positive) -> stamp::Plan {
-        let spends = self
-            .spends
-            .iter()
-            .map(|plan| (plan.descriptor(), plan.theta, plan.rcv))
-            .collect();
-
-        let outputs = self
-            .outputs
-            .iter()
-            .map(|plan| (plan.descriptor(), plan.theta, plan.note, plan.rcv))
-            .collect();
-
-        stamp::Plan::new(spends, outputs, anchor, self.max_fee_note, fee)
-    }
-
     /// Collect the action witnesses for proving at `anchor`, without the fee.
     #[must_use]
     pub fn actions_plan(&self, anchor: Anchor) -> stamp::ActionsPlan {
