@@ -16,9 +16,7 @@ use rand_core::CryptoRng;
 use udon::{curve::Projective as _, field::Field as _};
 use zcash_tachyon::{
     ActionDigest, ActionSetPoly, BlockHeight, CompactSize, ProofStamp, StrippedStamp, Tachygram,
-    TachygramSetPoly, action, bundle, effect,
-    entropy::ActionEntropy,
-    fee,
+    TachygramSetPoly, action, bundle, effect, fee,
     pasta::Fp,
     stamp::{
         self, AutonomeParts, FeeError, MergeError, ProveError, SeedError,
@@ -35,8 +33,8 @@ use crate::fixtures::{
     mock_sighash, mock_txid,
     pool::PoolSim,
     wallet::{
-        WalletSim, alice, alice_output_note, bob, later_output, lifted, merged, output_plan,
-        random_action, shared_sk, spend,
+        WalletSim, action_randomness, alice, alice_output_note, bob, later_output, lifted, merged,
+        output_plan, random_action, shared_sk, spend,
     },
 };
 
@@ -97,21 +95,21 @@ fn plan_prove_rejects_invalid_inputs() {
     let sp_b = user.spendable_init(app, pool, &note_b, height);
     let anchor = sp_a.data().2;
 
-    let (rcv_a, theta_a) = (value::Trapdoor::random(rng), ActionEntropy::random(rng));
+    let (rcv_a, theta_a) = action_randomness::<effect::Spend>(rng, note_a);
     let plan_a = action::Plan::<effect::Spend> {
         note: note_a,
         theta: theta_a,
         rcv: rcv_a,
         authority: user.pak.ak,
     };
-    let (rcv_b, theta_b) = (value::Trapdoor::random(rng), ActionEntropy::random(rng));
+    let (rcv_b, theta_b) = action_randomness::<effect::Spend>(rng, note_b);
     let plan_b = action::Plan::<effect::Spend> {
         note: note_b,
         theta: theta_b,
         rcv: rcv_b,
         authority: user.pak.ak,
     };
-    let max_fee_note = user.random_note(0);
+    let max_fee_note = user.random_fee_note(0);
     let fee_digest = fee::Descriptor {
         cv_feemax: max_fee_note.cv_feemax(),
         v_fee: value::Positive::ZERO,
@@ -228,7 +226,7 @@ fn plan_prove_lifts_a_spend_along_spans() {
     let spendable = user.spendable_init(app, pool, &note, cm_height);
     let plan_anchor = pool.block(plan_height).anchor();
 
-    let (rcv, theta) = (value::Trapdoor::random(rng), ActionEntropy::random(rng));
+    let (rcv, theta) = action_randomness::<effect::Spend>(rng, note);
     let spend = action::Plan::<effect::Spend> {
         note,
         theta,
@@ -237,7 +235,7 @@ fn plan_prove_lifts_a_spend_along_spans() {
     };
     let output = output_plan(rng, user.random_note(200));
     let secret = user.note_secret(app, note);
-    let max_fee_note = user.random_note(0);
+    let max_fee_note = user.random_fee_note(0);
     let plan = stamp::ActionsPlan::new(
         vec![(spend.descriptor(), theta, rcv)],
         vec![(output.descriptor(), output.theta, output.note, output.rcv)],
@@ -332,7 +330,7 @@ fn partial_actions_proofs_lift_and_merge_before_fee() {
     let end = BlockHeight(2);
     let left_anchor = pool.block(start).anchor();
     let right_anchor = pool.block(end).anchor();
-    let max_fee_note = wallet.random_note(0);
+    let max_fee_note = wallet.random_fee_note(0);
     let [first, second] = [100, 200].map(|amount| output_plan(rng, wallet.random_note(amount)));
     let [left, right] = [(first, left_anchor), (second, right_anchor)].map(|(output, anchor)| {
         bundle::Plan::new(vec![], vec![output], max_fee_note)
@@ -380,7 +378,7 @@ fn proving_rejects_empty_actions_and_invalid_note_openings() {
     let anchor = PoolSim::shared().mint_anchor();
     let wallet = WalletSim::new(shared_sk());
     let zero = value::Positive::ZERO;
-    let max_fee_note = wallet.random_note(0);
+    let max_fee_note = wallet.random_fee_note(0);
     let mut zero_rcm = max_fee_note;
     zero_rcm.rcm = Fp::ZERO.into();
 
@@ -444,7 +442,7 @@ fn overlapping_stamps_cannot_aggregate() {
     let fees_a = BTreeMap::from([(alice_bundle.fee, alice_bundle.fee_auth)]);
     let output_a = alice_bundle.stamp;
     let plan_b = output_plan(rng, alice_note);
-    let max_fee_note = wallet.random_note(0);
+    let max_fee_note = wallet.random_fee_note(0);
     let AutonomeParts {
         stamp: output_b,
         pairs: desc_b,
@@ -466,8 +464,7 @@ fn overlapping_stamps_cannot_aggregate() {
     let (_, spend_a) = spend(app);
     let note = PoolSim::shared_note(1000);
     let spendable = wallet.spendable_init(app, pool, &note, BlockHeight(1));
-    let rcv = value::Trapdoor::random(rng);
-    let theta = ActionEntropy::random(rng);
+    let (rcv, theta) = action_randomness::<effect::Spend>(rng, note);
     let spend_plan = action::Plan {
         note,
         theta,
@@ -475,7 +472,7 @@ fn overlapping_stamps_cannot_aggregate() {
         authority: wallet.pak.ak,
     };
     let output = output_plan(rng, wallet.random_note(600));
-    let plan = bundle::Plan::new(vec![spend_plan], vec![output], wallet.random_note(0));
+    let plan = bundle::Plan::new(vec![spend_plan], vec![output], wallet.random_fee_note(0));
     let signatures = plan
         .sign(
             rng,

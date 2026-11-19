@@ -17,9 +17,7 @@ use zcash_tachyon::{
     bundle::{Plan, PlanError, Signature},
     constants::MAX_MONEY,
     digest::blake2b,
-    effect,
-    entropy::ActionEntropy,
-    fee,
+    effect, fee,
     keys::private,
     pasta::{Ep, Eq, Fp},
     stamp::{self, ProofStamp, StrippedStamp},
@@ -31,8 +29,8 @@ use crate::fixtures::{
     mock_sighash, mock_txid,
     pool::PoolSim,
     wallet::{
-        WalletSim, alice, entry_spends, merged, output_plan, random_action, shared_sk, spend,
-        zero_action,
+        WalletSim, action_randomness, alice, entry_spends, merged, output_plan, random_action,
+        shared_sk, spend, zero_action,
     },
 };
 
@@ -56,7 +54,7 @@ fn sign_and_apply_signatures_verify_every_plan_shape() {
                 .iter()
                 .map(|&amount| output_plan(rng, wallet.random_note(amount)))
                 .collect(),
-            wallet.random_note(0),
+            wallet.random_fee_note(0),
         );
         let sighash = mock_sighash(plan.commitment().unwrap());
         let signatures = plan.sign(rng, &sighash, &ask).unwrap();
@@ -75,7 +73,7 @@ fn apply_signatures_rejects_wrong_sig_count() {
     let spend_a = spend_plan_at(rng, &wallet, &ask, 200);
     let spend_b = spend_plan_at(rng, &wallet, &ask, 100);
     let spend_c = spend_plan_at(rng, &wallet, &ask, 300);
-    let plan = Plan::new(vec![spend_a, spend_b], vec![], wallet.random_note(0));
+    let plan = Plan::new(vec![spend_a, spend_b], vec![], wallet.random_fee_note(0));
     let sighash = mock_sighash(plan.commitment().unwrap());
     let sig = ask
         .derive_action_private(
@@ -109,7 +107,7 @@ fn apply_signatures_with_shuffled_sigs_fails_verification() {
 
     let spend_a = spend_plan_at(rng, &wallet, &ask, 200);
     let spend_b = spend_plan_at(rng, &wallet, &ask, 100);
-    let plan = Plan::new(vec![spend_a, spend_b], vec![], wallet.random_note(0));
+    let plan = Plan::new(vec![spend_a, spend_b], vec![], wallet.random_fee_note(0));
 
     let sighash = mock_sighash(plan.commitment().unwrap());
     let (action_sigs, _) = plan.sign(rng, &sighash, &ask).unwrap();
@@ -217,14 +215,18 @@ fn edited_bundles_fail_binding_verification() {
 
 #[test]
 fn no_bundle_commitment_differs_from_empty_bundle() {
-    let empty_plan = Plan::new(vec![], vec![], WalletSim::new(shared_sk()).random_note(0));
+    let empty_plan = Plan::new(
+        vec![],
+        vec![],
+        WalletSim::new(shared_sk()).random_fee_note(0),
+    );
     assert_ne!(*blake2b::COMMIT_NO_BUNDLE, empty_plan.commitment().unwrap());
 }
 
 #[test]
 fn zero_action_bundle_requires_a_zero_balance() {
     let rng = &mut StdRng::seed_from_u64(0);
-    let max_fee_note = WalletSim::new(shared_sk()).random_note(0);
+    let max_fee_note = WalletSim::new(shared_sk()).random_fee_note(0);
     let plan = Plan::new(vec![], vec![], max_fee_note);
     let sighash = mock_sighash(plan.commitment().unwrap());
     for value_balance in [0i64, 1] {
@@ -281,8 +283,7 @@ fn duplicated_spend_cannot_inflate() {
     let pool = PoolSim::shared();
     let spendable = wallet.spendable_init(app, pool, &note, BlockHeight(1));
     let anchor = spendable.data().2;
-    let rcv = value::Trapdoor::random(rng);
-    let theta = ActionEntropy::random(rng);
+    let (rcv, theta) = action_randomness::<effect::Spend>(rng, note);
     let plan = action::Plan::<effect::Spend> {
         note,
         theta,
@@ -291,7 +292,7 @@ fn duplicated_spend_cannot_inflate() {
     };
     let descriptor = plan.descriptor();
     let secret = wallet.note_secret(app, note);
-    let max_fee_note = wallet.random_note(0);
+    let max_fee_note = wallet.random_fee_note(0);
     let cv_feemax = max_fee_note.cv_feemax();
     let stamp::AutonomeParts {
         stamp: honest_stamp,
@@ -581,7 +582,7 @@ fn read_preserves_action_order() {
 
     let value_balance = value::Balance::try_from(-500i64).unwrap();
     let descriptors: Vec<[u8; 64]> = items.iter().map(|item| item.0).collect();
-    let max_fee_note = wallet.random_note(0);
+    let max_fee_note = wallet.random_fee_note(0);
     let cv_feemax = max_fee_note.cv_feemax();
     let sighash = mock_sighash(blake2b::bundle_commitment(
         &blake2b::action_descriptor_digest(&descriptors),
@@ -834,7 +835,7 @@ fn bundles_round_trip_at_action_count_limits() {
     let (_, stamped) = alice(app);
     let rng = &mut StdRng::seed_from_u64(0);
     let wallet = WalletSim::new(shared_sk());
-    let max_fee_note = wallet.random_note(0);
+    let max_fee_note = wallet.random_fee_note(0);
     let plan = Plan::new(vec![], vec![], max_fee_note);
     let (_, binding_sig) = plan
         .sign(
@@ -1209,7 +1210,7 @@ fn spend_plan_at(
     value: u64,
 ) -> action::Plan<effect::Spend> {
     let note = wallet.random_note(value);
-    let (rcv, theta) = (value::Trapdoor::random(rng), ActionEntropy::random(rng));
+    let (rcv, theta) = action_randomness::<effect::Spend>(rng, note);
     action::Plan {
         note,
         theta,
@@ -1240,7 +1241,7 @@ fn plan_value_balance_is_bounded_by_max_money() {
                 .iter()
                 .map(|&amount| output_plan(rng, wallet.random_note(amount)))
                 .collect(),
-            wallet.random_note(0),
+            wallet.random_fee_note(0),
         );
         if let Some(balance) = expected {
             assert_eq!(

@@ -196,7 +196,7 @@ fn stamp_lift_accepts_only_anchors_the_span_holds() {
         anchor_start,
         &[],
         &[user.random_note(200)],
-        user.random_note(0),
+        user.random_fee_note(0),
         value::Positive::ZERO,
     );
     let (_, fork_bundle) = user.bundle(
@@ -204,7 +204,7 @@ fn stamp_lift_accepts_only_anchors_the_span_holds() {
         fork,
         &[],
         &[user.random_note(200)],
-        user.random_note(0),
+        user.random_fee_note(0),
         value::Positive::ZERO,
     );
     let (_, inner_bundle) = alice(app);

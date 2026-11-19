@@ -36,7 +36,7 @@ pub fn random_action<RNG: CryptoRng>(rng: &mut RNG) -> (action::Descriptor, acti
     let bundle_plan = bundle::Plan::new(
         vec![],
         vec![plan],
-        WalletSim::new(shared_sk()).random_note(0),
+        WalletSim::new(shared_sk()).random_fee_note(0),
     );
     let sighash = mock_sighash(bundle_plan.commitment().unwrap());
     let (action_sigs, _) = bundle_plan.sign(rng, &sighash, &ask).unwrap();
@@ -44,14 +44,33 @@ pub fn random_action<RNG: CryptoRng>(rng: &mut RNG) -> (action::Descriptor, acti
 }
 
 pub fn output_plan<RNG: CryptoRng>(rng: &mut RNG, note: Note) -> action::Plan<effect::Output> {
-    let rcv = value::Trapdoor::random(rng);
-    let theta = ActionEntropy::random(rng);
+    let (rcv, theta) = action_randomness::<effect::Output>(rng, note);
     action::Plan {
         note,
         theta,
         rcv,
         authority: (),
     }
+}
+
+pub(crate) fn action_randomness<E: effect::Effect>(
+    rng: &mut impl CryptoRng,
+    note: Note,
+) -> (value::Trapdoor, ActionEntropy) {
+    let rcv = loop {
+        let candidate = value::Trapdoor::random(rng);
+        if candidate.fits_base_field_capacity() {
+            break candidate;
+        }
+    };
+    let cm = note.commitment();
+    let theta = loop {
+        let candidate = ActionEntropy::random(rng);
+        if candidate.randomizer::<E>(cm).fits_base_field_capacity() {
+            break candidate;
+        }
+    };
+    (rcv, theta)
 }
 
 pub(crate) fn shared_sk() -> private::SpendingKey {
@@ -166,7 +185,7 @@ pub(crate) fn lifted(
 }
 
 pub(crate) fn spend_max_fee_note() -> Note {
-    WalletSim::new(shared_sk()).labelled_note("spend fee", 0)
+    WalletSim::new(shared_sk()).labelled_fee_note("spend fee", 0)
 }
 
 pub(crate) fn spend(app: &App<'_>) -> (bundle::Plan, Bundle<ProofStamp<stamp::Uncompressed>>) {
@@ -183,7 +202,7 @@ pub(crate) fn spend(app: &App<'_>) -> (bundle::Plan, Bundle<ProofStamp<stamp::Un
 }
 
 pub(crate) fn spend_with_fee_max_fee_note() -> Note {
-    WalletSim::new(shared_sk()).labelled_note("spend with fee maximum", 300)
+    WalletSim::new(shared_sk()).labelled_fee_note("spend with fee maximum", 300)
 }
 
 pub(crate) fn spend_with_fee(
@@ -202,7 +221,7 @@ pub(crate) fn spend_with_fee(
 }
 
 pub(crate) fn alice_max_fee_note() -> Note {
-    WalletSim::new(shared_sk()).labelled_note("alice fee", 0)
+    WalletSim::new(shared_sk()).labelled_fee_note("alice fee", 0)
 }
 
 pub(crate) fn alice_output_note() -> Note {
@@ -227,7 +246,7 @@ pub(crate) fn bob(app: &App<'_>) -> (bundle::Plan, Bundle<ProofStamp<stamp::Unco
         PoolSim::shared().mint_anchor(),
         &[],
         &[wallet.labelled_note("bob output", 300)],
-        wallet.labelled_note("bob fee", 0),
+        wallet.labelled_fee_note("bob fee", 0),
         value::Positive::ZERO,
     )
 }
@@ -249,7 +268,7 @@ pub(crate) fn outputs_with_fees(
             PoolSim::shared().mint_anchor(),
             &[],
             &[wallet.labelled_note(output, 500)],
-            wallet.labelled_note(maximum, 100),
+            wallet.labelled_fee_note(maximum, 100),
             value::Positive::try_from(fee).unwrap(),
         )
     })
@@ -265,7 +284,7 @@ pub(crate) fn zero_action(
         anchor,
         &[],
         &[],
-        wallet.labelled_note("zero action fee", 0),
+        wallet.labelled_fee_note("zero action fee", 0),
         value::Positive::ZERO,
     )
 }
@@ -286,7 +305,7 @@ pub(crate) fn entry_spends(
             pool.entry_anchor(EpochIndex::new(1)),
             &[(PoolSim::shared_note(input), pool)],
             &[wallet.labelled_note(label, output)],
-            wallet.labelled_note(fee, 0),
+            wallet.labelled_fee_note(fee, 0),
             value::Positive::ZERO,
         )
     })
@@ -301,7 +320,7 @@ pub(crate) fn later_output(
         PoolSim::shared().block(BlockHeight(2)).anchor(),
         &[],
         &[wallet.labelled_note("later output", 400)],
-        wallet.labelled_note("later fee", 0),
+        wallet.labelled_fee_note("later fee", 0),
         value::Positive::ZERO,
     )
 }
@@ -365,8 +384,7 @@ impl WalletSim {
                     },
                     |height| self.spendable_init(app, pool, &note, height),
                 );
-                let rcv = value::Trapdoor::random(rng);
-                let theta = ActionEntropy::random(rng);
+                let (rcv, theta) = action_randomness::<effect::Spend>(rng, note);
                 spend_plans.push(action::Plan {
                     note,
                     theta,
@@ -431,19 +449,40 @@ impl WalletSim {
     /// Family notes are distinct because stamps that share a tachygram cannot
     /// merge.
     pub fn labelled_note(&self, label: &str, value: u64) -> Note {
+        self.labelled_note_with(label, value, false)
+    }
+
+    pub fn labelled_fee_note(&self, label: &str, value: u64) -> Note {
+        self.labelled_note_with(label, value, true)
+    }
+
+    fn labelled_note_with(&self, label: &str, value: u64, fee: bool) -> Note {
         let mut key = u32::try_from(label.len()).unwrap().to_le_bytes().to_vec();
         key.extend_from_slice(label.as_bytes());
         key.extend_from_slice(&value.to_le_bytes());
         let mut rng = keyed_rng("labelled note", &key);
-        Note {
+        let note = Note {
             pk: self.sk.derive_payment_key(),
             value: value::Positive::try_from(value).unwrap(),
             psi: nullifier::Trapdoor::random(&mut rng),
             rcm: note::CommitmentTrapdoor::random(&mut rng),
+        };
+        if fee {
+            Self::fit_fee_blind(note, &mut rng)
+        } else {
+            note
         }
     }
 
     pub fn random_note(&self, value_amount: u64) -> Note {
+        self.random_note_with(value_amount, false)
+    }
+
+    pub fn random_fee_note(&self, value_amount: u64) -> Note {
+        self.random_note_with(value_amount, true)
+    }
+
+    fn random_note_with(&self, value_amount: u64, fee: bool) -> Note {
         let pk = self.sk.derive_payment_key();
         let mut streams = self.notes.borrow_mut();
         let notes = streams.entry(value_amount).or_insert_with(|| {
@@ -458,12 +497,26 @@ impl WalletSim {
             seed.copy_from_slice(digest.as_bytes());
             StdRng::from_seed(seed)
         });
-        Note {
+        let note = Note {
             pk,
             value: value::Positive::try_from(value_amount).unwrap(),
             psi: nullifier::Trapdoor::random(notes),
             rcm: note::CommitmentTrapdoor::random(notes),
+        };
+        if fee {
+            Self::fit_fee_blind(note, notes)
+        } else {
+            note
         }
+    }
+
+    fn fit_fee_blind(mut opening: Note, rng: &mut impl CryptoRng) -> Note {
+        while Fp::from(opening.rcm) == Fp::ZERO
+            || !opening.derive_feemax_blind().fits_base_field_capacity()
+        {
+            opening.rcm = note::CommitmentTrapdoor::random(rng);
+        }
+        opening
     }
 
     #[must_use]

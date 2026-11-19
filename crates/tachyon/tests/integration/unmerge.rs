@@ -433,7 +433,7 @@ fn unmerge_rejects_a_reproven_note_as_divisor() {
     let wallet = WalletSim::new(shared_sk());
     let anchor = Anchor::random(rng);
     let note = wallet.random_note(300);
-    let max_fee_note = wallet.random_note(100);
+    let max_fee_note = wallet.random_fee_note(100);
     let fee = value::Positive::try_from(40u64).unwrap();
     let [original, reproven] = [(), ()].map(|()| {
         let output = output_plan(rng, note);
@@ -458,7 +458,7 @@ fn unmerge_rejects_a_reproven_note_as_divisor() {
         anchor,
         &[],
         &[wallet.random_note(200)],
-        wallet.random_note(0),
+        wallet.random_fee_note(0),
         value::Positive::ZERO,
     );
     let dividend = original

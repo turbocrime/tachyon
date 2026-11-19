@@ -97,7 +97,7 @@ fn fee_fuse_binds_its_sets() {
     let app = &application();
     let rng = &mut StdRng::seed_from_u64(0);
     let wallet = WalletSim::new(shared_sk());
-    let max_fee_note = wallet.random_note(300);
+    let max_fee_note = wallet.random_fee_note(300);
     let anchor = PoolSim::shared().mint_anchor();
     let left = fee_less_output_bundle(app, max_fee_note);
 
@@ -170,7 +170,7 @@ fn fee_fuse_slack_boundaries() {
     let rng = &mut StdRng::seed_from_u64(0);
     let wallet = WalletSim::new(shared_sk());
     let anchor = PoolSim::shared().mint_anchor();
-    let left = fee_less_output_bundle(app, wallet.random_note(300));
+    let left = fee_less_output_bundle(app, wallet.random_fee_note(300));
     let digests = BTreeSet::from([left.actions[0].descriptor.digest(left.actions[0].pair)]);
     let action_tachygrams = left
         .actions
@@ -186,7 +186,7 @@ fn fee_fuse_slack_boundaries() {
         (MAX_MONEY, 0),
         (MAX_MONEY, MAX_MONEY),
     ] {
-        let note = wallet.random_note(maximum);
+        let note = wallet.random_fee_note(maximum);
         let witness = witness::fee_fuse(
             (anchor, ()),
             note,
@@ -370,7 +370,7 @@ fn verify_rejects_a_stamp_without_its_fee() {
     let app = &application();
     let rng = &mut StdRng::seed_from_u64(0);
     let wallet = WalletSim::new(shared_sk());
-    let max_fee_note = wallet.random_note(300);
+    let max_fee_note = wallet.random_fee_note(300);
     let mut fee_less = fee_less_output_bundle(app, max_fee_note);
     let sighash = mock_sighash(fee_less.commitment());
 
@@ -446,7 +446,7 @@ fn fee_bearing_aggregates_merge_and_lift() {
             pool.mint_anchor(),
             &[(PoolSim::shared_note(value), pool)],
             &[wallet.random_note(500)],
-            wallet.random_note(100),
+            wallet.random_fee_note(100),
             value::Positive::try_from(40u64).unwrap(),
         );
         bundle
@@ -645,8 +645,8 @@ fn fee_seed_binds_its_singletons_and_header() {
     let wallet = WalletSim::new(shared_sk());
     let anchor = Anchor::random(rng);
     let other_anchor = Anchor::random(rng);
-    let valid = witness::fee_seed(((), ()), wallet.random_note(0), anchor);
-    let other = witness::fee_seed(((), ()), wallet.random_note(0), anchor);
+    let valid = witness::fee_seed(((), ()), wallet.random_fee_note(0), anchor);
+    let other = witness::fee_seed(((), ()), wallet.random_fee_note(0), anchor);
 
     for (corrupt, expected) in [
         (
