@@ -38,6 +38,8 @@ mod pczt_mirror_witnesses;
 #[cfg(test)]
 mod pczt_review;
 #[cfg(test)]
+mod pczt_update;
+#[cfg(test)]
 mod proof;
 #[cfg(test)]
 mod qr;
