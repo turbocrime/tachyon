@@ -36,6 +36,8 @@ mod pczt_mirror_proofs;
 #[cfg(test)]
 mod pczt_mirror_witnesses;
 #[cfg(test)]
+mod pczt_proving;
+#[cfg(test)]
 mod pczt_review;
 #[cfg(test)]
 mod pczt_signing;

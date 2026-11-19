@@ -1,12 +1,14 @@
 //! The Tachyon section of a partially constructed transaction.
 
 pub mod mirror;
+mod prover;
 mod signing;
 mod updater;
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
 
 use derive_more::{Debug, Display, Eq as TotalEq, Error, PartialEq};
+pub use prover::{ApplyFeeError, LiftActionsProofError, ProveActionsError};
 use ragu::{Pcd, ProductionRank, pasta::Pasta};
 pub use signing::{
     ApplySignatureError, IoFinalizerError, OpeningLocation, OpeningReason, SignError,
@@ -142,6 +144,10 @@ enum DescriptorError {
 /// An input to a PCZT opening.
 #[derive(Clone, Copy, Debug, Display)]
 pub enum OpeningField {
+    /// Proof authorizing key.
+    Pak,
+    /// Predecessor proofs.
+    Lineage,
     /// Action kind.
     Witness,
     /// Spend validating key.
@@ -175,6 +181,8 @@ pub enum NoteField {
     reason = "only indexed action fields carry a position"
 )]
 pub enum MissingField {
+    /// The proving anchor.
+    Anchor,
     /// A field of the indexed action.
     #[display("action {_0} {_1}")]
     Action(usize, OpeningField),
