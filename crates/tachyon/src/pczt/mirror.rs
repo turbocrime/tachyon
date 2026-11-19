@@ -7,7 +7,10 @@ use derive_more::{Debug, Display, Eq as TotalEq, Error, PartialEq};
 use ragu::{ProductionRank, Rank as _};
 use udon::{curve::Affine as _, field::Field as _};
 
-use super::{self as pczt, MissingField, NoteField, SpendKeyError, Zip32Derivation};
+use super::{
+    self as pczt, DescriptorError, MissingField, NoteField, OpeningField, SpendKeyError,
+    Zip32Derivation,
+};
 use crate::{
     Anchor, CompactSize, EpochIndex, Note, action,
     constants::EPOCH_MAX,
@@ -313,10 +316,28 @@ impl pczt::Bundle {
             ));
         }
         let max_fee = mirror.max_fee.parse()?;
-        let balance = mirror.value_balance.ok_or(ParseError::InvalidValue(
-            Field::ValueBalance,
-            ValueReason::CompactDerivation,
-        ))?;
+        let balance =
+            if let Some(balance) = mirror.value_balance {
+                i128::from(balance)
+            } else {
+                let fee = max_fee.note.value.ok_or(ParseError::MissingForEffect(
+                    MissingField::MaxFee(NoteField::Value),
+                ))?;
+                let mut sum = -i128::from(fee);
+                for (index, action) in actions.iter().enumerate() {
+                    let amount =
+                        i128::from(action.note.value.ok_or(ParseError::MissingForEffect(
+                            MissingField::Action(index, OpeningField::Note(NoteField::Value)),
+                        ))?);
+                    sum += match *action.witness.as_ref().ok_or(ParseError::MissingForEffect(
+                        MissingField::Action(index, OpeningField::Witness),
+                    ))? {
+                        pczt::ActionWitness::Spend(_) => amount,
+                        pczt::ActionWitness::Output(_) => -amount,
+                    };
+                }
+                sum
+            };
         let value_balance = value::Balance::try_from(balance)
             .map_err(|_err| ParseError::InvalidValue(Field::ValueBalance, ValueReason::Range))?;
         if actions.is_empty() && value_balance != value::Balance::ZERO {
@@ -422,10 +443,29 @@ impl Action {
                 })
             })
             .transpose()?;
-        let descriptor = supplied.ok_or(ParseError::InvalidValue(
-            Field::Descriptor(index),
-            ValueReason::CompactDerivation,
-        ))?;
+        let descriptor = if let Some(desc) = supplied {
+            desc
+        } else {
+            let desc = pczt::Action::derive_from_opening(&note, theta, rcv, witness.as_ref())
+                .map_err(|err| match err {
+                    DescriptorError::Missing(field) => {
+                        ParseError::MissingForEffect(MissingField::Action(index, field))
+                    },
+                    DescriptorError::ZeroRcm | DescriptorError::Randomness => {
+                        ParseError::InvalidValue(
+                            Field::Descriptor(index),
+                            ValueReason::CompactDerivation,
+                        )
+                    },
+                })?;
+            if EpAffine::from(desc.cv).is_identity() || EpAffine::from(desc.rk).is_identity() {
+                return Err(ParseError::InvalidValue(
+                    Field::Descriptor(index),
+                    ValueReason::Identity,
+                ));
+            }
+            desc
+        };
         Ok(pczt::Action {
             descriptor,
             sig,
