@@ -111,16 +111,12 @@ use core::{cmp::Ordering, iter, ops::Neg as _};
 
 use corez::io::{self, Read, Write};
 use derive_more::{Debug, Display, Eq as TotalEq, Error, From, IsVariant, PartialEq, TryInto};
-use ragu::{Polynomial, ProductionRank, Rank as _, header::Header, pasta::Pasta};
+use ragu::{Polynomial, ProductionRank, Rank as _, pasta::Pasta};
 use rand_core::CryptoRng;
-use udon::{
-    curve::{Affine as _, Projective as _},
-    field::Field as _,
-};
+use udon::{curve::Affine as _, field::Field as _};
 
 use crate::{
     ActionDigest, ActionSetPoly, Note, Tachygram, TachygramSetCommit, TachygramSetPoly, action,
-    bridge_hash::bridge_hash,
     digest::blake2b,
     fee,
     keys::{private, public},
@@ -129,7 +125,7 @@ use crate::{
     reddsa, serialization,
     stamp::{
         self, ProofStamp, StampState, StrippedStamp,
-        proof::{App, pool, stamp::Stamp},
+        proof::{App, pool},
     },
     value,
 };
@@ -311,6 +307,27 @@ pub enum VerificationError {
     #[display("proof verification error: {_0}")]
     Proof(ragu::Error),
     /// The proof did not verify.
+    #[display("proof did not verify")]
+    Disproved,
+}
+
+/// Errors when reconstructing a compressed stamp's online polynomials.
+#[derive(Debug, Display, Error)]
+#[non_exhaustive]
+pub enum RebuildPolynomialsError {
+    /// The supplied transaction IDs do not match the stamp's adjunct list.
+    #[display("supplied adjunct txids do not match the stamp")]
+    AdjunctMismatch,
+    /// A covered bundle has a different number of action descriptors and pairs.
+    #[display("action descriptors and tachygram pairs do not correspond one-to-one")]
+    MismatchedActionPairs,
+    /// The covered bundles did not pass coverage verification.
+    #[display("coverage verification error: {_0}")]
+    Coverage(VerifyCoverageError),
+    /// An error occurred while verifying the compressed proof.
+    #[display("proof verification error: {_0}")]
+    Proof(ragu::Error),
+    /// The compressed proof did not verify against the rebuilt sets.
     #[display("proof did not verify")]
     Disproved,
 }
@@ -691,12 +708,11 @@ impl Bundle<ProofStamp<stamp::Compressed>> {
     /// the actual transaction bundles. This does not verify signatures or
     /// check that the stamp's anchor is on the canonical chain.
     ///
-    /// Returns `Ok(None)` if the proof or covered data do not verify, or the
-    /// covered sets exceed polynomial capacity.
-    ///
     /// # Errors
     ///
-    /// Returns [`ragu::Error`] if the proof system fails.
+    /// Returns [`RebuildPolynomialsError`] if the adjunct list or covered
+    /// data do not match, the sets exceed capacity, or the proof does not
+    /// verify.
     ///
     /// # Panics
     ///
@@ -706,41 +722,36 @@ impl Bundle<ProofStamp<stamp::Compressed>> {
         &self,
         app: &App<'_>,
         adjuncts: &BTreeMap<[u8; 32], &Bundle<StrippedStamp>>,
-    ) -> Result<Option<[Polynomial<Fp, ProductionRank>; 2]>, ragu::Error> {
-        let tachygram_commit = self.stamp.tachygram_set.as_ref().to_affine();
-        if tachygram_commit.is_identity() {
-            return Ok(None);
+    ) -> Result<[Polynomial<Fp, ProductionRank>; 2], RebuildPolynomialsError> {
+        if !self.stamp.adjuncts.iter().eq(adjuncts.keys()) {
+            return Err(RebuildPolynomialsError::AdjunctMismatch);
         }
-        let bridge = bridge_hash(tachygram_commit);
-        let pcd = self
-            .stamp
-            .proof
-            .clone()
-            .carry::<Stamp>((bridge.into(), self.stamp.anchor));
-        if !app.verify_compressed(&pcd)? || !self.stamp.adjuncts.iter().eq(adjuncts.keys()) {
-            return Ok(None);
-        }
-
-        let Ok((digests, tachygram_set)) = self.covered_sets(adjuncts.values().copied()) else {
-            return Ok(None);
-        };
-        let action_set = digests.into_iter().collect::<ActionSetPoly>();
-        let rebuilt_tachygram_commit = tachygram_set.commit().as_ref().to_affine();
-
-        // Keep the returned polynomials and the commitment comparison in the
-        // order declared by Stamp's typed slots.
-        let _: <Stamp as Header<Fp>>::OnlinePolyCommit =
-            (ActionSetPoly::SLOT, TachygramSetPoly::SLOT);
-        if rebuilt_tachygram_commit != tachygram_commit
-            || pcd.online_commitments()
-                != [
-                    action_set.commit().as_ref().to_affine(),
-                    rebuilt_tachygram_commit,
-                ]
+        if self.actions.len() != self.action_auth.len()
+            || adjuncts
+                .values()
+                .any(|adj| adj.actions.len() != adj.action_auth.len())
         {
-            return Ok(None);
+            return Err(RebuildPolynomialsError::MismatchedActionPairs);
         }
-        Ok(Some([action_set.into(), tachygram_set.into()]))
+
+        let (digests, tachygram_set) = self
+            .covered_sets(adjuncts.values().copied())
+            .map_err(RebuildPolynomialsError::Coverage)?;
+        let action_set = digests.into_iter().collect::<ActionSetPoly>();
+        if !stamp::verify_compressed(
+            &self.stamp.proof,
+            app,
+            (
+                action_set.commit(),
+                self.stamp.tachygram_set,
+                self.stamp.anchor,
+            ),
+        )
+        .map_err(RebuildPolynomialsError::Proof)?
+        {
+            return Err(RebuildPolynomialsError::Disproved);
+        }
+        Ok([action_set.into(), tachygram_set.into()])
     }
 }
 
@@ -816,8 +827,8 @@ impl<P: stamp::Proof> Bundle<ProofStamp<P>> {
     /// # Errors
     ///
     /// Returns [`VerifyCoverageError`] if an action, fee or tachygram repeats,
-    /// if action descriptors and pairs do not correspond one-to-one, or if
-    /// the covered tachygrams do not fit or reproduce the stamp's commitment.
+    /// or the covered tachygrams number more than one set polynomial has roots
+    /// or do not reproduce the tachygram set commitment the stamp carries.
     ///
     /// # Panics
     ///
@@ -827,27 +838,21 @@ impl<P: stamp::Proof> Bundle<ProofStamp<P>> {
         &self,
         adjuncts: &[&Bundle<StrippedStamp>],
     ) -> Result<(Vec<ActionDigest>, TachygramSetCommit), VerifyCoverageError> {
-        let (digests, tachygram_poly) = self.covered_sets(adjuncts.iter().copied())?;
-        let tachygram_set = tachygram_poly.commit();
-        if self.stamp.tachygram_set != tachygram_set {
-            return Err(VerifyCoverageError::WrongTachygramSet);
-        }
-        Ok((digests, tachygram_set))
+        let (digests, _) = self.covered_sets(adjuncts.iter().copied())?;
+        Ok((digests, self.stamp.tachygram_set))
     }
 
     fn covered_sets<'adjunct>(
         &self,
         adjuncts: impl ExactSizeIterator<Item = &'adjunct Bundle<StrippedStamp>> + Clone,
     ) -> Result<(Vec<ActionDigest>, TachygramSetPoly), VerifyCoverageError> {
-        let n_actions = adjuncts.clone().fold(self.actions.len(), |count, adj| {
-            count.saturating_add(adj.actions.len())
-        });
-        let n_fees = adjuncts.len().saturating_add(1);
+        let n_actions =
+            self.actions.len() + adjuncts.clone().map(|adj| adj.actions.len()).sum::<usize>();
+        let n_fees = 1 + adjuncts.len();
 
         // A set polynomial with n roots has n + 1 coefficients, so no
-        // commitment matches a larger set. The tachygram bound also bounds
-        // the action set, which needs only one root per action or fee.
-        if n_actions.saturating_mul(2).saturating_add(n_fees) >= ProductionRank::num_coeffs() {
+        // commitment matches a larger set.
+        if 2 * n_actions + n_fees > ProductionRank::num_coeffs() - 1 {
             return Err(VerifyCoverageError::WrongTachygramSet);
         }
 
@@ -860,9 +865,6 @@ impl<P: stamp::Proof> Bundle<ProofStamp<P>> {
         let mut digests = Vec::new();
 
         for (actions, action_auth, fee_descriptor, cm_change) in covered {
-            if actions.len() != action_auth.len() {
-                return Err(VerifyCoverageError::WrongTachygramSet);
-            }
             for (&descriptor, &(_, pair)) in actions.iter().zip(action_auth) {
                 if !covered_descriptors.insert(descriptor) {
                     return Err(VerifyCoverageError::DuplicateActions);
@@ -883,7 +885,11 @@ impl<P: stamp::Proof> Bundle<ProofStamp<P>> {
             digests.push(fee_descriptor.digest(cm_change));
         }
 
-        Ok((digests, covered_tachygrams.into_iter().collect()))
+        let tachygram_set = covered_tachygrams.into_iter().collect::<TachygramSetPoly>();
+        if self.stamp.tachygram_set != tachygram_set.commit() {
+            return Err(VerifyCoverageError::WrongTachygramSet);
+        }
+        Ok((digests, tachygram_set))
     }
 
     /// Verify the stamp's proof against the given action digests, which

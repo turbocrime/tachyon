@@ -211,15 +211,24 @@ impl Proof for Compressed {
         app: &App<'_>,
         header: (ActionSetCommit, TachygramSetCommit, Anchor),
     ) -> Result<bool, ragu::Error> {
-        let [action_slot, tachygram_slot] = self.online_commitments();
-        if action_slot != Eq::from(header.0).to_affine()
-            || tachygram_slot != Eq::from(header.1).to_affine()
-        {
-            return Ok(false);
-        }
-        let bridge = bridge_hash(header.1.as_ref().to_affine());
-        app.verify_compressed(&self.clone().carry::<Stamp>((bridge.into(), header.2)))
+        verify_compressed(self, app, header)
     }
+}
+
+pub(crate) fn verify_compressed(
+    proof: &Compressed,
+    app: &App<'_>,
+    (action_set, tachygram_set, anchor): (ActionSetCommit, TachygramSetCommit, Anchor),
+) -> Result<bool, ragu::Error> {
+    let tachygram_commit = tachygram_set.as_ref().to_affine();
+    // Stamp::OnlinePolyCommit declares the action set first.
+    if tachygram_commit.is_identity()
+        || proof.online_commitments() != [action_set.as_ref().to_affine(), tachygram_commit]
+    {
+        return Ok(false);
+    }
+    let bridge = bridge_hash(tachygram_commit);
+    app.verify_compressed(&proof.clone().carry::<Stamp>((bridge.into(), anchor)))
 }
 
 impl<P: Proof> StampState for ProofStamp<P> {

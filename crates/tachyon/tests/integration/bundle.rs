@@ -14,7 +14,7 @@ use rand::{SeedableRng as _, rngs::StdRng};
 use udon::{curve::Projective as _, field::Field as _};
 use zcash_tachyon::{
     BlockHeight, SignatureError, Tachygram, action,
-    bundle::{Plan, PlanError, Signature},
+    bundle::{Plan, PlanError, RebuildPolynomialsError, Signature},
     constants::MAX_MONEY,
     digest::blake2b,
     effect,
@@ -566,7 +566,7 @@ fn receive_compressed_bundle(
 }
 
 #[test]
-fn rebuild_online_polynomials_matches_compressed_stamps() {
+fn rebuild_online_polynomials_matches_received_aggregate() {
     let app = &application();
     let rng = &mut StdRng::seed_from_u64(947);
     let (_, left) = alice(app);
@@ -575,20 +575,14 @@ fn rebuild_online_polynomials_matches_compressed_stamps() {
     let right_txid = mock_txid(&right);
     let adjunct = right.strip();
 
-    for (bundle, adjuncts) in [
-        (left, BTreeMap::new()),
-        (aggregate, BTreeMap::from([(right_txid, &adjunct)])),
-    ] {
-        let received = receive_compressed_bundle(rng, app, bundle);
-        let polynomials = received
-            .rebuild_online_polynomials(app, &adjuncts)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            polynomials.map(|poly| app.commit(&poly.iter_coeffs().collect::<Vec<_>>()).unwrap()),
-            received.stamp.proof.online_commitments()
-        );
-    }
+    let received = receive_compressed_bundle(rng, app, aggregate);
+    let polynomials = received
+        .rebuild_online_polynomials(app, &BTreeMap::from([(right_txid, &adjunct)]))
+        .unwrap();
+    assert_eq!(
+        polynomials.map(|poly| app.commit(&poly.iter_coeffs().collect::<Vec<_>>()).unwrap()),
+        received.stamp.proof.online_commitments()
+    );
 }
 
 #[test]
@@ -629,17 +623,35 @@ fn rebuild_online_polynomials_rejects_mismatched_public_data() {
         cv += base;
     }
 
+    let adjuncts = BTreeMap::new();
     for (bundle, tamper) in [
         (wrong_actions, "action descriptor"),
         (wrong_fees, "fee descriptor"),
+    ] {
+        let error = bundle
+            .rebuild_online_polynomials(app, &adjuncts)
+            .unwrap_err();
+        let RebuildPolynomialsError::Disproved = error else {
+            panic!("wrong rejection for {tamper}: {error:?}");
+        };
+    }
+    let adjunct_error = wrong_coverage
+        .rebuild_online_polynomials(app, &adjuncts)
+        .unwrap_err();
+    let RebuildPolynomialsError::AdjunctMismatch = adjunct_error else {
+        panic!("wrong rejection for the adjunct list: {adjunct_error:?}");
+    };
+    for (bundle, tamper) in [
         (wrong_tachygrams, "tachygram pair"),
-        (wrong_coverage, "adjunct list"),
         (oversized, "oversized covered sets"),
     ] {
-        let result = bundle
-            .rebuild_online_polynomials(app, &BTreeMap::new())
-            .unwrap();
-        assert!(result.is_none(), "accepted {tamper}");
+        let error = bundle
+            .rebuild_online_polynomials(app, &adjuncts)
+            .unwrap_err();
+        let RebuildPolynomialsError::Coverage(VerifyCoverageError::WrongTachygramSet) = error
+        else {
+            panic!("wrong rejection for {tamper}: {error:?}");
+        };
     }
 }
 
