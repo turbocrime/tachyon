@@ -6,14 +6,14 @@ use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
 
 use derive_more::{Debug, Display, Eq as TotalEq, Error, PartialEq};
 use ragu::{Pcd, ProductionRank, pasta::Pasta};
-use udon::field::Field as _;
+use udon::{curve::Affine as _, field::Field as _};
 
 use crate::{
     Anchor, Note, action, bundle,
     entropy::ActionEntropy,
     keys::{PaymentKey, ProofAuthorizingKey, SpendValidatingKey, private},
     note, nullifier,
-    pasta::Fp,
+    pasta::{EpAffine, Fp},
     primitives::{Effect, effect},
     stamp::{
         self,
@@ -588,7 +588,33 @@ impl MaxFee {
     }
 }
 
+enum SpendKeyError {
+    Invalid,
+    Mismatch,
+}
+
 impl SpendWitness {
+    fn validate_keys(
+        ak: Option<SpendValidatingKey>,
+        pak: Option<ProofAuthorizingKey>,
+    ) -> Result<(), SpendKeyError> {
+        let delegated = pak.map(|key| key.ak);
+        if ak
+            .into_iter()
+            .chain(delegated)
+            .any(|key| EpAffine::from_bytes(key.0.into()).is_none_or(|point| point.is_identity()))
+        {
+            return Err(SpendKeyError::Invalid);
+        }
+        if ak
+            .zip(delegated)
+            .is_some_and(|(owner, delegate)| owner != delegate)
+        {
+            return Err(SpendKeyError::Mismatch);
+        }
+        Ok(())
+    }
+
     /// The spend's owner.
     #[must_use]
     pub const fn ak(&self) -> Option<SpendValidatingKey> {

@@ -28,6 +28,8 @@ mod fixtures;
 #[cfg(test)]
 mod pczt_mirror_effects;
 #[cfg(test)]
+mod pczt_mirror_witnesses;
+#[cfg(test)]
 mod pczt_review;
 #[cfg(test)]
 mod proof;
