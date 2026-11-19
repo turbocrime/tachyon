@@ -184,6 +184,8 @@ Each path consumes the same action plans but produces a different component of t
 
 Authorizing and binding produce the descriptor-keyed action signatures and the binding signature. Proving returns the proof stamp, a descriptor-keyed pair map, the change commitment, and the chosen fee. `bundle::Effects::assemble` combines the signatures and proving data with the effects, checking that their descriptor keys match. The paths can run in either order or concurrently.
 
+For a multi-party transaction, the Tachyon PCZT section carries the same effects with independently redactable openings. The Updater attaches proving and signer metadata, the IO Finalizer signs outputs and derives the binding key, and the Signer authorizes spends by index. The Prover adds action proofs, and the Fee applier applies the fee. The Extractor produces an unbound bundle; the transaction layer supplies the sighash for the binding signature and verifies the finished bundle.
+
 ```mermaid
 flowchart LR
     style proving fill:#ff000010,stroke:none

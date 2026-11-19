@@ -1,6 +1,7 @@
 //! The Tachyon section of a partially constructed transaction.
 
 mod combiner;
+mod extractor;
 pub mod mirror;
 mod prover;
 mod signing;
@@ -10,6 +11,7 @@ use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
 
 pub use combiner::{CombineError, ConflictField, ConflictLocation};
 use derive_more::{Debug, Display, Eq as TotalEq, Error, PartialEq};
+pub use extractor::{ExtractionField, TxExtractorError, Unbound};
 pub use prover::{ApplyFeeError, LiftActionsProofError, ProveActionsError};
 use ragu::{Pcd, ProductionRank, pasta::Pasta};
 pub use signing::{
