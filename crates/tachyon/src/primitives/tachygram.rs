@@ -1,3 +1,4 @@
+use alloc::collections::BTreeSet;
 use core::cmp::Ordering;
 
 use corez::io::{self, Read, Write};
@@ -24,6 +25,13 @@ use crate::{pasta::Fp, serialization};
 pub struct Tachygram(Fp);
 
 impl Tachygram {
+    pub(crate) fn all_distinct(tachygrams: impl IntoIterator<Item = Self>) -> bool {
+        let mut seen = BTreeSet::new();
+        tachygrams
+            .into_iter()
+            .all(|tachygram| seen.insert(tachygram))
+    }
+
     /// Sample a uniformly random tachygram.
     pub fn random<RNG: CryptoRng>(rng: &mut RNG) -> Self {
         Self(Fp::random(|bytes| rng.fill_bytes(bytes)))

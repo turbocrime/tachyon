@@ -985,11 +985,8 @@ impl<S: StampState> Bundle<S> {
         let binding_sig = Signature::read(&mut reader)?;
 
         let mut actions = Vec::new();
-        let mut seen = BTreeSet::new();
         for (descriptor, sig) in descriptors.into_iter().zip(signatures) {
             let pair = (Tachygram::read(&mut reader)?, Tachygram::read(&mut reader)?);
-            seen.insert(pair.0);
-            seen.insert(pair.1);
             actions.push(action::Authorized {
                 descriptor,
                 sig,
@@ -1003,8 +1000,12 @@ impl<S: StampState> Bundle<S> {
                 .map_err(|_err| io::Error::new(io::ErrorKind::InvalidData, "fee out of range"))?
         };
         let cm_change = Tachygram::read(&mut reader)?;
-        seen.insert(cm_change);
-        if seen.len() != 2 * n_actions + 1 {
+        if !Tachygram::all_distinct(
+            actions
+                .iter()
+                .flat_map(|action| <[Tachygram; 2]>::from(action.pair))
+                .chain([cm_change]),
+        ) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "tachygrams are not unique",

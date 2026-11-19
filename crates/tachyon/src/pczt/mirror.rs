@@ -1,6 +1,11 @@
 //! Byte fields for a transaction container to carry and redact independently.
 
-use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    string::String,
+    vec::Vec,
+};
 
 use corez::io;
 use derive_more::{Debug, Display, Eq as TotalEq, Error, PartialEq};
@@ -12,7 +17,7 @@ use super::{
     Zip32Derivation,
 };
 use crate::{
-    Anchor, CompactSize, EpochIndex, Note, action,
+    Anchor, CompactSize, EpochIndex, Note, Tachygram, action,
     constants::EPOCH_MAX,
     entropy::ActionEntropy,
     keys::{NoteMasterKey, NullifierKey, ProofAuthorizingKey, SpendValidatingKey, private},
@@ -37,6 +42,12 @@ pub struct Bundle {
     pub max_fee: MaxFee,
     /// The memo.
     pub memo: Vec<u8>,
+    /// Canonical proving anchor.
+    pub anchor: Option<[u8; 32]>,
+    /// Disjoint proofs before the fee.
+    pub actions_proofs: Vec<ActionsProof>,
+    /// Fee-applied proving data.
+    pub autonome_parts: Option<AutonomeParts>,
     /// Canonical binding signing scalar.
     pub bsk: Option<[u8; 32]>,
     /// Bundle metadata.
@@ -136,9 +147,46 @@ pub struct MaxFee {
     pub proprietary: BTreeMap<String, Vec<u8>>,
 }
 
+/// A descriptor and its pair's canonical encodings.
+#[derive(Clone, Debug, PartialEq, TotalEq)]
+pub struct ActionPair {
+    /// The action descriptor.
+    pub descriptor: [u8; 64],
+    /// The tachygrams, in their stored order.
+    pub pair: [[u8; 32]; 2],
+}
+
+/// The byte fields for one pre-fee proof.
+#[derive(Clone, Debug, PartialEq, TotalEq)]
+#[debug("ActionsProof(..)")]
+pub struct ActionsProof {
+    /// Covered descriptors and their pairs in descriptor order.
+    pub pairs: Vec<ActionPair>,
+    /// The proof's anchor.
+    pub anchor: [u8; 32],
+    /// The versioned, uncompressed Ragu proof.
+    pub proof: Vec<u8>,
+}
+
+/// The inseparable byte fields produced when applying a fee.
+#[derive(Clone, Debug, PartialEq, TotalEq)]
+#[debug("AutonomeParts(..)")]
+pub struct AutonomeParts {
+    /// The uncompressed stamp in its canonical encoding.
+    pub stamp: Vec<u8>,
+    /// Covered descriptors and their pairs in descriptor order.
+    pub pairs: Vec<ActionPair>,
+    /// The fee paid in zatoshis.
+    pub fee: u64,
+    /// The canonical change commitment.
+    pub cm_change: [u8; 32],
+}
+
 /// A field of the byte mirror.
 #[derive(Clone, Copy, Debug, Display)]
 pub enum Field {
+    /// The bundle proving anchor.
+    Anchor,
     /// Lineage data at an action.
     #[display("lineage at action {_0}")]
     Lineage(usize),
@@ -176,6 +224,43 @@ pub enum Field {
     /// A field in the maximum fee note.
     #[display("maximum fee note {_0}")]
     MaxFeeNote(NoteField),
+    /// The list of pre-fee proofs.
+    ActionsProofs,
+    /// A field belonging to a proof contribution.
+    #[display("{_1} in {_0}")]
+    Proof(ProofLocation, ProofField),
+}
+
+/// The proof contribution being read.
+#[derive(Clone, Copy, Debug, Display)]
+pub enum ProofLocation {
+    /// An indexed pre-fee proof.
+    #[display("actions proof {_0}")]
+    ActionsProof(usize),
+    /// The fee-applied proof.
+    #[display("autonome parts")]
+    AutonomeParts,
+}
+
+/// A field of a proof contribution.
+#[derive(Clone, Copy, Debug, Display)]
+pub enum ProofField {
+    /// Proof anchor.
+    Anchor,
+    /// Uncompressed proof.
+    Proof,
+    /// Proof stamp.
+    Stamp,
+    /// Action descriptor in a pair.
+    Descriptor,
+    /// Set of action pairs.
+    Pairs,
+    /// An action tachygram.
+    Tachygram,
+    /// Fee paid.
+    Fee,
+    /// Fee change commitment.
+    Change,
 }
 
 /// A decoded value violates an invariant.
@@ -236,6 +321,20 @@ pub enum EncodingCause {
     /// A field reader rejected the input.
     #[display("field reader rejected the input")]
     Read(io::Error),
+    /// Bytes remain after decoding a complete field.
+    #[display("trailing bytes")]
+    TrailingBytes,
+}
+
+/// Invalid pre-fee proof coverage or pair ordering.
+#[derive(Clone, Copy, Debug, Display)]
+pub enum CoverageReason {
+    /// An empty action subset.
+    Empty,
+    /// An unknown descriptor.
+    Foreign,
+    /// Action subsets intersect.
+    Overlap,
 }
 
 /// A malformed or insufficient byte mirror.
@@ -263,6 +362,15 @@ pub enum ParseError {
     /// Supplied spend authority and delegated key disagree.
     #[display("spend keys disagree at action {_0}")]
     KeyMismatch(#[error(not(source))] usize),
+    /// Proof coverage is invalid.
+    #[display("invalid coverage in actions proof {_0}: {_1}")]
+    InvalidCoverage(
+        #[error(not(source))] usize,
+        #[error(not(source))] CoverageReason,
+    ),
+    /// A tachygram repeats within a proof contribution.
+    #[display("duplicate tachygram in {_0}")]
+    DuplicateTachygram(#[error(not(source))] ProofLocation),
 }
 
 /// A list whose descriptors must be strictly ascending.
@@ -271,6 +379,9 @@ pub enum DescriptorOrderLocation {
     /// The section's action list.
     #[display("actions")]
     Actions,
+    /// The pairs in a proof contribution.
+    #[display("pairs in {_0}")]
+    Pairs(ProofLocation),
 }
 
 impl ParseError {
@@ -290,6 +401,10 @@ impl pczt::Bundle {
     ///
     /// Returns an error for invalid encoding or coverage, or an omitted
     /// effect without the opening needed to derive it.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "validate section fields and proof coverage together"
+    )]
     pub fn parse(mirror: Bundle) -> Result<Self, ParseError> {
         if mirror.actions.len() > (ProductionRank::num_coeffs() - 2).div_euclid(2) {
             return Err(ParseError::Limit(Field::Actions));
@@ -346,15 +461,43 @@ impl pczt::Bundle {
                 ValueReason::NonzeroActionlessBalance,
             ));
         }
+        let descriptors: BTreeSet<_> = actions.iter().map(|action| action.descriptor).collect();
+        let mut covered = BTreeSet::new();
+        let mut actions_proofs = Vec::new();
+        if mirror.actions_proofs.len() > actions.len() {
+            return Err(ParseError::Limit(Field::ActionsProofs));
+        }
+        for (index, encoded) in mirror.actions_proofs.into_iter().enumerate() {
+            let proof = encoded.parse(index)?;
+            if proof.pairs.is_empty() {
+                return Err(ParseError::InvalidCoverage(index, CoverageReason::Empty));
+            }
+            for descriptor in proof.pairs.keys() {
+                if !descriptors.contains(descriptor) {
+                    return Err(ParseError::InvalidCoverage(index, CoverageReason::Foreign));
+                }
+                if !covered.insert(*descriptor) {
+                    return Err(ParseError::InvalidCoverage(index, CoverageReason::Overlap));
+                }
+            }
+            actions_proofs.push(proof);
+        }
+        actions_proofs
+            .sort_by(|left, right| left.pairs.keys().next().cmp(&right.pairs.keys().next()));
         Ok(Self {
             actions,
             value_balance,
             max_fee,
             memo: mirror.memo,
-            anchor: None,
-            actions_proofs: Vec::new(),
-            autonome_parts: None,
-
+            anchor: mirror
+                .anchor
+                .map(|bytes| parse_anchor(bytes, Field::Anchor))
+                .transpose()?,
+            actions_proofs,
+            autonome_parts: mirror
+                .autonome_parts
+                .map(AutonomeParts::parse)
+                .transpose()?,
             bsk: mirror
                 .bsk
                 .map(|bytes| {
@@ -374,7 +517,7 @@ impl pczt::Bundle {
     ///
     /// # Panics
     ///
-    /// Panics if a descriptor or lineage proof cannot be encoded.
+    /// Panics if an in-memory proof has no encoding.
     #[must_use]
     #[expect(
         clippy::expect_used,
@@ -396,6 +539,23 @@ impl pczt::Bundle {
                 proprietary: self.max_fee.proprietary.clone(),
             },
             memo: self.memo.clone(),
+            anchor: self
+                .anchor
+                .map(encode_anchor)
+                .transpose()
+                .expect("anchor is fixed width"),
+            actions_proofs: self
+                .actions_proofs
+                .iter()
+                .map(ActionsProof::serialize)
+                .collect::<Result<_, _>>()
+                .expect("actions proofs are encodable"),
+            autonome_parts: self
+                .autonome_parts
+                .as_ref()
+                .map(AutonomeParts::serialize)
+                .transpose()
+                .expect("stamp proof is encodable"),
             bsk: self.bsk.map(private::BindingSigningKey::to_bytes),
             proprietary: self.proprietary.clone(),
         }
@@ -645,6 +805,18 @@ fn encode_descriptor(descriptor: action::Descriptor) -> io::Result<[u8; 64]> {
     descriptor.write(bytes.as_mut_slice())?;
     Ok(bytes)
 }
+
+fn encode_anchor(anchor: Anchor) -> io::Result<[u8; 32]> {
+    let mut bytes = [0; 32];
+    anchor.write(bytes.as_mut_slice())?;
+    Ok(bytes)
+}
+
+fn parse_anchor(bytes: [u8; 32], field: Field) -> Result<Anchor, ParseError> {
+    Anchor::read(bytes.as_slice())
+        .map_err(|cause| ParseError::InvalidEncoding(field, EncodingCause::Read(cause)))
+}
+
 #[expect(
     clippy::expect_used,
     reason = "Ragu-produced proofs have a canonical encoding"
@@ -778,6 +950,142 @@ impl SpendLineage {
             secret,
             spendable,
             spans,
+        })
+    }
+}
+
+impl ActionPair {
+    fn parse_all(
+        pairs: Vec<Self>,
+        location: ProofLocation,
+    ) -> Result<BTreeMap<action::Descriptor, (Tachygram, Tachygram)>, ParseError> {
+        let field = |field| Field::Proof(location, field);
+        if pairs.len() > (ProductionRank::num_coeffs() - 2).div_euclid(2) {
+            return Err(ParseError::Limit(field(ProofField::Pairs)));
+        }
+        let mut result = BTreeMap::new();
+        for Self {
+            descriptor,
+            pair: [left_bytes, right_bytes],
+        } in pairs
+        {
+            let desc = action::Descriptor::read(descriptor.as_slice()).map_err(|cause| {
+                ParseError::InvalidEncoding(
+                    field(ProofField::Descriptor),
+                    EncodingCause::Read(cause),
+                )
+            })?;
+            let left = Tachygram::read(left_bytes.as_slice()).map_err(|cause| {
+                ParseError::InvalidEncoding(
+                    field(ProofField::Tachygram),
+                    EncodingCause::Read(cause),
+                )
+            })?;
+            let right = Tachygram::read(right_bytes.as_slice()).map_err(|cause| {
+                ParseError::InvalidEncoding(
+                    field(ProofField::Tachygram),
+                    EncodingCause::Read(cause),
+                )
+            })?;
+            if result
+                .last_key_value()
+                .is_some_and(|(prev, _)| *prev >= desc)
+            {
+                return Err(ParseError::DescriptorOrder(DescriptorOrderLocation::Pairs(
+                    location,
+                )));
+            }
+            result.insert(desc, (left, right));
+        }
+        Ok(result)
+    }
+
+    fn serialize_all(
+        pairs: &BTreeMap<action::Descriptor, (Tachygram, Tachygram)>,
+    ) -> io::Result<Vec<Self>> {
+        pairs
+            .iter()
+            .map(|(&descriptor, &(left, right))| {
+                Ok(Self {
+                    descriptor: encode_descriptor(descriptor)?,
+                    pair: [Fp::from(left).to_bytes(), Fp::from(right).to_bytes()],
+                })
+            })
+            .collect()
+    }
+}
+
+impl ActionsProof {
+    fn parse(self, index: usize) -> Result<stamp::ActionsProof, ParseError> {
+        let location = ProofLocation::ActionsProof(index);
+        let pairs = ActionPair::parse_all(self.pairs, location)?;
+        if !Tachygram::all_distinct(pairs.values().copied().flat_map(<[Tachygram; 2]>::from)) {
+            return Err(ParseError::DuplicateTachygram(location));
+        }
+        Ok(stamp::ActionsProof {
+            pairs,
+            anchor: parse_anchor(self.anchor, Field::Proof(location, ProofField::Anchor))?,
+            proof: Box::new(parse_proof(
+                &self.proof,
+                Field::Proof(location, ProofField::Proof),
+            )?),
+        })
+    }
+
+    fn serialize(proof: &stamp::ActionsProof) -> io::Result<Self> {
+        Ok(Self {
+            pairs: ActionPair::serialize_all(&proof.pairs)?,
+            anchor: encode_anchor(proof.anchor)?,
+            proof: encode_proof(&proof.proof),
+        })
+    }
+}
+
+impl AutonomeParts {
+    fn parse(self) -> Result<stamp::AutonomeParts, ParseError> {
+        let location = ProofLocation::AutonomeParts;
+        let field = |field| Field::Proof(location, field);
+        let mut bytes = self.stamp.as_slice();
+        let stamp = stamp::ProofStamp::read(&mut bytes).map_err(|cause| {
+            ParseError::InvalidEncoding(field(ProofField::Stamp), EncodingCause::Read(cause))
+        })?;
+        if !bytes.is_empty() {
+            return Err(ParseError::InvalidEncoding(
+                field(ProofField::Stamp),
+                EncodingCause::TrailingBytes,
+            ));
+        }
+        let pairs = ActionPair::parse_all(self.pairs, location)?;
+        let cm_change = Tachygram::read(self.cm_change.as_slice()).map_err(|cause| {
+            ParseError::InvalidEncoding(field(ProofField::Change), EncodingCause::Read(cause))
+        })?;
+        if !Tachygram::all_distinct(
+            pairs
+                .values()
+                .copied()
+                .flat_map(<[Tachygram; 2]>::from)
+                .chain([cm_change]),
+        ) {
+            return Err(ParseError::DuplicateTachygram(location));
+        }
+        Ok(stamp::AutonomeParts {
+            stamp,
+            pairs,
+            fee: value::Positive::try_from(self.fee).map_err(|_err| {
+                ParseError::InvalidValue(field(ProofField::Fee), ValueReason::Range)
+            })?,
+            cm_change,
+        })
+    }
+
+    fn serialize(parts: &stamp::AutonomeParts) -> io::Result<Self> {
+        let mut bytes = Vec::new();
+        parts.stamp.write(&mut bytes)?;
+        Ok(Self {
+            stamp: bytes,
+            pairs: ActionPair::serialize_all(&parts.pairs)?,
+            fee: parts.fee.into(),
+            cm_change: Fp::from(parts.cm_change).to_bytes(),
         })
     }
 }
