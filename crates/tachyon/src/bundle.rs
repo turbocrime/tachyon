@@ -707,6 +707,70 @@ impl Plan {
             stamp,
         }
     }
+
+    /// Sign only spends owned by `ask`. The transaction layer derives the
+    /// sighash from the plan's commitment before any signature is produced.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the plan was not validated.
+    pub fn authorize<RNG: CryptoRng>(
+        &self,
+        rng: &mut RNG,
+        ask: &private::SpendAuthorizingKey,
+        sighash: impl FnOnce(&[u8; 32]) -> [u8; 32],
+    ) -> BTreeMap<action::Descriptor, action::Signature> {
+        let ak = ask.derive_auth_public();
+        let owned: BTreeMap<_, _> = self
+            .spends
+            .iter()
+            .filter(|plan| plan.authority == ak)
+            .map(|plan| {
+                (
+                    plan.descriptor(),
+                    plan.theta
+                        .randomizer::<effect::Spend>(plan.note.commitment()),
+                )
+            })
+            .collect();
+        let message = sighash(&self.effects().commitment());
+        owned
+            .into_iter()
+            .map(|(desc, alpha)| (desc, ask.derive_action_private(&alpha).sign(rng, &message)))
+            .collect()
+    }
+
+    /// Sign the outputs with their action randomizers, without a spend key.
+    pub fn sign_outputs<RNG: CryptoRng>(
+        &self,
+        rng: &mut RNG,
+        sighash: &[u8; 32],
+    ) -> BTreeMap<action::Descriptor, action::Signature> {
+        self.outputs
+            .iter()
+            .map(|plan| {
+                let alpha = plan
+                    .theta
+                    .randomizer::<effect::Output>(plan.note.commitment());
+                (
+                    plan.descriptor(),
+                    private::ActionSigningKey::new(&alpha).sign(rng, sighash),
+                )
+            })
+            .collect()
+    }
+
+    /// Sign with the sum of the action trapdoors and the max fee blind.
+    pub fn sign_binding<RNG: CryptoRng>(&self, rng: &mut RNG, sighash: &[u8; 32]) -> Signature {
+        private::BindingSigningKey::from(
+            self.spends
+                .iter()
+                .map(|plan| plan.rcv)
+                .chain(self.outputs.iter().map(|plan| plan.rcv))
+                .chain([self.max_fee_note.derive_feemax_blind()]),
+        )
+        .sign(rng, sighash)
+    }
 }
 
 /// Effecting data, independent of signatures, fees paid, and stamps.
