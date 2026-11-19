@@ -113,6 +113,29 @@ pub struct MaxFee {
 }
 
 /// An opening is incomplete or fails to reproduce the effects.
+#[derive(Clone, Copy, Debug, Display, Error)]
+#[non_exhaustive]
+pub enum VerifyError {
+    /// A needed field is absent.
+    #[display("missing {_0}")]
+    Missing(#[error(not(source))] OpeningField),
+    /// The opening cannot produce the stored effects.
+    #[display("action descriptor mismatch")]
+    DescriptorMismatch,
+    /// The note commitment trapdoor is zero.
+    #[display("zero note commitment trapdoor")]
+    ZeroRcm,
+    /// The action randomness exceeds the circuit field's capacity.
+    #[display("unrepresentable action randomness")]
+    Randomness,
+}
+
+enum DescriptorError {
+    Missing(OpeningField),
+    ZeroRcm,
+    Randomness,
+}
+
 trait OpeningEffect: Effect {
     type Authority: Copy;
     fn verification_key(
@@ -160,6 +183,15 @@ struct CheckedOpening<E: OpeningEffect> {
 enum OpeningCheckError {
     ZeroRcm,
     Randomness,
+}
+
+impl From<OpeningCheckError> for ConstructError {
+    fn from(error: OpeningCheckError) -> Self {
+        match error {
+            OpeningCheckError::ZeroRcm => Self::ZeroRcm,
+            OpeningCheckError::Randomness => Self::ActionRandomness,
+        }
+    }
 }
 
 impl<E: OpeningEffect> Opening<E> {
@@ -381,6 +413,82 @@ impl Plan {
     }
 }
 
+/// An input to a PCZT opening.
+#[derive(Clone, Copy, Debug, Display)]
+pub enum OpeningField {
+    /// Proof authorizing key.
+    Pak,
+    /// Predecessor proofs.
+    Lineage,
+    /// Action kind.
+    Witness,
+    /// Spend validating key.
+    Ak,
+    /// An opening field of the note.
+    #[display("note {_0}")]
+    Note(NoteField),
+    /// Action entropy.
+    Theta,
+    /// Value commitment trapdoor.
+    Rcv,
+}
+
+/// A field of a note opening.
+#[derive(Clone, Copy, Debug, Display)]
+pub enum NoteField {
+    /// Payment key.
+    Pk,
+    /// Note value.
+    Value,
+    /// Nullifier trapdoor.
+    Psi,
+    /// Note commitment trapdoor.
+    Rcm,
+}
+
+/// A missing input and its position in the section.
+#[derive(Clone, Copy, Debug, Display)]
+#[expect(
+    variant_size_differences,
+    reason = "only indexed action fields carry a position"
+)]
+pub enum MissingField {
+    /// The proving anchor.
+    Anchor,
+    /// A field of the indexed action.
+    #[display("action {_0} {_1}")]
+    Action(usize, OpeningField),
+    /// A field of the max fee opening.
+    #[display("max fee {_0}")]
+    MaxFee(NoteField),
+}
+
+/// An effect that does not match the derived plan.
+#[derive(Clone, Copy, Debug, Display)]
+pub enum ReviewEffect {
+    /// Bundle balance.
+    ValueBalance,
+    /// Maximum fee commitment.
+    MaxFee,
+    /// Descriptor of the indexed action.
+    Action(usize),
+}
+
+/// Failure to reconstruct the reviewed plan.
+#[derive(Debug, Display, Error)]
+#[non_exhaustive]
+pub enum ReviewError {
+    /// An opening is incomplete.
+    #[display("missing {_0}")]
+    Missing(#[error(not(source))] MissingField),
+    /// Plan construction failed.
+    #[display("invalid reviewed plan")]
+    Plan(ConstructError),
+    /// A reconstructed effect differs from the section.
+    #[display("effect mismatch: {_0}")]
+    EffectsMismatch(#[error(not(source))] ReviewEffect),
+}
+
 impl Bundle {
     /// Open the section from a complete plan, without role contributions.
     #[must_use]
@@ -401,6 +509,66 @@ impl Bundle {
             cv_feemax: self.max_fee.cv_feemax,
             memo: self.memo.clone(),
         }
+    }
+
+    /// Derive a complete plan and compare its effects with the section's.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an opening is missing or inconsistent.
+    #[expect(clippy::ref_patterns, reason = "borrow the spend opening")]
+    pub fn plan(&self) -> Result<Plan, ReviewError> {
+        let mut spends = Vec::new();
+        let mut outputs = Vec::new();
+        for (index, action) in self.actions.iter().enumerate() {
+            let missing = |field| ReviewError::Missing(MissingField::Action(index, field));
+            match *action
+                .witness
+                .as_ref()
+                .ok_or_else(|| missing(OpeningField::Witness))?
+            {
+                ActionWitness::Spend(ref spend) => {
+                    let ak = spend.ak.ok_or_else(|| missing(OpeningField::Ak))?;
+                    let opening = action.opening::<effect::Spend>(ak).map_err(missing)?;
+                    let desc = opening
+                        .check()
+                        .map_err(|err| ReviewError::Plan(err.into()))?
+                        .descriptor;
+                    if action.descriptor != desc {
+                        return Err(ReviewError::EffectsMismatch(ReviewEffect::Action(index)));
+                    }
+                    spends.push((opening.note, opening.theta, opening.rcv, ak));
+                },
+                ActionWitness::Output(_) => {
+                    let opening = action.opening::<effect::Output>(()).map_err(missing)?;
+                    let desc = opening
+                        .check()
+                        .map_err(|err| ReviewError::Plan(err.into()))?
+                        .descriptor;
+                    if action.descriptor != desc {
+                        return Err(ReviewError::EffectsMismatch(ReviewEffect::Action(index)));
+                    }
+                    outputs.push((opening.note, opening.theta, opening.rcv));
+                },
+            }
+        }
+        let plan = Plan::new(
+            spends,
+            outputs,
+            self.max_fee
+                .note
+                .complete()
+                .map_err(|field| ReviewError::Missing(MissingField::MaxFee(field)))?,
+            self.memo.clone(),
+        )
+        .map_err(ReviewError::Plan)?;
+        if self.value_balance != plan.effects().value_balance {
+            return Err(ReviewError::EffectsMismatch(ReviewEffect::ValueBalance));
+        }
+        if self.max_fee.cv_feemax != plan.effects().cv_feemax {
+            return Err(ReviewError::EffectsMismatch(ReviewEffect::MaxFee));
+        }
+        Ok(plan)
     }
 
     /// The actions in commitment order.
@@ -474,6 +642,74 @@ impl Action {
         }
     }
 
+    fn opening<E: OpeningEffect>(
+        &self,
+        authority: E::Authority,
+    ) -> Result<Opening<E>, OpeningField> {
+        Self::opening_from(&self.note, self.theta, self.rcv, authority)
+    }
+
+    fn opening_from<E: OpeningEffect>(
+        note: &NoteOpening,
+        theta: Option<ActionEntropy>,
+        rcv: Option<value::Trapdoor>,
+        authority: E::Authority,
+    ) -> Result<Opening<E>, OpeningField> {
+        Ok(Opening {
+            note: note.complete().map_err(OpeningField::Note)?,
+            theta: theta.ok_or(OpeningField::Theta)?,
+            rcv: rcv.ok_or(OpeningField::Rcv)?,
+            authority,
+        })
+    }
+
+    /// Compare the derived descriptor with the stored descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing or inconsistent opening.
+    pub fn verify_opening(&self) -> Result<(), VerifyError> {
+        if Self::derive_from_opening(&self.note, self.theta, self.rcv, self.witness.as_ref())
+            .map_err(|error| match error {
+                DescriptorError::Missing(field) => VerifyError::Missing(field),
+                DescriptorError::ZeroRcm => VerifyError::ZeroRcm,
+                DescriptorError::Randomness => VerifyError::Randomness,
+            })?
+            != self.descriptor
+        {
+            return Err(VerifyError::DescriptorMismatch);
+        }
+        Ok(())
+    }
+
+    #[expect(clippy::ref_patterns, reason = "borrow the spend opening")]
+    fn derive_from_opening(
+        note: &NoteOpening,
+        theta: Option<ActionEntropy>,
+        rcv: Option<value::Trapdoor>,
+        witness: Option<&ActionWitness>,
+    ) -> Result<action::Descriptor, DescriptorError> {
+        let derived = match *witness.ok_or(DescriptorError::Missing(OpeningField::Witness))? {
+            ActionWitness::Spend(ref spend) => Self::opening_from::<effect::Spend>(
+                note,
+                theta,
+                rcv,
+                spend.ak.ok_or(DescriptorError::Missing(OpeningField::Ak))?,
+            )
+            .map_err(DescriptorError::Missing)?
+            .check()
+            .map(|checked| checked.descriptor),
+            ActionWitness::Output(_) => Self::opening_from::<effect::Output>(note, theta, rcv, ())
+                .map_err(DescriptorError::Missing)?
+                .check()
+                .map(|checked| checked.descriptor),
+        };
+        derived.map_err(|error| match error {
+            OpeningCheckError::ZeroRcm => DescriptorError::ZeroRcm,
+            OpeningCheckError::Randomness => DescriptorError::Randomness,
+        })
+    }
+
     /// The action's descriptor.
     #[must_use]
     pub const fn descriptor(&self) -> action::Descriptor {
@@ -525,6 +761,15 @@ impl NoteOpening {
             psi: Some(note.psi),
             rcm: Some(note.rcm),
         }
+    }
+
+    fn complete(&self) -> Result<Note, NoteField> {
+        Ok(Note {
+            pk: self.pk.ok_or(NoteField::Pk)?,
+            value: self.value.ok_or(NoteField::Value)?,
+            psi: self.psi.ok_or(NoteField::Psi)?,
+            rcm: self.rcm.ok_or(NoteField::Rcm)?,
+        })
     }
 
     /// The payment key.
