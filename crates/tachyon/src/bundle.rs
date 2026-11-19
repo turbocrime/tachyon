@@ -414,6 +414,14 @@ impl Plan {
         &self.effects
     }
 
+    pub(crate) fn spends(&self) -> &[(action::Descriptor, action::Plan<effect::Spend>)] {
+        &self.spends
+    }
+
+    pub(crate) fn outputs(&self) -> &[(action::Descriptor, action::Plan<effect::Output>)] {
+        &self.outputs
+    }
+
     /// Collect the action witnesses for proving at `anchor`, without the fee.
     /// Spend PCDs follow the spend order passed to [`Self::new`].
     #[must_use]
