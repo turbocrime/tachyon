@@ -1,10 +1,11 @@
 use core::array;
 
 use derive_more::{AsRef, Debug, Eq as TotalEq, From, Into, PartialEq};
-use ragu::{Cycle as _, Polynomial, ProductionRank, header::OnlinePoly, pasta::Pasta};
+use ragu::{Cycle as _, Polynomial, ProductionRank, pasta::Pasta};
 use rand_core::CryptoRng;
 use udon::field::Field as _;
 
+use super::{Online, online::sealed};
 use crate::{
     collections::qr,
     pasta,
@@ -44,13 +45,12 @@ impl QrDiscriminant {
 #[derive(AsRef, Clone, Debug, From, Into)]
 pub struct QrInterpolantPoly(Polynomial<Fp, ProductionRank>);
 
-/// The polynomial interpolating one class's square roots.
-#[derive(Clone, Copy, Debug)]
-pub struct QrInterpolant;
-
-impl OnlinePoly for QrInterpolant {}
+impl sealed::Poly for QrInterpolantPoly {}
 
 impl QrInterpolantPoly {
+    /// Online polynomial slot key for [`Self`].
+    pub const ONLINE: Online<Self> = Online::new();
+
     /// Deterministic (untrapdoored) commitment to the interpolant.
     #[must_use]
     pub fn commit(&self) -> QrInterpolantCommit {
@@ -73,13 +73,12 @@ pub struct QrInterpolantCommit(Eq);
 #[derive(AsRef, Clone, Debug, From, Into)]
 pub struct QrQuotientPoly(Polynomial<Fp, ProductionRank>);
 
-/// The quotient polynomial of one class decomposition.
-#[derive(Clone, Copy, Debug)]
-pub struct QrQuotient;
-
-impl OnlinePoly for QrQuotient {}
+impl sealed::Poly for QrQuotientPoly {}
 
 impl QrQuotientPoly {
+    /// Online polynomial slot key for [`Self`].
+    pub const ONLINE: Online<Self> = Online::new();
+
     /// Deterministic (untrapdoored) commitment to the quotient.
     #[must_use]
     pub fn commit(&self) -> QrQuotientCommit {

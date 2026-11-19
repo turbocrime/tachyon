@@ -2,13 +2,13 @@ use core::iter;
 
 use corez::io::{self, Read, Write};
 use derive_more::{AsRef, Debug, Eq as TotalEq, From, Into, PartialEq};
-use ragu::{
-    Cycle as _, FixedGenerators as _, Polynomial, ProductionRank, header::OnlinePoly,
-    pasta::Pasta,
-};
+use ragu::{Cycle as _, FixedGenerators as _, Polynomial, ProductionRank, pasta::Pasta};
 use udon::curve::Projective as _;
 
-use super::{ActionDigest, Anchor, Tachygram};
+use super::{
+    ActionDigest, Anchor, Online, PolySlot, Tachygram,
+    online::sealed,
+};
 use crate::{
     collections::multiset,
     pasta,
@@ -114,35 +114,26 @@ impl AnchorSetCommit {
 #[derive(AsRef, Clone, Debug, Into)]
 pub struct TachygramSetPoly(Polynomial<Fp, ProductionRank>);
 
-/// The polynomial whose roots are a set of tachygrams.
-#[derive(Clone, Copy, Debug)]
-pub struct TachygramSet;
-
-impl OnlinePoly for TachygramSet {}
+impl sealed::Poly for TachygramSetPoly {}
 
 /// Witness polynomial for a stamp's action-digest set (members encoded as
 /// roots).
 #[derive(AsRef, Clone, Debug, Into)]
 pub struct ActionSetPoly(Polynomial<Fp, ProductionRank>);
 
-/// The polynomial whose roots are a set of action and fee digests.
-#[derive(Clone, Copy, Debug)]
-pub struct ActionSet;
-
-impl OnlinePoly for ActionSet {}
+impl sealed::Poly for ActionSetPoly {}
 
 /// Witness polynomial for an anchor span's member set (members encoded as
 /// roots).
 #[derive(AsRef, Clone, Debug, Into)]
 pub struct AnchorSetPoly(Polynomial<Fp, ProductionRank>);
 
-/// The polynomial whose roots are an anchor span's anchors.
-#[derive(Clone, Copy, Debug)]
-pub struct AnchorSet;
-
-impl OnlinePoly for AnchorSet {}
+impl sealed::Poly for AnchorSetPoly {}
 
 impl AnchorSetPoly {
+    /// Online polynomial slot key for [`Self`].
+    pub const ONLINE: Online<Self> = Online::new();
+
     /// Deterministic (untrapdoored) commitment to the set polynomial.
     #[must_use]
     pub fn commit(&self) -> AnchorSetCommit {
@@ -163,6 +154,11 @@ impl FromIterator<Anchor> for AnchorSetPoly {
 }
 
 impl TachygramSetPoly {
+    /// Online polynomial slot key for [`Self`].
+    pub const ONLINE: Online<Self> = Online::new();
+    /// Slot key for [`Self`].
+    pub const SLOT: PolySlot<Self> = PolySlot::new();
+
     /// Wraps an arbitrary polynomial, skipping set encoding, to exercise step
     /// inputs.
     #[cfg(any(test, feature = "test-utils"))]
@@ -185,6 +181,9 @@ impl TachygramSetPoly {
 }
 
 impl ActionSetPoly {
+    /// Online polynomial slot key for [`Self`].
+    pub const ONLINE: Online<Self> = Online::new();
+
     /// Deterministic (untrapdoored) commitment to the set polynomial.
     #[must_use]
     pub fn commit(&self) -> ActionSetCommit {

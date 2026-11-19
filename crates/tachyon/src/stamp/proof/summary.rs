@@ -7,9 +7,7 @@
 //! summaries whose anchors are equal. The joined chain contains every stamp
 //! absorption.
 
-extern crate alloc;
-
-use alloc::vec::Vec;
+use core::convert::Infallible;
 
 use ragu::{
     drivers::{Driver, DriverValue},
@@ -26,16 +24,32 @@ use crate::{
     digest::poseidon,
     gadgets,
     pasta::Fp,
-    primitives::{Anchor, EpochIndex, TachygramSet, TachygramSetPoly},
+    primitives::{Anchor, EpochIndex, PolySlot, TachygramSetPoly},
 };
+
+/// Every tachygram of the stamps in `(anchor_prev, anchor_end]`.
+#[derive(Debug)]
+pub struct Accumulated(Infallible);
+
+/// The last stamp's tachygrams. Its bridge hash enters `anchor_end`.
+#[derive(Debug)]
+pub struct LastStamp(Infallible);
 
 /// One summarized run of an epoch's stamps.
 ///
-/// Both slots hold a [`TachygramSet`]: the accumulator contains every
+/// Both slots hold a [`TachygramSetPoly`]: the accumulator contains every
 /// tachygram from the stamps in `(anchor_prev, anchor_end]`, and the last
 /// slot holds the last stamp's tachygrams.
 #[derive(Clone, Debug)]
 pub struct Summary;
+
+impl Summary {
+    /// Online polynomial slot key for the summary's accumulated tachygrams.
+    pub const ACCUMULATED: PolySlot<TachygramSetPoly, Accumulated> = PolySlot::new();
+
+    /// Online polynomial slot key for the summary's last stamp set.
+    pub const LAST_STAMP: PolySlot<TachygramSetPoly, LastStamp> = PolySlot::new();
+}
 
 #[derive(Gadget, Write)]
 pub struct SummaryOutput<'dr, D: Driver<'dr>> {
@@ -48,7 +62,10 @@ pub struct SummaryOutput<'dr, D: Driver<'dr>> {
 impl Header<Fp> for Summary {
     /// `(epoch, anchor_prev, anchor_end)`
     type Data = (EpochIndex, Anchor, Anchor);
-    type OnlinePolyCommit = (TachygramSet, TachygramSet);
+    type OnlinePolyCommit = (
+        PolySlot<TachygramSetPoly, Accumulated>,
+        PolySlot<TachygramSetPoly, LastStamp>,
+    );
     type Output = Kind![Fp; SummaryOutput<'_, _>];
 
     const SUFFIX: Suffix = Suffix::new(9);
@@ -110,10 +127,8 @@ impl Step<Pasta> for SummarySeed {
         _: HeaderInput<'_, Fp, Self::Left>,
         _: HeaderInput<'_, Fp, Self::Right>,
     ) -> ragu::Result<Prepared<Fp, Self::Output>> {
-        let stamp = witness.2.as_ref().iter_coeffs().collect::<Vec<_>>();
-        Ok(Prepared::new()
-            .poly(TachygramSet, stamp.clone())
-            .poly(TachygramSet, stamp))
+        let prepared = Summary::ACCUMULATED.poly(Prepared::new(), &witness.2);
+        Ok(Summary::LAST_STAMP.poly(prepared, &witness.2))
     }
 
     fn witness<'dr, 'source: 'dr, D: Driver<'dr, F = Fp>, const HEADER_SIZE: usize>(
@@ -150,8 +165,8 @@ impl Step<Pasta> for SummarySeed {
             witness.as_ref().map(|&(_, epoch, _)| epoch),
         )?;
         let z = oracles.zeta().clone();
-        let accumulator_at_z = oracles.output(TachygramSet).open(dr, &z)?;
-        let stamp_at_z = oracles.output(TachygramSet).open(dr, &z)?;
+        let accumulator_at_z = oracles.output(Summary::ACCUMULATED).open(dr, &z)?;
+        let stamp_at_z = oracles.output(Summary::LAST_STAMP).open(dr, &z)?;
         accumulator_at_z.enforce_equal(dr, &stamp_at_z)?;
         // The empty set polynomial is the constant one, so a stamp whose
         // polynomial opens to one at zeta has no tachygrams.
@@ -207,15 +222,8 @@ impl Step<Pasta> for SummaryAdvance {
         _: HeaderInput<'_, Fp, Self::Left>,
         _: HeaderInput<'_, Fp, Self::Right>,
     ) -> ragu::Result<Prepared<Fp, Self::Output>> {
-        Ok(Prepared::new()
-            .poly(
-                TachygramSet,
-                witness.0.as_ref().iter_coeffs().collect::<Vec<_>>(),
-            )
-            .poly(
-                TachygramSet,
-                witness.1.as_ref().iter_coeffs().collect::<Vec<_>>(),
-            ))
+        let prepared = Summary::ACCUMULATED.poly(Prepared::new(), &witness.0);
+        Ok(Summary::LAST_STAMP.poly(prepared, &witness.1))
     }
 
     fn witness<'dr, 'source: 'dr, D: Driver<'dr, F = Fp>, const HEADER_SIZE: usize>(
@@ -245,9 +253,9 @@ impl Step<Pasta> for SummaryAdvance {
         } = left_encoded.as_gadget().clone();
         let right_encoded = Encoded::<D, Self::Right, HEADER_SIZE>::new(dr, &mut (), right)?;
         let z = oracles.zeta().clone();
-        let accumulator_at_z = oracles.left(TachygramSet).open(dr, &z)?;
-        let stamp_at_z = oracles.output(TachygramSet).open(dr, &z)?;
-        let extended_at_z = oracles.output(TachygramSet).open(dr, &z)?;
+        let accumulator_at_z = oracles.left(Summary::ACCUMULATED).open(dr, &z)?;
+        let stamp_at_z = oracles.output(Summary::LAST_STAMP).open(dr, &z)?;
+        let extended_at_z = oracles.output(Summary::ACCUMULATED).open(dr, &z)?;
         let folded = accumulator_at_z.mul(dr, &stamp_at_z)?;
         extended_at_z.enforce_equal(dr, &folded)?;
         // The empty set polynomial is the constant one, so a stamp whose

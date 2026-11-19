@@ -4,13 +4,14 @@ use alloc::{vec, vec::Vec};
 use core::ops::Mul;
 
 use derive_more::{AsRef, Debug, Eq as TotalEq, From, Into, PartialEq};
-use ragu::{Cycle as _, Polynomial, ProductionRank, header::OnlinePoly, pasta::Pasta};
+use ragu::{Cycle as _, Polynomial, ProductionRank, pasta::Pasta};
 use udon::{
     exec::{ExecutionOptions, SerialExecutor},
     fft::{Domain, Expansion, Transform},
     field::Field as _,
 };
 
+use super::{Online, online::sealed};
 use crate::{
     collections::indexed_multiset,
     nullifier::Nullifier,
@@ -28,14 +29,11 @@ pub struct NfSeqCommit(Eq);
 #[derive(AsRef, Clone, Debug, From, Into)]
 pub struct NfSeqPoly(Polynomial<Fp, ProductionRank>);
 
-/// The polynomial whose roots are a sequence of nullifiers, each indexed by
-/// its epoch.
-#[derive(Clone, Copy, Debug)]
-pub struct NfSeq;
-
-impl OnlinePoly for NfSeq {}
+impl sealed::Poly for NfSeqPoly {}
 
 impl NfSeqPoly {
+    /// Online polynomial slot key for [`Self`].
+    pub const ONLINE: Online<Self> = Online::new();
     /// Build the sequence polynomial for one contiguous run: the members of
     /// the consecutive epochs starting at `epoch_start`.
     #[must_use]
