@@ -1,5 +1,5 @@
 use rand::{SeedableRng as _, rngs::StdRng};
-use zcash_tachyon::{Anchor, stamp::ActionsPlan};
+use zcash_tachyon::{Anchor, stamp::ActionsPlan, value};
 
 use super::fixtures::{
     application,
@@ -7,7 +7,7 @@ use super::fixtures::{
 };
 
 #[test]
-fn pre_fee_proof_covers_action() {
+fn pre_fee_proof_supports_fee_replacement() {
     let rng = &mut StdRng::seed_from_u64(12);
     let app = &application();
     let wallet = WalletSim::new(shared_sk());
@@ -20,5 +20,13 @@ fn pre_fee_proof_covers_action() {
     )
     .prove(rng, app, vec![])
     .unwrap();
-    assert_eq!(proof.pairs.len(), 1);
+    let max_fee = wallet.random_note(10);
+    let first = proof
+        .clone()
+        .fee(rng, app, max_fee, value::Positive::ZERO)
+        .unwrap();
+    let fee = value::Positive::try_from(2u64).unwrap();
+    let second = proof.fee(rng, app, max_fee, fee).unwrap();
+    assert_eq!(first.pairs, second.pairs);
+    assert_eq!(second.fee, fee);
 }
