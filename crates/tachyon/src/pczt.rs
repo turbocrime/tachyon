@@ -1,11 +1,13 @@
 //! The Tachyon section of a partially constructed transaction.
 
 pub mod mirror;
+mod updater;
 use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
 
 use derive_more::{Debug, Display, Eq as TotalEq, Error, PartialEq};
 use ragu::{Pcd, ProductionRank, Rank as _, pasta::Pasta};
 use udon::{curve::Affine as _, field::Field as _};
+pub use updater::{InvalidIndex, SetPakError, Updater, WitnessAccessError, WitnessUpdateError};
 
 use crate::{
     Anchor, Note, action,
