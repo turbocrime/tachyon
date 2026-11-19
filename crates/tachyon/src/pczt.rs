@@ -1,5 +1,6 @@
 //! The Tachyon section of a partially constructed transaction.
 
+pub mod mirror;
 use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
 
 use derive_more::{Debug, Display, Eq as TotalEq, Error, PartialEq};
