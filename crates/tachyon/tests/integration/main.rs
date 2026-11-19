@@ -26,6 +26,8 @@ mod fee;
 #[cfg(test)]
 mod fixtures;
 #[cfg(test)]
+mod pczt_combining;
+#[cfg(test)]
 mod pczt_mirror_compact;
 #[cfg(test)]
 mod pczt_mirror_effects;
