@@ -41,6 +41,12 @@ impl ActionEntropy {
         Fp::from_bytes(bytes).map(Self)
     }
 
+    /// The canonical encoding of this action entropy.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.0.to_bytes()
+    }
+
     /// Sample fresh per-action entropy.
     pub fn random<RNG: CryptoRng>(rng: &mut RNG) -> Self {
         Self(Fp::random(|bytes| rng.fill_bytes(bytes)))
