@@ -1,5 +1,9 @@
 use rand::{SeedableRng as _, rngs::StdRng};
-use zcash_tachyon::{Anchor, stamp::ActionsPlan};
+use zcash_tachyon::{
+    Anchor,
+    stamp::{ActionsPlan, AutonomeParts},
+    value,
+};
 
 use super::fixtures::{
     application,
@@ -7,7 +11,7 @@ use super::fixtures::{
 };
 
 #[test]
-fn pre_fee_proof_covers_action() {
+fn pre_fee_proof_supports_fee_replacement() {
     let rng = &mut StdRng::seed_from_u64(12);
     let app = &application();
     let wallet = WalletSim::new(shared_sk());
@@ -20,9 +24,35 @@ fn pre_fee_proof_covers_action() {
     )
     .prove(rng, app, vec![])
     .unwrap();
-    assert_eq!(proof.pairs.len(), 1);
-    let pcd = proof.proof.carry::<zcash_tachyon::stamp::proof::stamp::Actions>(anchor);
-    assert!(app.verify_uncompressed(&pcd, rng).unwrap());
+    let max_fee = wallet.random_note(10);
+    let first = proof
+        .clone()
+        .fee(rng, app, max_fee, value::Positive::ZERO)
+        .unwrap();
+    let fee = value::Positive::try_from(2u64).unwrap();
+    let second = proof.fee(rng, app, max_fee, fee).unwrap();
+    assert_eq!(first.pairs, second.pairs);
+    assert_eq!(second.fee, fee);
+    for parts in [first, second] {
+        let digests = parts
+            .pairs
+            .iter()
+            .map(|(descriptor, pair)| descriptor.digest(*pair));
+        assert!(parts.stamp.verify_proof(rng, app, digests).unwrap());
+    }
+}
+
+#[test]
+fn fee_seed_proves_an_actionless_stamp() {
+    let rng = &mut StdRng::seed_from_u64(14);
+    let app = &application();
+    let wallet = WalletSim::new(shared_sk());
+    let max_fee = wallet.random_note(0);
+    let anchor = Anchor::random(rng);
+    let parts = AutonomeParts::seed(rng, app, max_fee, anchor).unwrap();
+    assert!(parts.pairs.is_empty());
+    assert_eq!(parts.fee, value::Positive::ZERO);
+    assert!(parts.stamp.verify_proof(rng, app, []).unwrap());
 }
 
 #[test]
