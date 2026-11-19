@@ -21,8 +21,8 @@ use zcash_tachyon::{
     entropy::ActionEntropy,
     fee,
     keys::private,
-    pasta::{Ep, Eq, Fp},
-    stamp::{self, ProofStamp, StrippedStamp},
+    pasta::{Ep, EpAffine, Eq, Fp},
+    stamp::{self, ProofStamp, StrippedStamp, proof::App},
     value, *,
 };
 
@@ -31,7 +31,7 @@ use crate::fixtures::{
     mock_sighash, mock_txid,
     pool::PoolSim,
     wallet::{
-        WalletSim, alice, entry_spends, merged, output_plan, random_action, shared_sk, spend,
+        WalletSim, alice, bob, entry_spends, merged, output_plan, random_action, shared_sk, spend,
         zero_action,
     },
 };
@@ -543,6 +543,104 @@ fn stamped_bundle_round_trips() {
         block.verify(rng, app, &sighash, &[]),
         Err(VerificationError::Disproved)
     );
+}
+
+fn receive_compressed_bundle(
+    rng: &mut StdRng,
+    app: &App<'_>,
+    bundle: Bundle<ProofStamp<stamp::Uncompressed>>,
+) -> Bundle<ProofStamp<stamp::Compressed>> {
+    let compressed = Bundle {
+        stamp: bundle.stamp.compress(rng, app).unwrap(),
+        actions: bundle.actions,
+        action_auth: bundle.action_auth,
+        fee: bundle.fee,
+        fee_auth: bundle.fee_auth,
+        value_balance: bundle.value_balance,
+        binding_sig: bundle.binding_sig,
+        memo: bundle.memo,
+    };
+    let mut bytes = Vec::new();
+    compressed.write(&mut bytes).unwrap();
+    Bundle::<ProofStamp<stamp::Compressed>>::read(&*bytes).unwrap()
+}
+
+#[test]
+fn rebuild_online_polynomials_matches_compressed_stamps() {
+    let app = &application();
+    let rng = &mut StdRng::seed_from_u64(947);
+    let (_, left) = alice(app);
+    let (_, right) = bob(app);
+    let aggregate = merged(app, &left, &right);
+    let right_txid = mock_txid(&right);
+    let adjunct = right.strip();
+
+    for (bundle, adjuncts) in [
+        (left, BTreeMap::new()),
+        (aggregate, BTreeMap::from([(right_txid, &adjunct)])),
+    ] {
+        let received = receive_compressed_bundle(rng, app, bundle);
+        let polynomials = received
+            .rebuild_online_polynomials(app, &adjuncts)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            polynomials.map(|poly| app.commit(&poly.iter_coeffs().collect::<Vec<_>>()).unwrap()),
+            received.stamp.proof.online_commitments()
+        );
+    }
+}
+
+#[test]
+fn rebuild_online_polynomials_rejects_mismatched_public_data() {
+    let app = &application();
+    let rng = &mut StdRng::seed_from_u64(894);
+    let (_, left) = alice(app);
+    let (_, right) = bob(app);
+    let received = receive_compressed_bundle(rng, app, left);
+
+    let mut wrong_actions = received.clone();
+    wrong_actions.actions[0] = right.actions[0];
+    let mut wrong_fees = received.clone();
+    wrong_fees.fee = right.fee;
+    let mut wrong_tachygrams = received.clone();
+    wrong_tachygrams.action_auth[0].1 = right.action_auth[0].1;
+    let mut wrong_coverage = received.clone();
+    wrong_coverage.stamp.adjuncts.insert(mock_txid(&right));
+
+    let mut oversized = received;
+    let template = oversized.actions[0];
+    let sig = oversized.action_auth[0].0;
+    let base = Ep::from(EpAffine::from(template.cv));
+    let mut cv = base;
+    oversized.actions.clear();
+    oversized.action_auth.clear();
+    // Distinct descriptors and tachygrams so duplicate checks cannot mask
+    // the capacity check. At this count even one fee change does not fit.
+    for index in 0..ProductionRank::num_coeffs() / 2 {
+        oversized.actions.push(action::Descriptor {
+            cv: cv.to_affine().into(),
+            ..template
+        });
+        let root = u64::try_from(2 * index).unwrap();
+        oversized
+            .action_auth
+            .push((sig, (Fp::from(root).into(), Fp::from(root + 1).into())));
+        cv += base;
+    }
+
+    for (bundle, tamper) in [
+        (wrong_actions, "action descriptor"),
+        (wrong_fees, "fee descriptor"),
+        (wrong_tachygrams, "tachygram pair"),
+        (wrong_coverage, "adjunct list"),
+        (oversized, "oversized covered sets"),
+    ] {
+        let result = bundle
+            .rebuild_online_polynomials(app, &BTreeMap::new())
+            .unwrap();
+        assert!(result.is_none(), "accepted {tamper}");
+    }
 }
 
 #[test]
