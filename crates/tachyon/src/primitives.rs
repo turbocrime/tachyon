@@ -4,6 +4,7 @@ mod block_height;
 pub mod effect;
 mod epoch;
 mod evidence;
+mod kind;
 mod qr;
 mod seq;
 mod sets;
@@ -15,13 +16,14 @@ pub use block_height::BlockHeight;
 pub use effect::Effect;
 pub use epoch::{EpochDiff, EpochIndex};
 pub use evidence::EvidenceTreeRoot;
+pub use kind::PolyKind;
 pub use qr::{
-    QrClassRoot, QrDiscriminant, QrInterpolant, QrInterpolantCommit, QrInterpolantPoly,
-    QrProfile, QrQuotient, QrQuotientCommit, QrQuotientPoly,
+    QrClassRoot, QrDiscriminant, QrInterpolantCommit, QrInterpolantPoly,
+    QrProfile, QrQuotientCommit, QrQuotientPoly,
 };
-pub use seq::{NfSeq, NfSeqCommit, NfSeqPoly};
+pub use seq::{NfSeqCommit, NfSeqPoly};
 pub use sets::{
-    ActionSet, ActionSetCommit, ActionSetPoly, AnchorSet, AnchorSetCommit, AnchorSetPoly,
-    TachygramSet, TachygramSetBridge, TachygramSetCommit, TachygramSetPoly,
+    ActionSetCommit, ActionSetPoly, AnchorSetCommit, AnchorSetPoly,
+    TachygramSetBridge, TachygramSetCommit, TachygramSetPoly,
 };
 pub use tachygram::Tachygram;

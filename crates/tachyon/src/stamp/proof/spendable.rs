@@ -27,11 +27,12 @@ use super::{
     pool::NoteUnspent,
     qr::QrBucket,
 };
+use crate::primitives::PolyKind;
 use crate::{
     digest::poseidon,
     gadgets, note,
     pasta::Fp,
-    primitives::{Anchor, EpochIndex, TachygramSet, TachygramSetPoly},
+    primitives::{Anchor, EpochIndex, TachygramSetPoly},
 };
 
 /// Wallet's spendable position, certified up to this point in every
@@ -52,7 +53,7 @@ pub struct NoteSpendableOutput<'dr, D: Driver<'dr>> {
 impl Header<Fp> for NoteSpendable {
     /// `(cm, epoch_current, anchor)`
     type Data = (note::Commitment, EpochIndex, Anchor);
-    type OnlinePolyCommit = (Padding, TachygramSet);
+    type OnlinePolyCommit = (Padding, PolyKind<TachygramSetPoly>);
     type Output = Kind![Fp; NoteSpendableOutput<'_, _>];
 
     const SUFFIX: Suffix = Suffix::new(2);
@@ -122,7 +123,7 @@ impl Step<Pasta> for SpendableInit {
         _: HeaderInput<'_, Fp, Self::Right>,
     ) -> ragu::Result<Prepared<Fp, Self::Output>> {
         Ok(Prepared::new().poly(
-            TachygramSet,
+            TachygramSetPoly::KIND,
             witness.1.as_ref().iter_coeffs().collect::<Vec<_>>(),
         ))
     }
@@ -177,7 +178,7 @@ impl Step<Pasta> for SpendableInit {
             ],
         )?;
         // Inclusion: cm ∈ set ⇔ the set polynomial vanishes at cm.
-        let evaluation = oracles.output(TachygramSet).open(dr, &nullifiers.cm)?;
+        let evaluation = oracles.output(TachygramSetPoly::KIND).open(dr, &nullifiers.cm)?;
         evaluation.enforce_zero(dr)?;
         let output = D::just(|| {
             let (cm, ..) = left.take();
@@ -264,7 +265,7 @@ impl Step<Pasta> for QrSpendableInit {
         // bucket directly.
         epoch_next.enforce_equal(dr, &unspent.epoch_next)?;
         // Inclusion: cm ∈ bucket ⇔ the contents vanish at cm.
-        let evaluation = oracles.right(TachygramSet).open(dr, &unspent.cm)?;
+        let evaluation = oracles.right(TachygramSetPoly::KIND).open(dr, &unspent.cm)?;
         evaluation.enforce_zero(dr)?;
         let output = D::just(|| {
             let (unspent_cm, _, _, unspent_epoch_next, unspent_anchor_next) = left.take();

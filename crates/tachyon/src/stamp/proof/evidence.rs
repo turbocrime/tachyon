@@ -35,7 +35,7 @@ use crate::{
     gadgets,
     pasta::{EpAffine, Fp},
     primitives::{
-        Anchor, EpochIndex, EvidenceTreeRoot, QrDiscriminant, QrProfile, TachygramSet,
+        Anchor, EpochIndex, EvidenceTreeRoot, QrDiscriminant, QrProfile,
         TachygramSetBridge, TachygramSetPoly,
     },
 };
@@ -727,7 +727,7 @@ impl Step<Pasta> for EvidenceTreeOpen {
         _: HeaderInput<'_, Fp, Self::Right>,
     ) -> ragu::Result<Prepared<Fp, Self::Output>> {
         Ok(Prepared::new().poly(
-            TachygramSet,
+            TachygramSetPoly::KIND,
             witness.1.as_ref().iter_coeffs().collect::<Vec<_>>(),
         ))
     }
@@ -770,7 +770,7 @@ impl Step<Pasta> for EvidenceTreeOpen {
             ],
         };
         let zeta = oracles.zeta().clone();
-        oracles.output(TachygramSet).open(dr, &zeta)?;
+        oracles.output(TachygramSetPoly::KIND).open(dr, &zeta)?;
         let leaf = poseidon::circuit::evidence_tree_leaf(
             dr,
             &fields.epoch,

@@ -23,6 +23,7 @@ use ragu::{
 };
 use udon::{curve::Affine as _, field::Field as _};
 
+use crate::primitives::PolyKind;
 use crate::{
     digest::poseidon,
     gadgets,
@@ -30,7 +31,7 @@ use crate::{
     note::{self, Note},
     nullifier::{self, NF_DERIVATION_WIDTH},
     pasta::{EpAffine, Fp},
-    primitives::{EpochIndex, NfSeq, NfSeqPoly},
+    primitives::{EpochIndex, NfSeqPoly},
     value,
 };
 
@@ -117,7 +118,7 @@ pub struct NoteNullifiersOutput<'dr, D: Driver<'dr>> {
 impl Header<Fp> for NoteNullifiers {
     /// `(cm, epoch_start, epoch_end)`
     type Data = (note::Commitment, EpochIndex, EpochIndex);
-    type OnlinePolyCommit = (NfSeq, Padding);
+    type OnlinePolyCommit = (PolyKind<NfSeqPoly>, Padding);
     type Output = Kind![Fp; NoteNullifiersOutput<'_, _>];
 
     const SUFFIX: Suffix = Suffix::new(0);
@@ -310,7 +311,7 @@ impl Step<Pasta> for NullifierDerive {
         _: HeaderInput<'_, Fp, Self::Right>,
     ) -> ragu::Result<Prepared<Fp, Self::Output>> {
         Ok(Prepared::new()
-            .poly(NfSeq, witness.1.as_ref().iter_coeffs().collect::<Vec<_>>())
+            .poly(NfSeqPoly::KIND, witness.1.as_ref().iter_coeffs().collect::<Vec<_>>())
             .stage([Fp::from(witness.0)]))
     }
 
@@ -369,7 +370,7 @@ impl Step<Pasta> for NullifierDerive {
         let width = Element::constant(dr, Fp::from(const { (NF_DERIVATION_WIDTH - 1) as u64 }));
         let epoch_end = epoch_start.add(dr, &width);
         let z = oracles.zeta().clone();
-        let seq_at_z = oracles.output(NfSeq).open(dr, &z)?;
+        let seq_at_z = oracles.output(NfSeqPoly::KIND).open(dr, &z)?;
         // The window's members at `z`, encoded in-circuit from the
         // sponge-derived nullifiers and their epochs.
         let mut window_at_z = Element::constant(dr, Fp::ONE);
@@ -443,7 +444,7 @@ impl Step<Pasta> for NullifierFuse {
         _: HeaderInput<'_, Fp, Self::Left>,
         _: HeaderInput<'_, Fp, Self::Right>,
     ) -> ragu::Result<Prepared<Fp, Self::Output>> {
-        Ok(Prepared::new().poly(NfSeq, witness.0.as_ref().iter_coeffs().collect::<Vec<_>>()))
+        Ok(Prepared::new().poly(NfSeqPoly::KIND, witness.0.as_ref().iter_coeffs().collect::<Vec<_>>()))
     }
 
     fn witness<'dr, 'source: 'dr, D: Driver<'dr, F = Fp>, const HEADER_SIZE: usize>(
@@ -477,9 +478,9 @@ impl Step<Pasta> for NullifierFuse {
             .add(dr, &one)
             .enforce_equal(dr, &right_nullifiers.epoch_start)?;
         let z = oracles.zeta().clone();
-        let left_seq = oracles.left(NfSeq).open(dr, &z)?;
-        let right_seq = oracles.right(NfSeq).open(dr, &z)?;
-        let merged_seq = oracles.output(NfSeq).open(dr, &z)?;
+        let left_seq = oracles.left(NfSeqPoly::KIND).open(dr, &z)?;
+        let right_seq = oracles.right(NfSeqPoly::KIND).open(dr, &z)?;
+        let merged_seq = oracles.output(NfSeqPoly::KIND).open(dr, &z)?;
         let expected_seq = left_seq.mul(dr, &right_seq)?;
         merged_seq.enforce_equal(dr, &expected_seq)?;
         let data = D::just(|| {

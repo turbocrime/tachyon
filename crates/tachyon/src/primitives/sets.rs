@@ -3,10 +3,12 @@ use core::iter;
 use corez::io::{self, Read, Write};
 use derive_more::{AsRef, Debug, Eq as TotalEq, From, Into, PartialEq};
 use ragu::{
-    Cycle as _, FixedGenerators as _, Polynomial, ProductionRank, header::OnlinePoly,
+    Cycle as _, FixedGenerators as _, Polynomial, ProductionRank,
     pasta::Pasta,
 };
 use udon::curve::Projective as _;
+
+use super::PolyKind;
 
 use super::{ActionDigest, Anchor, Tachygram};
 use crate::{
@@ -115,10 +117,7 @@ impl AnchorSetCommit {
 pub struct TachygramSetPoly(Polynomial<Fp, ProductionRank>);
 
 /// The polynomial whose roots are a set of tachygrams.
-#[derive(Clone, Copy, Debug)]
-pub struct TachygramSet;
 
-impl OnlinePoly for TachygramSet {}
 
 /// Witness polynomial for a stamp's action-digest set (members encoded as
 /// roots).
@@ -126,10 +125,7 @@ impl OnlinePoly for TachygramSet {}
 pub struct ActionSetPoly(Polynomial<Fp, ProductionRank>);
 
 /// The polynomial whose roots are a set of action and fee digests.
-#[derive(Clone, Copy, Debug)]
-pub struct ActionSet;
 
-impl OnlinePoly for ActionSet {}
 
 /// Witness polynomial for an anchor span's member set (members encoded as
 /// roots).
@@ -137,12 +133,12 @@ impl OnlinePoly for ActionSet {}
 pub struct AnchorSetPoly(Polynomial<Fp, ProductionRank>);
 
 /// The polynomial whose roots are an anchor span's anchors.
-#[derive(Clone, Copy, Debug)]
-pub struct AnchorSet;
 
-impl OnlinePoly for AnchorSet {}
 
 impl AnchorSetPoly {
+    /// Names this polynomial in a header that carries one.
+    pub const KIND: PolyKind<Self> = PolyKind::new();
+
     /// Deterministic (untrapdoored) commitment to the set polynomial.
     #[must_use]
     pub fn commit(&self) -> AnchorSetCommit {
@@ -163,6 +159,9 @@ impl FromIterator<Anchor> for AnchorSetPoly {
 }
 
 impl TachygramSetPoly {
+    /// Names this polynomial in a header that carries one.
+    pub const KIND: PolyKind<Self> = PolyKind::new();
+
     /// Wraps an arbitrary polynomial, skipping set encoding, to exercise step
     /// inputs.
     #[cfg(any(test, feature = "test-utils"))]
@@ -185,6 +184,9 @@ impl TachygramSetPoly {
 }
 
 impl ActionSetPoly {
+    /// Names this polynomial in a header that carries one.
+    pub const KIND: PolyKind<Self> = PolyKind::new();
+
     /// Deterministic (untrapdoored) commitment to the set polynomial.
     #[must_use]
     pub fn commit(&self) -> ActionSetCommit {

@@ -1,10 +1,12 @@
 use core::array;
 
 use derive_more::{AsRef, Debug, Eq as TotalEq, From, Into, PartialEq};
-use ragu::{Cycle as _, Polynomial, ProductionRank, header::OnlinePoly, pasta::Pasta};
+use ragu::{Cycle as _, Polynomial, ProductionRank, pasta::Pasta};
 use rand_core::CryptoRng;
 use udon::field::Field as _;
 
+
+use crate::primitives::PolyKind;
 use crate::{
     collections::qr,
     pasta,
@@ -45,12 +47,12 @@ impl QrDiscriminant {
 pub struct QrInterpolantPoly(Polynomial<Fp, ProductionRank>);
 
 /// The polynomial interpolating one class's square roots.
-#[derive(Clone, Copy, Debug)]
-pub struct QrInterpolant;
 
-impl OnlinePoly for QrInterpolant {}
 
 impl QrInterpolantPoly {
+    /// Names this polynomial in a header that carries one.
+    pub const KIND: PolyKind<Self> = PolyKind::new();
+
     /// Deterministic (untrapdoored) commitment to the interpolant.
     #[must_use]
     pub fn commit(&self) -> QrInterpolantCommit {
@@ -74,12 +76,12 @@ pub struct QrInterpolantCommit(Eq);
 pub struct QrQuotientPoly(Polynomial<Fp, ProductionRank>);
 
 /// The quotient polynomial of one class decomposition.
-#[derive(Clone, Copy, Debug)]
-pub struct QrQuotient;
 
-impl OnlinePoly for QrQuotient {}
 
 impl QrQuotientPoly {
+    /// Names this polynomial in a header that carries one.
+    pub const KIND: PolyKind<Self> = PolyKind::new();
+
     /// Deterministic (untrapdoored) commitment to the quotient.
     #[must_use]
     pub fn commit(&self) -> QrQuotientCommit {
