@@ -1,11 +1,16 @@
 //! The Tachyon section of a partially constructed transaction.
 
 pub mod mirror;
+mod signing;
 mod updater;
+
 use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
 
 use derive_more::{Debug, Display, Eq as TotalEq, Error, PartialEq};
 use ragu::{Pcd, ProductionRank, Rank as _, pasta::Pasta};
+pub use signing::{
+    ApplySignatureError, IoFinalizerError, OpeningLocation, OpeningReason, SignError,
+};
 use udon::{curve::Affine as _, field::Field as _};
 pub use updater::{InvalidIndex, SetPakError, Updater, WitnessAccessError, WitnessUpdateError};
 
@@ -181,6 +186,7 @@ struct Opening<E: OpeningEffect> {
 struct CheckedOpening<E: OpeningEffect> {
     opening: Opening<E>,
     descriptor: action::Descriptor,
+    alpha: ActionRandomizer<E>,
 }
 
 enum OpeningCheckError {
@@ -213,7 +219,17 @@ impl<E: OpeningEffect> Opening<E> {
         Ok(CheckedOpening {
             opening: self,
             descriptor,
+            alpha,
         })
+    }
+}
+
+impl<E: OpeningEffect> CheckedOpening<E> {
+    fn matches(self, descriptor: action::Descriptor) -> Result<Self, VerifyError> {
+        if self.descriptor != descriptor {
+            return Err(VerifyError::DescriptorMismatch);
+        }
+        Ok(self)
     }
 }
 
